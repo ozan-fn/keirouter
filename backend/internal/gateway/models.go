@@ -1,13 +1,16 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
+	"github.com/mydisha/keirouter/backend/internal/store"
 )
 
 // modelEntry is one entry in a /v1/models listing, in the OpenAI shape plus
@@ -44,6 +47,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Static catalog models.
 	for _, pm := range connectors.ModelsByKind(core.ServiceLLM) {
 		data = append(data, modelEntry{
 			ID:      pm.Provider + "/" + pm.Model.ID,
@@ -53,6 +57,23 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			Kind:    string(core.ServiceLLM),
 			Name:    pm.Model.Name,
 		})
+	}
+
+	// Live model discovery: for providers with a LiveModelSource and connected
+	// accounts, fetch the live catalog and merge (live models supplement, not
+	// replace, the static catalog).
+	liveModels := s.fetchLiveModels(r.Context(), tenantID)
+	for provider, models := range liveModels {
+		for _, lm := range models {
+			data = append(data, modelEntry{
+				ID:      provider + "/" + lm.ID,
+				Object:  "model",
+				OwnedBy: provider,
+				Provider: provider,
+				Kind:    string(lm.Kind),
+				Name:    lm.Name,
+			})
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
@@ -90,6 +111,52 @@ func (s *Server) handleListModelsByKind(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "kind": kindParam, "data": data})
+}
+
+// fetchLiveModels queries providers that support live model discovery, using
+// the first connected account's credentials. Returns a map of provider →
+// models. Errors are silently skipped (live discovery is best-effort).
+func (s *Server) fetchLiveModels(ctx context.Context, tenantID string) map[string][]connectors.ModelSpec {
+	if s.accounts == nil || s.vault == nil {
+		return nil
+	}
+	result := map[string][]connectors.ModelSpec{}
+
+	// Check each provider that has a live model source.
+	for provider, src := range map[string]connectors.LiveModelSource{
+		"kiro": connectors.GetLiveModelSource("kiro"),
+	} {
+		if src == nil {
+			continue
+		}
+		accs, err := s.accounts.ListByProvider(ctx, tenantID, provider)
+		if err != nil || len(accs) == 0 {
+			continue
+		}
+		// Use the first non-disabled account.
+		var acc store.Account
+		for _, a := range accs {
+			if !a.Disabled {
+				acc = a
+				break
+			}
+		}
+		if acc.ID == "" {
+			continue
+		}
+		creds, err := s.vault.Open(acc)
+		if err != nil {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		models, err := src.ListModels(probeCtx, creds)
+		cancel()
+		if err != nil || len(models) == 0 {
+			continue
+		}
+		result[provider] = models
+	}
+	return result
 }
 
 // handleModelInfo serves GET /v1/models/info?id=<provider/model>: it returns

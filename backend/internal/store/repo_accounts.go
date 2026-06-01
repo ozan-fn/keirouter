@@ -89,6 +89,16 @@ func (r *AccountRepo) UpdateTokens(ctx context.Context, a Account) error {
 	return err
 }
 
+// Update writes mutable fields (label, priority, disabled, proxy_pool_id).
+func (r *AccountRepo) Update(ctx context.Context, a Account) error {
+	q := r.db.rebind(`UPDATE accounts SET label = ?, priority = ?, disabled = ?,
+		proxy_pool_id = ?, updated_at = ? WHERE id = ?`)
+	_, err := r.db.sql.ExecContext(ctx, q,
+		a.Label, a.Priority, boolToInt(a.Disabled),
+		a.ProxyPoolID, formatTime(time.Now()), a.ID)
+	return err
+}
+
 // Delete removes an account.
 func (r *AccountRepo) Delete(ctx context.Context, id string) error {
 	q := r.db.rebind(`DELETE FROM accounts WHERE id = ?`)

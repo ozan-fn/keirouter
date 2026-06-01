@@ -57,7 +57,7 @@ export function ProvidersPage() {
           <button
             key={k.id}
             onClick={() => setFilter(k.id)}
-            className={`rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            className={`rounded-xl px-3.5 py-2 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
               filter === k.id
                 ? "bg-accent-600 text-white shadow-sm"
                 : "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:bg-ink-100"
@@ -125,7 +125,7 @@ function ProviderCard({ provider: p, accountCount }: { provider: Provider; accou
   return (
     <button
       onClick={() => navigate(`/providers/${p.id}`)}
-      className="flex h-full flex-col items-start gap-3 bg-[var(--bg-elevated)] p-5 text-left transition-colors hover:bg-ink-50"
+      className="flex h-full flex-col items-start gap-3 bg-[var(--bg-elevated)] p-5 text-left transition-colors hover:bg-ink-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60"
     >
       <div className="flex w-full items-start justify-between gap-2">
         <ProviderIcon provider={p} />

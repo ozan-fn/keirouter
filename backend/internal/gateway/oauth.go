@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -266,6 +267,12 @@ func (s *Server) persistOAuthAccount(r *http.Request, provider, label string, to
 	}); err != nil {
 		return "", err
 	}
+
+	// Validate the token against the upstream before persisting.
+	if verr := s.validateAccountCredentials(r.Context(), acc); verr != nil {
+		return "", fmt.Errorf("token validation failed: %w", verr)
+	}
+
 	if err := s.accounts.Create(r.Context(), acc); err != nil {
 		return "", err
 	}

@@ -2,6 +2,14 @@ package connectors
 
 import "github.com/mydisha/keirouter/backend/internal/core"
 
+// RegionOption describes one selectable region for a provider that has
+// region-based endpoints (e.g. Xiaomi Token Plan SGP/CN/AMS).
+type RegionOption struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	BaseURL string `json:"base_url"`
+}
+
 // ProviderSpec describes a built-in provider: its id, the wire dialect it
 // speaks, its default endpoint, the service kinds it serves, and the metadata
 // the dashboard renders (display name, alias, brand color, auth modes, etc.).
@@ -36,6 +44,12 @@ type ProviderSpec struct {
 	// free or unknown.
 	InputPerM  float64
 	OutputPerM float64
+	// Regions lists selectable endpoint regions for providers with region-based
+	// URLs (e.g. Xiaomi Token Plan). When set, the dashboard shows a region
+	// dropdown instead of a free-text base URL field.
+	Regions []RegionOption `json:"regions,omitempty"`
+	// DefaultRegion is the pre-selected region id when Regions is non-empty.
+	DefaultRegion string `json:"default_region,omitempty"`
 }
 
 // llm is shorthand for the default LLM-only service kind slice.
@@ -196,6 +210,15 @@ func apiKeyProviders() []ProviderSpec {
 		{ID: "xiaomi-mimo", DisplayName: "Xiaomi MiMo", Alias: "mimo", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.xiaomimimo.com/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#FF6900", Website: "https://xiaomimimo.com"},
+		{ID: "xiaomi-tokenplan", DisplayName: "Xiaomi MiMo Token Plan", Alias: "mmtp", Dialect: core.DialectOpenAI,
+			BaseURL: "https://token-plan-sgp.xiaomimimo.com/v1", AuthKind: "api_key", ServiceKinds: llm(),
+			Color: "#FF6900", Website: "https://xiaomimimo.com",
+			Notice: "Xiaomi MiMo Token Plan subscription (API key starts with tp-). Token Plan keys are cluster-specific — select the region matching your subscription.",
+			Regions: []RegionOption{
+				{ID: "sgp", Label: "Singapore", BaseURL: "https://token-plan-sgp.xiaomimimo.com/v1"},
+				{ID: "cn", Label: "China", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1"},
+				{ID: "ams", Label: "Europe", BaseURL: "https://token-plan-ams.xiaomimimo.com/v1"},
+			}, DefaultRegion: "sgp"},
 		{ID: "volcengine-ark", DisplayName: "Volcengine Ark", Alias: "ark", Dialect: core.DialectOpenAI,
 			BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#1677FF", Website: "https://ark.cn-beijing.volces.com"},
@@ -357,6 +380,31 @@ func SpecsByKind(kind core.ServiceKind) []ProviderSpec {
 		}
 	}
 	return out
+}
+
+// ResolveRegionBaseURL returns the base URL for the given region of a provider.
+// If the region is empty or unknown, the default region's URL is returned.
+// Returns "" if the provider has no regions.
+func ResolveRegionBaseURL(providerID, regionID string) string {
+	spec, ok := SpecByID(providerID)
+	if !ok || len(spec.Regions) == 0 {
+		return ""
+	}
+	for _, r := range spec.Regions {
+		if r.ID == regionID {
+			return r.BaseURL
+		}
+	}
+	// Fall back to default region.
+	if spec.DefaultRegion != "" {
+		for _, r := range spec.Regions {
+			if r.ID == spec.DefaultRegion {
+				return r.BaseURL
+			}
+		}
+	}
+	// Fall back to first region.
+	return spec.Regions[0].BaseURL
 }
 
 // AuthModesOf returns the auth modes for a spec, defaulting to [AuthKind].

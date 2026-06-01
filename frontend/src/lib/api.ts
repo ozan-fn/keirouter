@@ -1,6 +1,12 @@
 // Typed client for the KeiRouter admin API. All calls go through the dev-server
 // proxy (or the embedded static server in production) to /api.
 
+export interface RegionOption {
+  id: string;
+  label: string;
+  base_url: string;
+}
+
 export interface Provider {
   id: string;
   display_name: string;
@@ -19,6 +25,8 @@ export interface Provider {
   drivable: boolean;
   input_per_m: number;
   output_per_m: number;
+  regions?: RegionOption[];
+  default_region?: string;
 }
 
 export interface EndpointSettings {
@@ -157,6 +165,14 @@ export interface UsageInsights {
   busiest: string;
 }
 
+export interface UpstreamQuota {
+  resource_type: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  reset_at?: string;
+}
+
 export interface QuotaAccount {
   id: string;
   provider: string;
@@ -170,6 +186,12 @@ export interface QuotaAccount {
   completion_tokens: number;
   cached_tokens: number;
   cost_usd: number;
+  input_per_m: number;
+  output_per_m: number;
+  notice?: string;
+  plan_name?: string;
+  message?: string;
+  upstream_quotas?: UpstreamQuota[];
   updated_at: string;
 }
 
@@ -278,9 +300,17 @@ export const api = {
   deleteKey: (id: string) => request<void>("DELETE", `/keys/${id}`),
 
   listAccounts: () => request<{ accounts: Account[] }>("GET", "/accounts"),
-  createAccount: (input: { provider: string; label: string; api_key: string; base_url?: string }) =>
+  createAccount: (input: { provider: string; label: string; api_key: string; base_url?: string; region?: string }) =>
     request<{ id: string }>("POST", "/accounts", input),
+  updateAccount: (id: string, patch: { label?: string; priority?: number; disabled?: boolean }) =>
+    request<{ id: string }>("PATCH", `/accounts/${id}`, patch),
   deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${id}`),
+  testAccount: (id: string) =>
+    request<{ id: string; status: string; message: string }>("POST", `/accounts/${id}/test`),
+  accountQuota: (id: string) =>
+    request<{ provider: string; supported: boolean; plan_name?: string; message?: string; quotas?: UpstreamQuota[] }>(
+      "GET", `/accounts/${id}/quota`,
+    ),
 
   listChains: () => request<{ chains: Chain[] }>("GET", "/chains"),
   createChain: (input: { name: string; steps: { provider: string; model: string }[] }) =>

@@ -19,6 +19,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/clitools"
 	"github.com/mydisha/keirouter/backend/internal/config"
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/observ"
@@ -35,6 +36,7 @@ type Server struct {
 	identity *identity.Service
 	auth     *auth.Service
 	pipeline *pipeline.Pipeline
+	conns    *connectors.Registry
 	chains   *store.ChainRepo
 	aliases  *store.AliasRepo
 	accounts *store.AccountRepo
@@ -59,6 +61,7 @@ type Deps struct {
 	Identity *identity.Service
 	Auth     *auth.Service
 	Pipeline *pipeline.Pipeline
+	Conns    *connectors.Registry
 	Chains   *store.ChainRepo
 	Aliases  *store.AliasRepo
 	Accounts *store.AccountRepo
@@ -94,6 +97,7 @@ func New(d Deps) *Server {
 		identity: d.Identity,
 		auth:     d.Auth,
 		pipeline: d.Pipeline,
+		conns:    d.Conns,
 		chains:   d.Chains,
 		aliases:  d.Aliases,
 		accounts: d.Accounts,
@@ -122,7 +126,7 @@ func (s *Server) routes() chi.Router {
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: s.cfg.Server.CORSOrigins,
-		AllowedMethods: []string{"GET", "POST", "DELETE", "OPTIONS"},
+		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Authorization", "Content-Type", "x-api-key"},
 	}))
 

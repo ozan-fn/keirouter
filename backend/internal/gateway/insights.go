@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -227,10 +228,15 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 			status = "needs_attention"
 		}
 		display := a.Provider
+		var inputPerM, outputPerM float64
+		var providerNotice string
 		if spec, ok := connectors.SpecByID(a.Provider); ok {
 			display = spec.DisplayName
+			inputPerM = spec.InputPerM
+			outputPerM = spec.OutputPerM
+			providerNotice = spec.Notice
 		}
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"id":                a.ID,
 			"provider":          a.Provider,
 			"provider_name":     display,
@@ -243,8 +249,40 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 			"completion_tokens": u.CompletionTokens,
 			"cached_tokens":     u.CachedTokens,
 			"cost_usd":          float64(u.CostMicros) / 1_000_000,
+			"input_per_m":       inputPerM,
+			"output_per_m":      outputPerM,
 			"updated_at":        a.UpdatedAt,
-		})
+		}
+		if providerNotice != "" {
+			entry["notice"] = providerNotice
+		}
+
+		// Fetch upstream quota for providers that support it (e.g. Kiro).
+		if qs := connectors.GetQuotaSource(a.Provider); qs != nil && !a.Disabled {
+			if creds, err := s.vault.Open(a); err == nil {
+				quotaCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				quota, qerr := qs.FetchQuota(quotaCtx, creds)
+				cancel()
+				if qerr == nil && quota != nil {
+					entry["plan_name"] = quota.PlanName
+					entry["message"] = quota.Message
+					var quotas []map[string]any
+					for _, q := range quota.Quotas {
+						quotas = append(quotas, map[string]any{
+							"resource_type": q.ResourceType,
+							"used":          q.Used,
+							"limit":         q.Limit,
+							"remaining":     q.Remaining,
+							"reset_at":      q.ResetAt,
+						})
+					}
+					if len(quotas) > 0 {
+						entry["upstream_quotas"] = quotas
+					}
+				}
+			}
+		}
+		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out, "since": since})
 }

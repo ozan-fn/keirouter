@@ -2,6 +2,8 @@ package connectors
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/transform"
@@ -62,6 +64,17 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 	return resp, nil
+}
+
+// Validate probes the upstream /models endpoint to confirm the credentials are
+// accepted. Returns nil on success.
+func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials) error {
+	url := joinURL(c.baseURL(creds), "models")
+	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, c.headers(creds))
+	if err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 // Stream performs a streaming completion, emitting canonical chunks.

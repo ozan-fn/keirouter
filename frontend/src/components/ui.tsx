@@ -36,7 +36,7 @@ export function SectionHeader({
   const toneClasses: Record<string, string> = {
     accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
     neutral: "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300",
-    danger: "bg-[color:var(--color-danger)]/10 text-[color:var(--color-danger)]",
+    danger: "bg-[color:var(--color-danger)]/15 text-[color:var(--color-danger)]",
   };
   return (
     <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-4">
@@ -83,7 +83,7 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = "primary", className = "", ...props }: ButtonProps) {
   const base =
-    "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60";
+    "inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60";
   const variants = {
     primary: "bg-accent-600 text-white hover:bg-accent-700 shadow-sm",
     ghost:
@@ -97,7 +97,7 @@ export function Button({ variant = "primary", className = "", ...props }: Button
 export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={`w-full rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${className}`}
+      className={`w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${className}`}
       {...props}
     />
   );
@@ -106,7 +106,7 @@ export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInpu
 export function Select({ className = "", children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
-      className={`w-full rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${className}`}
+      className={`w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${className}`}
       {...props}
     >
       {children}
@@ -133,12 +133,12 @@ export function Badge({
   const tones = {
     neutral: "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300",
     accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
-    danger: "bg-[color:var(--color-danger)]/10 text-[color:var(--color-danger)]",
+    danger: "bg-[color:var(--color-danger)]/15 text-[color:var(--color-danger)]",
     success: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
   };
   return (
     <span
-      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${tones[tone]}`}
+      className={`inline-flex items-center rounded-lg px-2 py-0.5 text-xs font-medium ${tones[tone]}`}
     >
       {children}
     </span>
@@ -146,13 +146,13 @@ export function Badge({
 }
 
 // StatusDot is the small filled circle used next to "Healthy" / "Active" labels.
-export function StatusDot({ tone = "success" }: { tone?: "success" | "danger" | "warning" }) {
+export function StatusDot({ tone = "success", label }: { tone?: "success" | "danger" | "warning"; label?: string }) {
   const colors = {
     success: "bg-accent-500",
     danger: "bg-[color:var(--color-danger)]",
     warning: "bg-[color:var(--color-warning)]",
   };
-  return <span className={`inline-block h-1.5 w-1.5 rounded-full ${colors[tone]}`} />;
+  return <span className={`inline-block h-1.5 w-1.5 rounded-full ${colors[tone]}`} role="img" aria-label={label || tone} />;
 }
 
 export function EmptyState({ title, hint }: { title: string; hint?: string }) {
@@ -171,7 +171,7 @@ export function ErrorBanner({ message, className = "" }: { message: string; clas
   return (
     <div
       role="alert"
-      className={`flex items-start gap-2.5 rounded-lg border border-[color:var(--color-danger)]/30 bg-[color:var(--color-danger)]/8 px-3.5 py-2.5 ${className}`}
+      className={`flex items-start gap-2.5 rounded-lg border border-[color:var(--color-danger)]/30 bg-[color:var(--color-danger)]/10 px-3.5 py-2.5 ${className}`}
     >
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--color-danger)]" strokeWidth={2} />
       <p className="text-sm leading-snug text-[color:var(--color-danger)]">{message}</p>
@@ -191,7 +191,7 @@ export function ErrorCard({ message }: { message: string }) {
 
 export function Spinner() {
   return (
-    <div className="flex items-center justify-center py-10">
+    <div className="flex items-center justify-center py-10" role="status" aria-label="Loading">
       <div className="h-5 w-5 animate-spin rounded-full border-2 border-ink-300 border-t-accent-500" />
     </div>
   );
@@ -215,7 +215,7 @@ export function StatCard({
   const toneClasses: Record<string, string> = {
     accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
     warning: "bg-[color:var(--color-warning)]/12 text-[color:var(--color-warning)]",
-    danger: "bg-[color:var(--color-danger)]/10 text-[color:var(--color-danger)]",
+    danger: "bg-[color:var(--color-danger)]/15 text-[color:var(--color-danger)]",
   };
   const deltaColor =
     delta?.direction === "up"
@@ -255,13 +255,15 @@ export function SegmentedControl<T extends string>({
   options: { value: T; label: string }[];
 }) {
   return (
-    <div className="inline-flex rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-0.5">
+    <div className="inline-flex rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-0.5" role="radiogroup">
       {options.map((opt) => (
         <button
           key={opt.value}
           type="button"
+          role="radio"
+          aria-checked={value === opt.value}
           onClick={() => onChange(opt.value)}
-          className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+          className={`rounded-md px-3 py-2 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
             value === opt.value
               ? "bg-[var(--bg-elevated)] text-[var(--text)] shadow-sm"
               : "text-[var(--text-muted)] hover:text-[var(--text)]"
@@ -281,13 +283,13 @@ export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: 
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
         checked ? "bg-accent-600" : "bg-ink-300 dark:bg-ink-700"
       }`}
     >
       <span
         className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
-          checked ? "translate-x-[22px]" : "translate-x-0.5"
+          checked ? "translate-x-[22px]" : "translate-x-1"
         }`}
       />
     </button>

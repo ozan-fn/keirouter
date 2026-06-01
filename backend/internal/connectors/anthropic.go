@@ -2,6 +2,9 @@ package connectors
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/transform"
@@ -74,6 +77,35 @@ func (c *Anthropic) Chat(ctx context.Context, req *core.ChatRequest, creds core.
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 	return resp, nil
+}
+
+// Validate probes the upstream to confirm the credentials are accepted. It
+// tries GET /models first; if that returns a non-auth error (e.g. 404), it
+// falls back to a minimal POST /messages probe.
+func (c *Anthropic) Validate(ctx context.Context, creds core.Credentials) error {
+	base := strings.TrimRight(c.baseURL(creds), "/")
+	// Strip /messages suffix if present.
+	base = strings.TrimSuffix(base, "/messages")
+
+	// Try GET /models first (cheap, no token cost).
+	modelsURL := base + "/models"
+	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", modelsURL, nil, c.headers(creds))
+	if err == nil {
+		return nil
+	}
+	// If it's an auth error, the key is bad.
+	pe := core.AsProviderError(err)
+	if pe.Kind == core.ErrAuth {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	// Otherwise /models may not exist (404 etc); fall back to a minimal chat probe.
+	chatURL := joinURL(c.baseURL(creds), "messages")
+	probeBody := []byte(`{"model":"claude-sonnet-4-20250514","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`)
+	_, err = doJSON(ctx, c.id, "validate", chatURL, probeBody, c.headers(creds))
+	if err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 // Stream performs a streaming completion. Anthropic emits named SSE events; the

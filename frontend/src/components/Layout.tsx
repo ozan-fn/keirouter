@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -21,6 +21,8 @@ import {
   Waypoints,
   ScrollText,
   Zap,
+  Menu,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -67,13 +69,59 @@ const navGroups: NavGroup[] = [
 ];
 
 export function Layout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Close sidebar on navigation (mobile).
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  // Close sidebar on Escape.
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeSidebar();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sidebarOpen, closeSidebar]);
+
+  // Lock body scroll when mobile sidebar is open.
+  useEffect(() => {
+    if (sidebarOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [sidebarOpen]);
+
   return (
     <div className="flex h-full bg-[var(--bg)]">
-      <Sidebar />
+      {/* Desktop sidebar — hidden below lg. */}
+      <div className="hidden lg:flex">
+        <SidebarContent onNavigate={closeSidebar} />
+      </div>
+
+      {/* Mobile sidebar overlay + drawer. */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+          <div
+            className="fixed inset-0 bg-black/30"
+            style={{ animation: "overlay-in 0.15s ease-out" }}
+            onClick={closeSidebar}
+          />
+          <div
+            className="fixed inset-y-0 left-0 z-50 w-64 shadow-[var(--shadow-float)]"
+            style={{ animation: "drawer-in 0.2s ease-out" }}
+          >
+            <SidebarContent onNavigate={closeSidebar} />
+          </div>
+        </div>
+      )}
+
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar />
+        <TopBar onMenuToggle={() => setSidebarOpen((v) => !v)} />
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-6xl px-8 py-8">
+          <div className="mx-auto max-w-6xl px-4 py-5 sm:px-8 sm:py-8">
             <Outlet />
           </div>
         </main>
@@ -82,38 +130,50 @@ export function Layout() {
   );
 }
 
-function Sidebar() {
+function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-elevated)]">
-      <div className="px-5 py-5">
+    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-elevated)]">
+      <div className="flex items-center justify-between px-5 py-5">
         <img src="/keirouter-logo.png" alt="KeiRouter" className="h-10 w-full object-contain object-left" />
+        {/* Close button — only visible on mobile when rendered inside the drawer. */}
+        <button
+          onClick={onNavigate}
+          aria-label="Close navigation"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 lg:hidden"
+        >
+          <X className="h-5 w-5" />
+        </button>
       </div>
 
-      <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-2">
+      <nav aria-label="Main navigation" className="flex-1 space-y-6 overflow-y-auto px-3 py-2">
         {navGroups.map((group, gi) => (
-          <div key={gi} className="space-y-1">
+          <div key={gi} role="group" aria-label={group.heading}>
             {group.heading && (
               <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                 {group.heading}
               </p>
             )}
-            {group.items.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
-                    isActive
-                      ? "bg-accent-100 font-medium text-accent-700 dark:bg-accent-800/30 dark:text-accent-200"
-                      : "text-[var(--text-muted)] hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
-                  }`
-                }
-              >
-                <item.icon className="h-[18px] w-[18px] shrink-0" strokeWidth={2} />
-                {item.label}
-              </NavLink>
-            ))}
+            <ul className="space-y-1">
+              {group.items.map((item) => (
+                <li key={item.to}>
+                  <NavLink
+                    to={item.to}
+                    end={item.end}
+                    onClick={onNavigate}
+                    className={({ isActive }) =>
+                      `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
+                        isActive
+                          ? "bg-accent-100 font-medium text-accent-700 shadow-[inset_3px_0_0_0_var(--color-accent-600)] dark:bg-accent-800/30 dark:text-accent-200"
+                          : "text-[var(--text-muted)] hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+                      }`
+                    }
+                  >
+                    <item.icon className="h-[18px] w-[18px] shrink-0" strokeWidth={2} />
+                    {item.label}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
           </div>
         ))}
       </nav>
@@ -125,15 +185,27 @@ function Sidebar() {
   );
 }
 
-function TopBar() {
+function TopBar({ onMenuToggle }: { onMenuToggle: () => void }) {
   return (
-    <header className="flex h-16 shrink-0 items-center gap-4 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-6">
+    <header className="flex h-16 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 sm:px-6">
+      {/* Hamburger — visible on mobile only. */}
+      <button
+        onClick={onMenuToggle}
+        aria-label="Open navigation"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 lg:hidden"
+      >
+        <Menu className="h-5 w-5" />
+      </button>
+
       <div className="relative max-w-md flex-1">
+        <label htmlFor="topbar-search" className="sr-only">Search KeiRouter</label>
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
         <input
+          id="topbar-search"
           type="text"
           placeholder="Search KeiRouter…"
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] py-2 pl-9 pr-12 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+          aria-label="Search KeiRouter"
+          className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] py-2 pl-9 pr-12 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
         />
         <kbd className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
           ⌘K
@@ -141,10 +213,16 @@ function TopBar() {
       </div>
 
       <div className="ml-auto flex items-center gap-1">
-        <button className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800">
+        <button
+          aria-label="Help"
+          className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
+        >
           <CircleHelp className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
-        <button className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800">
+        <button
+          aria-label="Notifications"
+          className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
+        >
           <Bell className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
         <div className="mx-2 h-6 w-px bg-[var(--border)]" />
@@ -167,11 +245,23 @@ function ProfileMenu() {
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
+  // Close on Escape.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-ink-100 dark:hover:bg-ink-800"
+        aria-haspopup="true"
+        aria-expanded={open}
+        className="flex h-11 items-center gap-2.5 rounded-xl px-2 transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
       >
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-600 text-xs font-semibold text-white">
           K
@@ -184,18 +274,22 @@ function ProfileMenu() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-48 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] py-1 shadow-[var(--shadow-float)]">
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-50 mt-2 w-48 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] py-1 shadow-[var(--shadow-float)]"
+        >
           <div className="px-4 py-2.5">
             <p className="text-sm font-medium">Kei</p>
             <p className="text-xs text-[var(--text-muted)]">Administrator</p>
           </div>
           <div className="my-1 h-px bg-[var(--border)]" />
           <button
+            role="menuitem"
             onClick={async () => {
               await api.logout();
               qc.invalidateQueries({ queryKey: ["auth-status"] });
             }}
-            className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm text-[var(--text)] transition-colors hover:bg-ink-100 dark:hover:bg-ink-800"
+            className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-[var(--text)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
           >
             <LogOut className="h-4 w-4" strokeWidth={2} />
             Sign out
@@ -214,7 +308,7 @@ function LogoutButton() {
         await api.logout();
         qc.invalidateQueries({ queryKey: ["auth-status"] });
       }}
-      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
     >
       <Power className="h-[18px] w-[18px]" strokeWidth={2} />
       Sign out
@@ -234,7 +328,7 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <header className="mb-7 flex items-start justify-between gap-4">
+    <div className="mb-7 flex items-start justify-between gap-4">
       <div className="flex items-start gap-3">
         {Icon && (
           <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
@@ -247,6 +341,6 @@ export function PageHeader({
         </div>
       </div>
       {action}
-    </header>
+    </div>
   );
 }

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, KeyRound, X } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type Account } from "../lib/api";
+import { ArrowLeft, Plus, Trash2, Plug, KeyRound, X, Zap } from "lucide-react";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type UpstreamQuota } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { useToast } from "../components/Toast";
 import {
@@ -38,9 +38,19 @@ export function ProviderDetailPage() {
   const [label, setLabel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseURL, setBaseURL] = useState("");
+  const [region, setRegion] = useState("");
   const [error, setError] = useState("");
   const [oauthOpen, setOauthOpen] = useState(false);
   const [kiroOpen, setKiroOpen] = useState(false);
+
+  // Set default region when provider loads.
+  useEffect(() => {
+    if (provider?.default_region && !region) {
+      setRegion(provider.default_region);
+    }
+  }, [provider, region]);
+
+  const hasRegions = (provider?.regions?.length ?? 0) > 0;
 
   const create = useMutation({
     mutationFn: () =>
@@ -49,6 +59,7 @@ export function ProviderDetailPage() {
         label,
         api_key: apiKey,
         base_url: baseURL || undefined,
+        region: hasRegions ? region : undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -135,6 +146,11 @@ export function ProviderDetailPage() {
           )}
         </Card>
 
+        {/* Quota / credit info for accounts that support it (e.g. Kiro). */}
+        {myAccounts.filter((a) => !a.disabled).map((a) => (
+          <AccountQuotaCard key={`quota-${a.id}`} accountId={a.id} providerName={provider.display_name} />
+        ))}
+
         {isKiro && (
           <Card>
             <SectionHeader
@@ -193,13 +209,29 @@ export function ProviderDetailPage() {
                   required
                 />
               </Field>
-              <Field label="Base URL (optional)">
-                <Input
-                  value={baseURL}
-                  onChange={(e) => setBaseURL(e.target.value)}
-                  placeholder="for custom endpoints"
-                />
-              </Field>
+              {hasRegions ? (
+                <Field label="Region">
+                  <select
+                    value={region}
+                    onChange={(e) => setRegion(e.target.value)}
+                    className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm transition-colors focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/30"
+                  >
+                    {provider!.regions!.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              ) : (
+                <Field label="Base URL (optional)">
+                  <Input
+                    value={baseURL}
+                    onChange={(e) => setBaseURL(e.target.value)}
+                    placeholder="for custom endpoints"
+                  />
+                </Field>
+              )}
               {error && (
                 <div className="sm:col-span-2">
                   <ErrorBanner message={error} />
@@ -417,7 +449,7 @@ function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: (
             href={dc.verification_uri_complete || dc.verification_uri}
             target="_blank"
             rel="noopener noreferrer"
-            className="block w-full rounded-lg bg-accent-600 px-3 py-2 text-center text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-700"
+            className="block w-full rounded-xl bg-accent-600 px-3 py-2 text-center text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-700"
           >
             Open verification page
           </a>
@@ -427,6 +459,80 @@ function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: (
         </>
       )}
       {error && <p className="text-xs text-[color:var(--color-danger)]">{error}</p>}
+    </div>
+  );
+}
+
+// ---- Account quota card -----------------------------------------------------
+
+function AccountQuotaCard({ accountId, providerName }: { accountId: string; providerName: string }) {
+  const quota = useQuery({
+    queryKey: ["account-quota", accountId],
+    queryFn: () => api.accountQuota(accountId),
+    staleTime: 60_000,
+  });
+
+  if (quota.isLoading) return null;
+  if (!quota.data?.supported) return null;
+
+  const { plan_name, message, quotas } = quota.data;
+  if (!quotas || quotas.length === 0) return null;
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Credits & Quota"
+        description={plan_name ? `${providerName} — ${plan_name}` : `${providerName} usage limits`}
+        icon={Zap}
+      />
+      <div className="space-y-3 border-t border-[var(--border)] px-6 py-5">
+        {message && (
+          <p className="text-xs text-[var(--text-muted)]">{message}</p>
+        )}
+        {quotas.map((q) => (
+          <QuotaBar key={q.resource_type} quota={q} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function QuotaBar({ quota: q }: { quota: UpstreamQuota }) {
+  const pct = q.limit > 0 ? Math.min(100, Math.round((q.used / q.limit) * 100)) : 0;
+  const remainingPct = q.limit > 0 ? Math.round((q.remaining / q.limit) * 100) : 0;
+  const tone =
+    remainingPct < 30
+      ? "bg-[color:var(--color-danger)]"
+      : remainingPct < 70
+        ? "bg-[color:var(--color-warning)]"
+        : "bg-accent-500";
+  const label = q.resource_type
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const resetDate = q.reset_at ? new Date(q.reset_at) : null;
+  const resetLabel = resetDate && !isNaN(resetDate.getTime())
+    ? resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <span className="font-medium text-[var(--text)]">{label}</span>
+        <div className="flex items-center gap-3">
+          {resetLabel && (
+            <span className="text-[11px] text-[var(--text-muted)]">resets {resetLabel}</span>
+          )}
+          <span className="tabular-nums">
+            {q.used.toLocaleString()} / {q.limit.toLocaleString()}
+            <span className="ml-1 text-[var(--text-muted)]">({q.remaining.toLocaleString()} left)</span>
+          </span>
+        </div>
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+        <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(2, pct)}%` }} />
+      </div>
     </div>
   );
 }

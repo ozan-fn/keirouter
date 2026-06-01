@@ -1,6 +1,10 @@
 package connectors
 
-import "github.com/mydisha/keirouter/backend/internal/core"
+import (
+	"context"
+
+	"github.com/mydisha/keirouter/backend/internal/core"
+)
 
 // ModelSpec describes a single model offered by a provider, tagged with the
 // service kind it serves. It backs the per-kind discovery endpoints
@@ -128,7 +132,12 @@ var providerModels = map[string][]ModelSpec{
 		m("qwen3-coder-plus", "Qwen3 Coder Plus"),
 	},
 	"alicode-intl": {m("qwen3.5-plus", "Qwen3.5 Plus"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3-coder-plus", "Qwen3 Coder Plus")},
-	"xiaomi-mimo": {m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-flash", "MiMo V2 Flash")},
+	"xiaomi-mimo": {m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-omni", "MiMo V2 Omni"), m("mimo-v2-flash", "MiMo V2 Flash")},
+	"xiaomi-tokenplan": {
+		m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-pro", "MiMo V2 Pro"), m("mimo-v2-omni", "MiMo V2 Omni"),
+		k("mimo-v2-tts", "MiMo V2 TTS", core.ServiceTTS), k("mimo-v2.5-tts", "MiMo V2.5 TTS", core.ServiceTTS),
+		k("mimo-v2.5-tts-voiceclone", "MiMo V2.5 TTS Voice Clone", core.ServiceTTS), k("mimo-v2.5-tts-voicedesign", "MiMo V2.5 TTS Voice Design", core.ServiceTTS),
+	},
 	"volcengine-ark": {
 		m("Doubao-Seed-2.0-pro", "Doubao Seed 2.0 Pro"), m("DeepSeek-V4-Pro", "DeepSeek V4 Pro"),
 		m("GLM-5.1", "GLM 5.1"), m("Kimi-K2.6", "Kimi K2.6"),
@@ -138,6 +147,11 @@ var providerModels = map[string][]ModelSpec{
 		m("@cf/meta/llama-3.3-70b-instruct-fp8-fast", "Llama 3.3 70B"),
 		m("@cf/moonshotai/kimi-k2.5", "Kimi K2.5"), m("@cf/zai-org/glm-4.7-flash", "GLM 4.7 Flash"),
 		k("@cf/black-forest-labs/flux-1-schnell", "FLUX.1 Schnell", core.ServiceImage),
+	},
+	"kiro": {
+		m("auto", "Kiro Auto"), m("auto-thinking", "Kiro Auto (Thinking)"),
+		m("claude-sonnet-4.5", "Kiro Claude Sonnet 4.5"), m("claude-sonnet-4.5-thinking", "Kiro Claude Sonnet 4.5 (Thinking)"),
+		m("claude-sonnet-4.5-agentic", "Kiro Claude Sonnet 4.5 (Agentic)"), m("claude-sonnet-4.5-thinking-agentic", "Kiro Claude Sonnet 4.5 (Thinking + Agentic)"),
 	},
 	"opencode-go": {m("kimi-k2.6", "Kimi K2.6"), m("glm-5.1", "GLM 5.1"), m("qwen3.6-plus", "Qwen 3.6 Plus")},
 	"ollama": {m("gpt-oss:120b", "GPT OSS 120B"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3.5", "Qwen3.5")},
@@ -226,4 +240,65 @@ func FindModel(providerID, modelID string) (ModelSpec, bool) {
 		}
 	}
 	return ModelSpec{}, false
+}
+
+// LiveModelSource is implemented by connectors that can fetch their model
+// catalog from the upstream API at runtime (e.g. Kiro's ListAvailableModels).
+// The gateway uses this to supplement the static providerModels catalog with
+// live data when an account is connected.
+type LiveModelSource interface {
+	// ListModels fetches the live model catalog from the upstream. The returned
+	// models should already include any synthetic variants (e.g. Kiro's
+	// -thinking/-agentic expansions). The creds carry the access token needed
+	// to authenticate with the upstream.
+	ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error)
+}
+
+// liveModelSources is the registry of providers that support live model
+// discovery. Populated at init time.
+var liveModelSources = map[string]LiveModelSource{}
+
+// RegisterLiveModelSource registers a live model source for a provider.
+func RegisterLiveModelSource(provider string, src LiveModelSource) {
+	liveModelSources[provider] = src
+}
+
+// GetLiveModelSource returns the live model source for a provider, or nil.
+func GetLiveModelSource(provider string) LiveModelSource {
+	return liveModelSources[provider]
+}
+
+// QuotaEntry is one upstream quota bucket (e.g. AGENTIC_REQUEST usage).
+type QuotaEntry struct {
+	ResourceType string `json:"resource_type"`
+	Used         int    `json:"used"`
+	Limit        int    `json:"limit"`
+	Remaining    int    `json:"remaining"`
+	ResetAt      string `json:"reset_at,omitempty"`
+	PlanName     string `json:"plan_name,omitempty"`
+}
+
+// QuotaResult holds the upstream quota info for an account.
+type QuotaResult struct {
+	PlanName string        `json:"plan_name,omitempty"`
+	Quotas   []QuotaEntry  `json:"quotas"`
+	Message  string        `json:"message,omitempty"`
+}
+
+// QuotaSource is implemented by connectors that can fetch upstream quota/usage
+// info (e.g. Kiro's getUsageLimits).
+type QuotaSource interface {
+	FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaResult, error)
+}
+
+var quotaSources = map[string]QuotaSource{}
+
+// RegisterQuotaSource registers a quota source for a provider.
+func RegisterQuotaSource(provider string, src QuotaSource) {
+	quotaSources[provider] = src
+}
+
+// GetQuotaSource returns the quota source for a provider, or nil.
+func GetQuotaSource(provider string) QuotaSource {
+	return quotaSources[provider]
 }

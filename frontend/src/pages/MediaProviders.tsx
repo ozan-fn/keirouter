@@ -50,7 +50,7 @@ export function MediaProvidersPage() {
           <button
             key={k.id}
             onClick={() => setFilter(k.id)}
-            className={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors ${
+            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
               filter === k.id
                 ? "bg-accent-600 text-white shadow-sm"
                 : "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:bg-ink-100 dark:hover:bg-ink-800"

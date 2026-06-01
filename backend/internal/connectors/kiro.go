@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -54,6 +56,316 @@ func (c *Kiro) headers(creds core.Credentials) map[string]string {
 		h["Authorization"] = bearer(creds.AccessToken)
 	}
 	return mergeHeaders(h, creds.Headers)
+}
+
+// Validate probes the Kiro upstream by calling ListAvailableModels. If the
+// access token is missing or rejected, an error is returned.
+func (c *Kiro) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.AccessToken == "" {
+		return fmt.Errorf("validation failed for %s: no access token", c.id)
+	}
+	// Use ListAvailableModels to verify the token. Region defaults to us-east-1.
+	region := creds.Extra["kiro_region"]
+	if region == "" {
+		region = "us-east-1"
+	}
+	url := fmt.Sprintf("https://q.%s.amazonaws.com/ListAvailableModels?origin=AI_EDITOR", region)
+	h := map[string]string{
+		"Authorization": bearer(creds.AccessToken),
+		"Accept":        "application/json",
+		"User-Agent":    "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+	}
+	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, h)
+	if err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
+}
+
+// ---- Live model discovery ---------------------------------------------------
+
+// kiroModelEntry is the shape of one model in the ListAvailableModels response.
+type kiroModelEntry struct {
+	ModelID      string `json:"modelId"`
+	ModelName    string `json:"modelName"`
+	Description  string `json:"description"`
+	RateMultiplier float64 `json:"rateMultiplier"`
+	TokenLimits  struct {
+		MaxInputTokens int `json:"maxInputTokens"`
+	} `json:"tokenLimits"`
+}
+
+// ListModels fetches the live Kiro model catalog and expands each upstream
+// model into synthetic variants (-thinking, -agentic, -thinking-agentic).
+// Implements LiveModelSource.
+func (c *Kiro) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
+	if creds.AccessToken == "" {
+		return nil, fmt.Errorf("kiro: ListModels: no access token")
+	}
+	region := creds.Extra["kiro_region"]
+	if region == "" {
+		region = "us-east-1"
+	}
+	profileArn := creds.Extra["kiro_profile_arn"]
+
+	params := "origin=AI_EDITOR"
+	if profileArn != "" {
+		params += "&profileArn=" + profileArn
+	}
+	url := fmt.Sprintf("https://q.%s.amazonaws.com/ListAvailableModels?%s", region, params)
+
+	h := map[string]string{
+		"Authorization": bearer(creds.AccessToken),
+		"Accept":        "application/json",
+		"User-Agent":    "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+	}
+	body, err := doJSONMethod(ctx, http.MethodGet, c.id, "list-models", url, nil, h)
+	if err != nil {
+		return nil, fmt.Errorf("kiro: ListModels: %w", err)
+	}
+
+	var resp struct {
+		Models []kiroModelEntry `json:"models"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kiro: ListModels: parse: %w", err)
+	}
+
+	var out []ModelSpec
+	for _, m := range resp.Models {
+		upstream := m.ModelID
+		if upstream == "" {
+			continue
+		}
+		display := m.ModelName
+		if display == "" {
+			display = upstream
+		}
+		// Format display name with rate multiplier if non-default.
+		if m.RateMultiplier > 0 && m.RateMultiplier != 1.0 {
+			display = fmt.Sprintf("Kiro %s (%.1fx credit)", display, m.RateMultiplier)
+		} else {
+			display = "Kiro " + display
+		}
+
+		isAuto := upstream == "auto"
+
+		// Base model.
+		out = append(out, ModelSpec{ID: upstream, Name: display, Kind: core.ServiceLLM})
+		// Thinking variant.
+		out = append(out, ModelSpec{ID: upstream + "-thinking", Name: display + " (Thinking)", Kind: core.ServiceLLM})
+		// Agentic variant (skip for auto — Kiro picks model server-side).
+		if !isAuto {
+			out = append(out, ModelSpec{ID: upstream + "-agentic", Name: display + " (Agentic)", Kind: core.ServiceLLM})
+			out = append(out, ModelSpec{ID: upstream + "-thinking-agentic", Name: display + " (Thinking + Agentic)", Kind: core.ServiceLLM})
+		}
+	}
+	return out, nil
+}
+
+// ---- Quota fetching ---------------------------------------------------------
+
+// FetchQuota fetches upstream Kiro usage/quota info by probing the
+// getUsageLimits endpoints. Mirrors 9router's getKiroUsage() logic: tries
+// three endpoints in sequence and returns provider-specific error messages
+// based on the auth method.
+func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaResult, error) {
+	if creds.AccessToken == "" {
+		return &QuotaResult{Message: "No access token; cannot fetch quota."}, nil
+	}
+	region := creds.Extra["kiro_region"]
+	if region == "" {
+		region = "us-east-1"
+	}
+	profileArn := creds.Extra["kiro_profile_arn"]
+	authMethod := creds.Extra["kiro_auth_method"]
+	if profileArn == "" {
+		profileArn = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
+	}
+
+	authHeaders := map[string]string{
+		"Authorization":    bearer(creds.AccessToken),
+		"Accept":           "application/json",
+		"User-Agent":       "aws-sdk-js/1.0.0 KiroIDE",
+		"x-amz-user-agent": "aws-sdk-js/1.0.0 KiroIDE",
+	}
+
+	sawAuthError := false
+
+	// Attempt 1: GET on codewhisperer endpoint.
+	params := "isEmailRequired=true&origin=AI_EDITOR&resourceType=AGENTIC_REQUEST"
+	url1 := fmt.Sprintf("https://codewhisperer.us-east-1.amazonaws.com/getUsageLimits?%s", params)
+	body, err := doJSONMethod(ctx, http.MethodGet, c.id, "quota", url1, nil, authHeaders)
+	if err == nil {
+		return parseKiroQuota(body)
+	}
+	if isAuthError(err) {
+		sawAuthError = true
+	}
+
+	// Attempt 2: POST on codewhisperer endpoint.
+	postBody := map[string]string{"origin": "AI_EDITOR", "profileArn": profileArn, "resourceType": "AGENTIC_REQUEST"}
+	postJSON, _ := json.Marshal(postBody)
+	postHeaders := map[string]string{
+		"Authorization": bearer(creds.AccessToken),
+		"Content-Type":  "application/x-amz-json-1.0",
+		"x-amz-target":  "AmazonCodeWhispererService.GetUsageLimits",
+		"Accept":        "application/json",
+	}
+	body, err = doJSON(ctx, c.id, "quota", "https://codewhisperer.us-east-1.amazonaws.com", postJSON, postHeaders)
+	if err == nil {
+		return parseKiroQuota(body)
+	}
+	if isAuthError(err) {
+		sawAuthError = true
+	}
+
+	// Attempt 3: GET on q endpoint with profileArn.
+	qParams := fmt.Sprintf("origin=AI_EDITOR&profileArn=%s&resourceType=AGENTIC_REQUEST", profileArn)
+	url3 := fmt.Sprintf("https://q.%s.amazonaws.com/getUsageLimits?%s", region, qParams)
+	body, err = doJSONMethod(ctx, http.MethodGet, c.id, "quota", url3, nil, authHeaders)
+	if err == nil {
+		return parseKiroQuota(body)
+	}
+	if isAuthError(err) {
+		sawAuthError = true
+	}
+
+	// Return provider-specific messages matching 9router.
+	if sawAuthError {
+		switch authMethod {
+		case "idc":
+			return &QuotaResult{Message: "Kiro quota API is unavailable for the current AWS IAM Identity Center session. Chat may still work. If this persists after renewing your session, reconnect Kiro."}, nil
+		case "google", "github":
+			return &QuotaResult{Message: "Kiro quota API authentication expired. Chat may still work."}, nil
+		default:
+			return &QuotaResult{Message: "Kiro quota API rejected the current token. Chat may still work."}, nil
+		}
+	}
+	return &QuotaResult{Message: "Unable to fetch Kiro usage right now."}, nil
+}
+
+// isAuthError checks if a provider error is an auth failure (401/403).
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	pe := core.AsProviderError(err)
+	return pe.Kind == core.ErrAuth
+}
+
+// kiroQuotaBreakdown mirrors the JSON shape of one usageBreakdownList entry.
+// The precision fields can be either a bare number or an object {value, precision}.
+type kiroQuotaBreakdown struct {
+	ResourceType             string          `json:"resourceType"`
+	CurrentUsageWithPrecision json.RawMessage `json:"currentUsageWithPrecision"`
+	UsageLimitWithPrecision   json.RawMessage `json:"usageLimitWithPrecision"`
+	FreeTrialInfo           *struct {
+		CurrentUsageWithPrecision json.RawMessage `json:"currentUsageWithPrecision"`
+		UsageLimitWithPrecision   json.RawMessage `json:"usageLimitWithPrecision"`
+		FreeTrialExpiry          string          `json:"freeTrialExpiry"`
+	} `json:"freeTrialInfo"`
+}
+
+// parseKiroPrecision extracts an int from a field that may be a bare number or
+// an object {"value": N, "precision": "EXACT"}.
+func parseKiroPrecision(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	// Try bare number first.
+	var n int
+	if json.Unmarshal(raw, &n) == nil {
+		return n
+	}
+	// Try object form.
+	var obj struct {
+		Value int `json:"value"`
+	}
+	if json.Unmarshal(raw, &obj) == nil {
+		return obj.Value
+	}
+	return 0
+}
+
+// parseKiroQuota parses the getUsageLimits response into a QuotaResult.
+// Mirrors 9router's parseKiroQuotaData().
+func parseKiroQuota(body []byte) (*QuotaResult, error) {
+	var data struct {
+		UsageBreakdownList []kiroQuotaBreakdown `json:"usageBreakdownList"`
+		SubscriptionInfo   struct {
+			SubscriptionTitle string `json:"subscriptionTitle"`
+		} `json:"subscriptionInfo"`
+		NextDateReset string `json:"nextDateReset"`
+		ResetDate     string `json:"resetDate"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("parse quota: %w", err)
+	}
+
+	resetAt := data.NextDateReset
+	if resetAt == "" {
+		resetAt = data.ResetDate
+	}
+
+	planName := data.SubscriptionInfo.SubscriptionTitle
+	if planName == "" {
+		planName = "Kiro"
+	}
+
+	result := &QuotaResult{PlanName: planName}
+
+	for _, bd := range data.UsageBreakdownList {
+		used := parseKiroPrecision(bd.CurrentUsageWithPrecision)
+		limit := parseKiroPrecision(bd.UsageLimitWithPrecision)
+		remaining := limit - used
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		resourceType := strings.ToLower(bd.ResourceType)
+		if resourceType == "" {
+			resourceType = "unknown"
+		}
+
+		result.Quotas = append(result.Quotas, QuotaEntry{
+			ResourceType: resourceType,
+			Used:         used,
+			Limit:        limit,
+			Remaining:    remaining,
+			ResetAt:      resetAt,
+			PlanName:     planName,
+		})
+
+		// Free trial quota (if available).
+		if bd.FreeTrialInfo != nil {
+			freeUsed := parseKiroPrecision(bd.FreeTrialInfo.CurrentUsageWithPrecision)
+			freeLimit := parseKiroPrecision(bd.FreeTrialInfo.UsageLimitWithPrecision)
+			freeRemaining := freeLimit - freeUsed
+			if freeRemaining < 0 {
+				freeRemaining = 0
+			}
+			freeReset := bd.FreeTrialInfo.FreeTrialExpiry
+			if freeReset == "" {
+				freeReset = resetAt
+			}
+			result.Quotas = append(result.Quotas, QuotaEntry{
+				ResourceType: resourceType + "_freetrial",
+				Used:         freeUsed,
+				Limit:        freeLimit,
+				Remaining:    freeRemaining,
+				ResetAt:      freeReset,
+				PlanName:     planName,
+			})
+		}
+	}
+	return result, nil
+}
+
+func init() {
+	k := &Kiro{id: "kiro"}
+	RegisterLiveModelSource("kiro", k)
+	RegisterQuotaSource("kiro", k)
 }
 
 // Chat performs a non-streaming call by draining the event stream and folding

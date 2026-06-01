@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -27,7 +28,10 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/accounts", s.adminListAccounts)
 	r.Post("/accounts", s.adminCreateAccount)
+	r.Patch("/accounts/{id}", s.adminUpdateAccount)
 	r.Delete("/accounts/{id}", s.adminDeleteAccount)
+	r.Post("/accounts/{id}/test", s.adminTestAccount)
+	r.Get("/accounts/{id}/quota", s.adminAccountQuota)
 
 	r.Get("/chains", s.adminListChains)
 	r.Post("/chains", s.adminCreateChain)
@@ -85,7 +89,7 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 		if len(kinds) == 0 {
 			kinds = []core.ServiceKind{core.ServiceLLM}
 		}
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"id":            p.ID,
 			"display_name":  p.DisplayName,
 			"alias":         p.Alias,
@@ -103,7 +107,20 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 			"drivable":      connectors.DrivableDialect(p.Dialect) || webProvider(p.ID),
 			"input_per_m":   p.InputPerM,
 			"output_per_m":  p.OutputPerM,
-		})
+		}
+		if len(p.Regions) > 0 {
+			regions := make([]map[string]string, 0, len(p.Regions))
+			for _, r := range p.Regions {
+				regions = append(regions, map[string]string{
+					"id":       r.ID,
+					"label":    r.Label,
+					"base_url": r.BaseURL,
+				})
+			}
+			entry["regions"] = regions
+			entry["default_region"] = p.DefaultRegion
+		}
+		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
 }
@@ -196,6 +213,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		Label    string `json:"label"`
 		APIKey   string `json:"api_key"`
 		BaseURL  string `json:"base_url"`
+		Region   string `json:"region"`
 		Priority int    `json:"priority"`
 	}
 	if !decodeJSON(w, r, &body) {
@@ -226,6 +244,13 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: now,
 	}
 	meta := map[string]string{}
+	if body.Region != "" {
+		meta["region"] = body.Region
+		// Resolve region to base URL automatically.
+		if resolved := connectors.ResolveRegionBaseURL(body.Provider, body.Region); resolved != "" {
+			meta["base_url"] = resolved
+		}
+	}
 	if body.BaseURL != "" {
 		meta["base_url"] = body.BaseURL
 	}
@@ -233,6 +258,13 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Validate credentials against the upstream before persisting.
+	if verr := s.validateAccountCredentials(r.Context(), acc); verr != nil {
+		writeError(w, http.StatusBadRequest, "credential validation failed: "+verr.Error())
+		return
+	}
+
 	if err := s.accounts.Create(r.Context(), acc); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -246,6 +278,122 @@ func (s *Server) adminDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.accounts.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	var body struct {
+		Label    *string `json:"label"`
+		Priority *int    `json:"priority"`
+		Disabled *bool   `json:"disabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Label != nil {
+		acc.Label = *body.Label
+	}
+	if body.Priority != nil {
+		acc.Priority = *body.Priority
+	}
+	if body.Disabled != nil {
+		acc.Disabled = *body.Disabled
+	}
+	if err := s.accounts.Update(r.Context(), acc); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": acc.ID, "provider": acc.Provider, "label": acc.Label,
+		"priority": acc.Priority, "disabled": acc.Disabled,
+	})
+}
+
+func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.accounts.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	verr := s.validateAccountCredentials(r.Context(), acc)
+	if verr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":       acc.ID,
+			"provider": acc.Provider,
+			"label":    acc.Label,
+			"status":   "error",
+			"message":  verr.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":       acc.ID,
+		"provider": acc.Provider,
+		"label":    acc.Label,
+		"status":   "ok",
+	})
+}
+
+// adminAccountQuota fetches upstream quota/credit info for a specific account.
+func (s *Server) adminAccountQuota(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.accounts.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+
+	qs := connectors.GetQuotaSource(acc.Provider)
+	if qs == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"provider":  acc.Provider,
+			"supported": false,
+			"message":   "Upstream quota not available for this provider.",
+		})
+		return
+	}
+
+	if s.vault == nil {
+		writeError(w, http.StatusInternalServerError, "vault not configured")
+		return
+	}
+
+	creds, err := s.vault.Open(acc)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not decrypt credentials")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	quota, qerr := qs.FetchQuota(ctx, creds)
+	if qerr != nil {
+		writeError(w, http.StatusBadGateway, qerr.Error())
+		return
+	}
+
+	var quotas []map[string]any
+	for _, q := range quota.Quotas {
+		quotas = append(quotas, map[string]any{
+			"resource_type": q.ResourceType,
+			"used":          q.Used,
+			"limit":         q.Limit,
+			"remaining":     q.Remaining,
+			"reset_at":      q.ResetAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider":  acc.Provider,
+		"supported": true,
+		"plan_name": quota.PlanName,
+		"message":   quota.Message,
+		"quotas":    quotas,
+	})
 }
 
 // ---- chains -----------------------------------------------------------------
@@ -471,6 +619,32 @@ func (s *Server) adminDeleteAlias(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- helpers ----------------------------------------------------------------
+
+// validateAccountCredentials unseals an account's credentials and, if the
+// connector implements core.Validator, probes the upstream to confirm they are
+// accepted. Returns nil when validation passes or the connector does not support
+// it.
+func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Account) error {
+	if s.conns == nil || s.vault == nil {
+		return nil // can't validate without registry + vault
+	}
+	conn, err := s.conns.Get(acc.Provider)
+	if err != nil {
+		return nil // provider has no connector; skip validation
+	}
+	v, ok := conn.(core.Validator)
+	if !ok {
+		return nil // connector doesn't support validation
+	}
+	creds, err := s.vault.Open(acc)
+	if err != nil {
+		return errors.New("could not decrypt credentials")
+	}
+	// Apply a reasonable timeout for the probe.
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return v.Validate(probeCtx, creds)
+}
 
 // decodeJSON decodes a request body into v, writing a 400 on failure. It
 // returns false when the caller should stop.

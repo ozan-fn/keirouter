@@ -13,10 +13,22 @@ type Method = "builder-id" | "idc" | "import";
 export function KiroConnectModal({ onClose }: { onClose: () => void }) {
   const [method, setMethod] = useState<Method | null>(null);
 
+  // Close on Escape.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
       onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="kiro-modal-title"
     >
       <div
         className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
@@ -27,16 +39,18 @@ export function KiroConnectModal({ onClose }: { onClose: () => void }) {
             {method && (
               <button
                 onClick={() => setMethod(null)}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)]"
+                aria-label="Go back"
+                className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
               >
                 <ArrowLeft className="h-4 w-4" />
               </button>
             )}
-            <h2 className="text-base font-semibold">Connect Kiro</h2>
+            <h2 id="kiro-modal-title" className="text-base font-semibold">Connect Kiro</h2>
           </div>
           <button
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)]"
+            aria-label="Close"
+            className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
           >
             <X className="h-4 w-4" />
           </button>
@@ -92,7 +106,7 @@ function MethodCard({
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-start gap-3 rounded-xl border border-[var(--border)] p-4 text-left transition-colors hover:bg-ink-50"
+      className="flex w-full items-start gap-3 rounded-xl border border-[var(--border)] p-4 text-left transition-colors hover:bg-ink-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
     >
       <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-accent-700">
         <Icon className="h-[18px] w-[18px]" />
@@ -248,7 +262,7 @@ function DeviceFlow({
         href={dc.verification_uri_complete || dc.verification_uri}
         target="_blank"
         rel="noopener noreferrer"
-        className="block w-full rounded-lg bg-accent-600 px-3 py-2 text-center text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-700"
+        className="block w-full rounded-xl bg-accent-600 px-3 py-2 text-center text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-700"
       >
         Open verification page
       </a>

@@ -127,6 +127,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		Identity:    idSvc,
 		Auth:        authSvc,
 		Pipeline:    pipe,
+		Conns:       connRegistry,
 		Chains:      db.Chains(),
 		Aliases:     db.Aliases(),
 		Accounts:    db.Accounts(),

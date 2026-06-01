@@ -51,6 +51,16 @@ type Credentials struct {
 	StrictProxy bool   // fail request when proxy unreachable
 }
 
+// Validator is optionally implemented by connectors that can probe the upstream
+// to confirm credentials are valid before persisting an account. The gateway
+// calls Validate during account creation and on explicit connection-test
+// requests.
+type Validator interface {
+	// Validate probes the upstream with the given credentials and returns nil
+	// if they are accepted, or a descriptive error otherwise.
+	Validate(ctx context.Context, creds Credentials) error
+}
+
 // MediaConnector is implemented by providers that support embeddings. It is
 // optional; chat-only connectors omit it.
 type MediaConnector interface {
