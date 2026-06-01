@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
@@ -37,6 +38,11 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/usage", s.adminUsageSummary)
 
+	r.Get("/settings/endpoint", s.adminGetEndpointSettings)
+	r.Post("/settings/endpoint", s.adminUpdateEndpointSettings)
+
+	s.mountOAuth(r)
+
 	r.Get("/cli-tools", s.handleCLITools)
 }
 
@@ -44,20 +50,52 @@ const adminTenant = store.DefaultTenantID
 
 // ---- providers --------------------------------------------------------------
 
-func (s *Server) adminListProviders(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
+	// Optional ?kind= filter restricts to providers serving a service kind.
+	kindFilter := core.ServiceKind(r.URL.Query().Get("kind"))
+
 	specs := connectors.Catalog()
 	out := make([]map[string]any, 0, len(specs))
 	for _, p := range specs {
+		if kindFilter != "" && !core.HasServiceKind(p.ServiceKinds, kindFilter) {
+			continue
+		}
+		kinds := p.ServiceKinds
+		if len(kinds) == 0 {
+			kinds = []core.ServiceKind{core.ServiceLLM}
+		}
 		out = append(out, map[string]any{
-			"id":           p.ID,
-			"display_name": p.DisplayName,
-			"dialect":      p.Dialect,
-			"auth_kind":    p.AuthKind,
-			"input_per_m":  p.InputPerM,
-			"output_per_m": p.OutputPerM,
+			"id":            p.ID,
+			"display_name":  p.DisplayName,
+			"alias":         p.Alias,
+			"dialect":       p.Dialect,
+			"auth_kind":     p.AuthKind,
+			"auth_modes":    p.AuthModesOf(),
+			"service_kinds": kinds,
+			"color":         p.Color,
+			"website":       p.Website,
+			"api_key_url":   p.APIKeyURL,
+			"icon":          "/providers/" + p.ID + ".png",
+			"deprecated":    p.Deprecated,
+			"hidden":        p.Hidden,
+			"notice":        p.Notice,
+			"drivable":      connectors.DrivableDialect(p.Dialect) || webProvider(p.ID),
+			"input_per_m":   p.InputPerM,
+			"output_per_m":  p.OutputPerM,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"providers": out})
+}
+
+// webProvider reports whether a provider is served by the web search/fetch
+// connector (so it is routable even though its dialect is the generic openai).
+func webProvider(id string) bool {
+	switch id {
+	case "tavily", "exa", "serper", "brave-search", "searxng", "firecrawl", "jina-reader":
+		return true
+	default:
+		return false
+	}
 }
 
 // ---- API keys ---------------------------------------------------------------

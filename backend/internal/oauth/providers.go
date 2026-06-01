@@ -1,0 +1,132 @@
+package oauth
+
+// ProviderConfig holds the OAuth endpoints and client identity for one
+// provider. It is a curated subset of 9router's OAuth constants, covering the
+// providers KeiRouter can drive with the standard authorization-code and
+// device-code grants.
+type ProviderConfig struct {
+	// Provider is the catalog provider id this config authenticates.
+	Provider string
+	Flow     FlowType
+
+	ClientID     string
+	ClientSecret string // empty for public PKCE clients
+
+	AuthorizeURL  string // authorization_code(_pkce)
+	DeviceCodeURL string // device_code
+	TokenURL      string
+	RefreshURL    string // defaults to TokenURL when empty
+
+	// Scopes is space-joined into the request.
+	Scopes []string
+	// PKCEVerifierBytes overrides the default 32-byte verifier entropy.
+	PKCEVerifierBytes int
+	// UsesBasicAuth sends client_id:client_secret as HTTP Basic on token calls.
+	UsesBasicAuth bool
+	// ExtraAuthParams are appended to the authorize URL (provider quirks).
+	ExtraAuthParams map[string]string
+	// TokenContentType is "form" (x-www-form-urlencoded, default) or "json".
+	TokenContentType string
+}
+
+// refreshURL returns the configured refresh URL, defaulting to TokenURL.
+func (c ProviderConfig) refreshURL() string {
+	if c.RefreshURL != "" {
+		return c.RefreshURL
+	}
+	return c.TokenURL
+}
+
+// configs maps provider id -> OAuth config. Client ids/secrets are the public
+// values published by the upstream CLIs (same as 9router); they are not
+// secrets in the confidential sense.
+var configs = map[string]ProviderConfig{
+	"claude": {
+		Provider:     "claude",
+		Flow:         FlowAuthCodePKCE,
+		ClientID:     "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+		AuthorizeURL: "https://claude.ai/oauth/authorize",
+		TokenURL:     "https://api.anthropic.com/v1/oauth/token",
+		Scopes:       []string{"org:create_api_key", "user:profile", "user:inference"},
+		// Claude's token endpoint expects a JSON body.
+		TokenContentType: "json",
+		ExtraAuthParams:  map[string]string{"code": "true"},
+	},
+	"codex": {
+		Provider:        "codex",
+		Flow:            FlowAuthCodePKCE,
+		ClientID:        "app_EMoamEEZ73f0CkXaXp7hrann",
+		AuthorizeURL:    "https://auth.openai.com/oauth/authorize",
+		TokenURL:        "https://auth.openai.com/oauth/token",
+		Scopes:          []string{"openid", "profile", "email", "offline_access"},
+		ExtraAuthParams: map[string]string{"id_token_add_organizations": "true", "codex_cli_simplified_flow": "true", "originator": "codex_cli_rs"},
+	},
+	"gemini-cli": {
+		Provider:        "gemini-cli",
+		Flow:            FlowAuthCode,
+		ClientID:        "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+		ClientSecret:    "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",
+		AuthorizeURL:    "https://accounts.google.com/o/oauth2/v2/auth",
+		TokenURL:        "https://oauth2.googleapis.com/token",
+		Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
+		ExtraAuthParams: map[string]string{"access_type": "offline", "prompt": "consent"},
+	},
+	"antigravity": {
+		Provider:        "antigravity",
+		Flow:            FlowAuthCode,
+		ClientID:        "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+		ClientSecret:    "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",
+		AuthorizeURL:    "https://accounts.google.com/o/oauth2/v2/auth",
+		TokenURL:        "https://oauth2.googleapis.com/token",
+		Scopes:          []string{"https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
+		ExtraAuthParams: map[string]string{"access_type": "offline", "prompt": "consent"},
+	},
+	"xai": {
+		Provider:          "xai",
+		Flow:              FlowAuthCodePKCE,
+		ClientID:          "b1a00492-073a-47ea-816f-4c329264a828",
+		AuthorizeURL:      "https://auth.x.ai/oauth2/authorize",
+		TokenURL:          "https://auth.x.ai/oauth2/token",
+		Scopes:            []string{"openid", "profile", "email", "offline_access", "api"},
+		PKCEVerifierBytes: 96,
+		ExtraAuthParams:   map[string]string{"plan": "generic", "referrer": "cli-proxy-api"},
+	},
+	"github": {
+		Provider:      "github",
+		Flow:          FlowDeviceCode,
+		ClientID:      "Iv1.b507a08c87ecfe98",
+		DeviceCodeURL: "https://github.com/login/device/code",
+		TokenURL:      "https://github.com/login/oauth/access_token",
+		Scopes:        []string{"read:user"},
+	},
+	"qwen": {
+		Provider:      "qwen",
+		Flow:          FlowDeviceCode,
+		ClientID:      "f0304373b74a44d2b584a3fb70ca9e56",
+		DeviceCodeURL: "https://chat.qwen.ai/api/v1/oauth2/device/code",
+		TokenURL:      "https://chat.qwen.ai/api/v1/oauth2/token",
+		Scopes:        []string{"openid", "profile", "email", "model.completion"},
+	},
+	"cline": {
+		Provider:     "cline",
+		Flow:         FlowAuthCode,
+		AuthorizeURL: "https://api.cline.bot/api/v1/auth/authorize",
+		TokenURL:     "https://api.cline.bot/api/v1/auth/token",
+		RefreshURL:   "https://api.cline.bot/api/v1/auth/refresh",
+	},
+}
+
+// ConfigFor returns the OAuth config for a provider id.
+func ConfigFor(provider string) (ProviderConfig, bool) {
+	c, ok := configs[provider]
+	return c, ok
+}
+
+// SupportedProviders lists provider ids with an OAuth config, for discovery.
+func SupportedProviders() []string {
+	out := make([]string, 0, len(configs))
+	for id := range configs {
+		out = append(out, id)
+	}
+	return out
+}

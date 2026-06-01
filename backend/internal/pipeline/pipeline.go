@@ -15,6 +15,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/cache"
 	"github.com/mydisha/keirouter/backend/internal/capability"
+	"github.com/mydisha/keirouter/backend/internal/caveman"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/meter"
@@ -70,9 +71,12 @@ func New(d Deps) *Pipeline {
 type Options struct {
 	// Targets is the ordered fallback chain (provider+model candidates).
 	Targets []dispatch.Target
-	// Slimmer / Terse control token-saving transforms.
+	// Slimmer / Terse / Caveman control token-saving transforms. Slimmer (RTK)
+	// compresses bulky tool outputs on the input side; Terse and Caveman inject
+	// system-prompt directives that reduce output tokens.
 	Slimmer slimmer.Config
 	Terse   terse.Config
+	Caveman caveman.Config
 }
 
 // Result reports the outcome of a unary request for metering and audit.
@@ -264,7 +268,10 @@ func (p *Pipeline) preflight(ctx context.Context, req *core.ChatRequest, opts Op
 	return nil
 }
 
-// applyTokenSaving runs the slimmer and terse transforms in place.
+// applyTokenSaving runs the input-side (slimmer/RTK) and output-side
+// (terse, caveman) token-saving transforms in place. Terse and caveman both
+// inject system-prompt directives; if both are enabled, terse runs first and
+// caveman appends after, but in practice only one output-saver is used.
 func (p *Pipeline) applyTokenSaving(req *core.ChatRequest, opts Options) *slimmer.Stats {
 	var stats *slimmer.Stats
 	if p.slimmer != nil && opts.Slimmer.Enabled {
@@ -274,6 +281,7 @@ func (p *Pipeline) applyTokenSaving(req *core.ChatRequest, opts Options) *slimme
 		}
 	}
 	terse.Apply(req, opts.Terse)
+	caveman.Apply(req, opts.Caveman)
 	return stats
 }
 

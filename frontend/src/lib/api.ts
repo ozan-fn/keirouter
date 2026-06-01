@@ -4,10 +4,53 @@
 export interface Provider {
   id: string;
   display_name: string;
+  alias: string;
   dialect: string;
   auth_kind: string;
+  auth_modes: string[];
+  service_kinds: string[];
+  color: string;
+  website: string;
+  api_key_url: string;
+  icon: string;
+  deprecated: boolean;
+  hidden: boolean;
+  notice: string;
+  drivable: boolean;
   input_per_m: number;
   output_per_m: number;
+}
+
+export interface EndpointSettings {
+  rtk_enabled: boolean;
+  caveman_enabled: boolean;
+  caveman_level: string;
+  terse_enabled: boolean;
+  terse_level: string;
+}
+
+export interface OAuthProvider {
+  provider: string;
+  display_name: string;
+  flow: string; // authorization_code_pkce | authorization_code | device_code
+  icon: string;
+  color: string;
+}
+
+export interface DeviceCode {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  expires_in: number;
+  interval: number;
+}
+
+export interface OAuthPollResult {
+  status: string; // pending | complete
+  slow_down?: boolean;
+  id?: string;
+  provider?: string;
 }
 
 export interface APIKey {
@@ -138,6 +181,23 @@ export const api = {
   deleteBudget: (id: string) => request<void>("DELETE", `/budgets/${id}`),
 
   usage: (period: string) => request<UsageSummary>("GET", `/usage?period=${period}`),
+
+  endpointSettings: () => request<EndpointSettings>("GET", "/settings/endpoint"),
+  updateEndpointSettings: (patch: Partial<EndpointSettings>) =>
+    request<EndpointSettings>("POST", "/settings/endpoint", patch),
+
+  // OAuth provider connections.
+  oauthProviders: () => request<{ providers: OAuthProvider[] }>("GET", "/oauth/providers"),
+  oauthAuthorize: (provider: string, redirectUri: string) =>
+    request<{ authorize_url: string; state: string }>("POST", `/oauth/${provider}/authorize`, {
+      redirect_uri: redirectUri,
+    }),
+  oauthExchange: (provider: string, input: { code: string; state: string; label?: string }) =>
+    request<{ id: string; provider: string; email: string }>("POST", `/oauth/${provider}/exchange`, input),
+  oauthDeviceCode: (provider: string) =>
+    request<DeviceCode>("POST", `/oauth/${provider}/device-code`, {}),
+  oauthPoll: (provider: string, deviceCode: string, label?: string) =>
+    request<OAuthPollResult>("POST", `/oauth/${provider}/poll`, { device_code: deviceCode, label }),
 };
 
 export { APIError };

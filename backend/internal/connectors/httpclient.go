@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,6 +56,128 @@ func doJSON(ctx context.Context, provider, model, url string, body []byte, heade
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
 	}
 
+	if resp.StatusCode >= 400 {
+		return nil, httpStatusError(provider, model, resp, respBody)
+	}
+	return respBody, nil
+}
+
+// doJSONMethod performs a JSON request with an explicit method (GET/POST) and
+// returns the response body. A nil body sends no payload (for GET).
+func doJSONMethod(ctx context.Context, method, provider, model, url string, body []byte, headers map[string]string) ([]byte, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sharedClient.Do(req)
+	if err != nil {
+		return nil, transportError(ctx, provider, model, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpStatusError(provider, model, resp, respBody)
+	}
+	return respBody, nil
+}
+
+// rawResponse carries non-JSON response bytes plus the upstream content type,
+// used by binary endpoints like text-to-speech.
+type rawResponse struct {
+	Body        []byte
+	ContentType string
+}
+
+// doRaw performs a JSON POST but returns the raw response bytes and content
+// type instead of parsing JSON. Used for endpoints that return binary audio.
+func doRaw(ctx context.Context, provider, model, url string, body []byte, headers map[string]string) (*rawResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sharedClient.Do(req)
+	if err != nil {
+		return nil, transportError(ctx, provider, model, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
+	}
+	if resp.StatusCode >= 400 {
+		return nil, httpStatusError(provider, model, resp, respBody)
+	}
+	return &rawResponse{Body: respBody, ContentType: resp.Header.Get("Content-Type")}, nil
+}
+
+// multipartField is one non-file form field in a multipart upload.
+type multipartField struct{ Name, Value string }
+
+// doMultipart performs a multipart/form-data POST with a single file part plus
+// extra text fields, returning the JSON response body. Used by speech-to-text.
+func doMultipart(ctx context.Context, provider, model, url, fileField, filename string, fileData []byte, fields []multipartField, headers map[string]string) ([]byte, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	fw, err := mw.CreateFormFile(fileField, filename)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	}
+	if _, err := fw.Write(fileData); err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	}
+	for _, f := range fields {
+		if f.Value == "" {
+			continue
+		}
+		if err := mw.WriteField(f.Name, f.Value); err != nil {
+			return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := sharedClient.Do(req)
+	if err != nil {
+		return nil, transportError(ctx, provider, model, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: provider, Model: model, Message: "read body: " + err.Error(), Cause: err}
+	}
 	if resp.StatusCode >= 400 {
 		return nil, httpStatusError(provider, model, resp, respBody)
 	}

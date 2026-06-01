@@ -46,20 +46,34 @@
 }
 
 :root {
-  --bg: var(--color-ink-50);
+  /* Warm off-white app canvas, slightly cooler elevated surfaces. */
+  --bg: #f7f6f3;
   --bg-elevated: #ffffff;
+  --bg-subtle: var(--color-ink-100);
   --border: var(--color-ink-200);
+  --border-strong: var(--color-ink-300);
   --text: var(--color-ink-800);
   --text-muted: var(--color-ink-500);
+
+  /* Soft, layered shadows — never harsh. */
+  --shadow-card: 0 1px 2px rgba(26, 26, 24, 0.04), 0 1px 3px rgba(26, 26, 24, 0.06);
+  --shadow-pop: 0 4px 12px rgba(26, 26, 24, 0.08), 0 2px 4px rgba(26, 26, 24, 0.05);
+  --shadow-float: 0 12px 32px rgba(26, 26, 24, 0.12), 0 4px 8px rgba(26, 26, 24, 0.06);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: var(--color-ink-950);
     --bg-elevated: var(--color-ink-900);
+    --bg-subtle: var(--color-ink-800);
     --border: var(--color-ink-800);
+    --border-strong: var(--color-ink-700);
     --text: var(--color-ink-100);
     --text-muted: var(--color-ink-400);
+
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.35);
+    --shadow-pop: 0 4px 12px rgba(0, 0, 0, 0.4), 0 2px 4px rgba(0, 0, 0, 0.3);
+    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.5), 0 4px 8px rgba(0, 0, 0, 0.35);
   }
 }
 
@@ -69,6 +83,14 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Serif display for page titles — gives the calm, editorial feel in the
+   attachment without pulling in a heavy webfont. */
+.font-display {
+  font-family: "Georgia", "Times New Roman", ui-serif, serif;
+  letter-spacing: -0.01em;
 }
 
 /* Thin, unobtrusive scrollbars. */

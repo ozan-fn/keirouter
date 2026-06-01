@@ -8,8 +8,6 @@ import (
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
-	"github.com/mydisha/keirouter/backend/internal/slimmer"
-	"github.com/mydisha/keirouter/backend/internal/terse"
 	"github.com/mydisha/keirouter/backend/internal/transform"
 )
 
@@ -73,6 +71,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		Targets: targets,
 		Slimmer: s.slimmerConfig(),
 		Terse:   s.terseConfig(),
+		Caveman: s.cavemanConfig(),
 	}
 
 	if req.Stream {
@@ -177,17 +176,6 @@ func (s *Server) writeProviderError(w http.ResponseWriter, err error) {
 		status = http.StatusInternalServerError
 	}
 	writeError(w, status, pe.Message)
-}
-
-// slimmerConfig resolves the slimmer settings (defaults on; later sourced from
-// settings/key config).
-func (s *Server) slimmerConfig() slimmer.Config {
-	return slimmer.Config{Enabled: true}
-}
-
-// terseConfig resolves the terse-mode settings (defaults off).
-func (s *Server) terseConfig() terse.Config {
-	return terse.Config{Enabled: false, Level: terse.LevelMedium}
 }
 
 // detectClient identifies the calling tool from request headers, used for

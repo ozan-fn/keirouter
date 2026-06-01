@@ -11,6 +11,19 @@ const (
 	DialectAnthropic       Dialect = "anthropic"        // /v1/messages
 	DialectGemini          Dialect = "gemini"           // :generateContent
 	DialectOllama          Dialect = "ollama"           // /api/chat
+
+	// Provider-specific upstream dialects. These identify reverse-engineered or
+	// vendor-proprietary wire formats spoken by certain providers. A provider
+	// carrying one of these is registered for discovery and account management,
+	// but only becomes routable once a dedicated connector for the dialect
+	// lands. The default registry skips creating connectors for dialects it
+	// cannot yet drive.
+	DialectKiro        Dialect = "kiro"         // AWS CodeWhisperer eventstream
+	DialectGeminiCLI   Dialect = "gemini_cli"   // Google CloudCode internal
+	DialectVertex      Dialect = "vertex"       // Vertex AI (SA-authenticated)
+	DialectCursor      Dialect = "cursor"       // Cursor connect-proto
+	DialectAntigravity Dialect = "antigravity"  // Antigravity CloudCode
+	DialectCommandCode Dialect = "command_code" // Command Code generate API
 )
 
 // ChatRequest is the canonical, dialect-independent representation of a chat

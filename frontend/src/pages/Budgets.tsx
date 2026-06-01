@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Wallet, Plus, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, CardHeader, Button, Input, Select, Field, Badge, Spinner, EmptyState } from "../components/ui";
+import { Card, SectionHeader, CardHeader, Button, Input, Select, Field, Badge, Spinner, EmptyState } from "../components/ui";
 
 const periods = ["daily", "weekly", "monthly", "total"];
 
@@ -33,13 +34,14 @@ export function BudgetsPage() {
     <>
       <PageHeader
         title="Budgets"
+        icon={Wallet}
         description="Hard spend caps. When a budget is exhausted, matching requests are blocked until the period resets."
       />
 
       <Card className="mb-6">
-        <CardHeader title="Create budget" />
+        <SectionHeader title="Create budget" description="Set a spending cap for a period." icon={Plus} />
         <form
-          className="flex items-end gap-3 p-5"
+          className="flex flex-wrap items-end gap-3 px-6 pb-6"
           onSubmit={(e) => {
             e.preventDefault();
             if (parseFloat(limit) > 0) create.mutate();
@@ -62,6 +64,7 @@ export function BudgetsPage() {
             </Field>
           </div>
           <Button type="submit" disabled={create.isPending || !(parseFloat(limit) > 0)}>
+            <Plus className="h-4 w-4" />
             {create.isPending ? "Creating…" : "Create budget"}
           </Button>
           {error && <span className="text-xs text-[color:var(--color-danger)]">{error}</span>}
@@ -77,7 +80,7 @@ export function BudgetsPage() {
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {budgets.data.budgets.map((b) => (
-              <div key={b.id} className="flex items-center justify-between px-5 py-3">
+              <div key={b.id} className="flex items-center justify-between px-6 py-4">
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">${(b.limit_micros / 1_000_000).toFixed(2)}</span>
@@ -88,6 +91,7 @@ export function BudgetsPage() {
                   <p className="mt-0.5 text-xs text-[var(--text-muted)]">alert at {b.alert_pct}%</p>
                 </div>
                 <Button variant="danger" onClick={() => remove.mutate(b.id)}>
+                  <Trash2 className="h-4 w-4" />
                   Remove
                 </Button>
               </div>

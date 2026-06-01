@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { KeyRound, Plus, Copy, Check } from "lucide-react";
 import { api, type CreatedKey } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, CardHeader, Button, Input, Field, Badge, Spinner, EmptyState } from "../components/ui";
+import { Card, SectionHeader, CardHeader, Button, Input, Field, Badge, Spinner, EmptyState } from "../components/ui";
 
 export function KeysPage() {
   const qc = useQueryClient();
@@ -10,6 +11,7 @@ export function KeysPage() {
 
   const [name, setName] = useState("");
   const [created, setCreated] = useState<CreatedKey | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const create = useMutation({
     mutationFn: () => api.createKey(name),
@@ -27,18 +29,37 @@ export function KeysPage() {
 
   return (
     <>
-      <PageHeader title="API Keys" description="Keys your tools use to authenticate. Stored hashed; shown once." />
+      <PageHeader
+        title="API Keys"
+        icon={KeyRound}
+        description="Keys your tools use to authenticate. Stored hashed; shown once."
+      />
 
       {created && (
-        <Card className="mb-6 border-accent-300">
-          <div className="p-5">
+        <Card className="mb-6 border-accent-300 dark:border-accent-700">
+          <div className="p-6">
             <p className="text-sm font-medium">Copy your new key now — it won't be shown again.</p>
             <div className="mt-3 flex items-center gap-2">
-              <code className="flex-1 overflow-x-auto rounded-md bg-ink-100 px-3 py-2 font-mono text-sm dark:bg-ink-800">
+              <code className="flex-1 overflow-x-auto rounded-lg bg-[var(--bg-subtle)] px-3 py-2.5 font-mono text-sm">
                 {created.key}
               </code>
-              <Button onClick={() => navigator.clipboard.writeText(created.key)}>Copy</Button>
-              <Button variant="ghost" onClick={() => setCreated(null)}>
+              <Button
+                onClick={() => {
+                  navigator.clipboard.writeText(created.key);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                }}
+              >
+                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                {copied ? "Copied" : "Copy"}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setCreated(null);
+                  setCopied(false);
+                }}
+              >
                 Done
               </Button>
             </div>
@@ -47,9 +68,9 @@ export function KeysPage() {
       )}
 
       <Card className="mb-6">
-        <CardHeader title="Create key" />
+        <SectionHeader title="Create key" description="Generate a new API key for a tool or device." icon={Plus} />
         <form
-          className="flex items-end gap-3 p-5"
+          className="flex items-end gap-3 px-6 pb-6"
           onSubmit={(e) => {
             e.preventDefault();
             if (name.trim()) create.mutate();
@@ -61,6 +82,7 @@ export function KeysPage() {
             </Field>
           </div>
           <Button type="submit" disabled={create.isPending || !name.trim()}>
+            <Plus className="h-4 w-4" />
             {create.isPending ? "Creating…" : "Create key"}
           </Button>
         </form>
@@ -75,11 +97,11 @@ export function KeysPage() {
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {keys.data.keys.map((k) => (
-              <div key={k.id} className="flex items-center justify-between px-5 py-3">
+              <div key={k.id} className="flex items-center justify-between px-6 py-4">
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{k.name}</span>
-                    {k.disabled && <Badge tone="danger">disabled</Badge>}
+                    {k.disabled ? <Badge tone="danger">disabled</Badge> : <Badge tone="success">active</Badge>}
                   </div>
                   <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{k.display}</p>
                 </div>

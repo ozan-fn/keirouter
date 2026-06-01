@@ -39,11 +39,19 @@ type ConnectorSource interface {
 	Get(provider string) (core.Connector, error)
 }
 
+// TokenRefresher refreshes an account's OAuth access token just-in-time when it
+// is expired or about to expire. It is optional; a nil refresher means accounts
+// are used as-is. The oauth.TokenManager implements this.
+type TokenRefresher interface {
+	EnsureFresh(ctx context.Context, acc store.Account) (store.Account, error)
+}
+
 // Dispatcher walks fallback chains, yielding resolved attempts.
 type Dispatcher struct {
 	conns    ConnectorSource
 	accounts *store.AccountRepo
 	vault    *vault.Vault
+	refresher TokenRefresher
 	// defaultCooldown is applied to an account when an error carries no
 	// upstream-specified Retry-After.
 	defaultCooldown time.Duration
@@ -58,6 +66,10 @@ func New(conns ConnectorSource, accounts *store.AccountRepo, v *vault.Vault) *Di
 		defaultCooldown: 60 * time.Second,
 	}
 }
+
+// SetTokenRefresher installs an OAuth token refresher, consulted before opening
+// each account's credentials.
+func (d *Dispatcher) SetTokenRefresher(r TokenRefresher) { d.refresher = r }
 
 // Plan resolves the ordered list of attempts for a chain of targets, scoped to
 // a tenant and constrained to the given required capabilities. It returns an
@@ -95,6 +107,17 @@ func (d *Dispatcher) Plan(ctx context.Context, tenantID string, targets []Target
 			if acc.CooldownUntil != nil && acc.CooldownUntil.After(now) {
 				lastReason = fmt.Sprintf("account %s on cooldown", acc.ID)
 				continue
+			}
+			// Refresh an expiring OAuth access token before use, so the
+			// connector always receives a live token. A refresh failure skips
+			// this account and falls back to the next.
+			if d.refresher != nil {
+				refreshed, rerr := d.refresher.EnsureFresh(ctx, acc)
+				if rerr != nil {
+					lastReason = rerr.Error()
+					continue
+				}
+				acc = refreshed
 			}
 			creds, err := d.vault.Open(acc)
 			if err != nil {

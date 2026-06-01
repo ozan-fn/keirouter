@@ -46,17 +46,47 @@ func (r *Registry) Providers() []string {
 	return out
 }
 
+// webOnlyProviders serve only web search and/or web fetch. They get a
+// WebConnector rather than the OpenAI chat connector, because their wire
+// formats are provider-specific and they do not implement chat.
+var webOnlyProviders = map[string]bool{
+	"tavily": true, "exa": true, "serper": true, "brave-search": true,
+	"searxng": true, "firecrawl": true, "jina-reader": true,
+}
+
 // DefaultRegistry builds the built-in connector set from the provider catalog.
 // Each entry maps a provider id to its dialect and default endpoint.
+//
+// Only providers whose upstream dialect KeiRouter can natively drive get a
+// connector: OpenAI Chat Completions and Anthropic Messages, plus the
+// dedicated web search/fetch connectors. Providers that speak a proprietary or
+// not-yet-implemented dialect (kiro, cursor, gemini, vertex, ...) remain in the
+// catalog for discovery and account management but are not routable until a
+// dedicated connector lands.
 func DefaultRegistry() *Registry {
 	var conns []core.Connector
 	for _, p := range Catalog() {
-		switch p.Dialect {
-		case core.DialectAnthropic:
+		switch {
+		case webOnlyProviders[p.ID]:
+			conns = append(conns, NewWebConnector(p.ID, p.BaseURL))
+		case p.Dialect == core.DialectAnthropic:
 			conns = append(conns, NewAnthropic(p.ID, p.BaseURL))
-		default:
+		case p.Dialect == core.DialectOpenAI:
 			conns = append(conns, NewOpenAICompatible(p.ID, p.BaseURL))
+		default:
+			// Dialect not yet drivable; skip connector creation.
 		}
 	}
 	return NewRegistry(conns...)
+}
+
+// DrivableDialect reports whether KeiRouter has a connector that can drive the
+// given upstream dialect today.
+func DrivableDialect(d core.Dialect) bool {
+	switch d {
+	case core.DialectOpenAI, core.DialectAnthropic:
+		return true
+	default:
+		return false
+	}
 }

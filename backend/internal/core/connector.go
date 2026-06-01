@@ -45,11 +45,39 @@ type Credentials struct {
 	Extra map[string]string
 }
 
-// MediaConnector is implemented by providers that support non-chat modalities.
-// It is optional; chat-only connectors omit it.
+// MediaConnector is implemented by providers that support embeddings. It is
+// optional; chat-only connectors omit it.
 type MediaConnector interface {
 	// Embeddings produces vector embeddings for the given inputs.
 	Embeddings(ctx context.Context, req *EmbeddingRequest, creds Credentials) (*EmbeddingResponse, error)
+}
+
+// ImageConnector is implemented by providers that generate images.
+type ImageConnector interface {
+	GenerateImage(ctx context.Context, req *ImageRequest, creds Credentials) (*ImageResponse, error)
+}
+
+// TranscriptionConnector is implemented by providers that transcribe audio
+// (speech-to-text).
+type TranscriptionConnector interface {
+	Transcribe(ctx context.Context, req *TranscriptionRequest, creds Credentials) (*TranscriptionResponse, error)
+}
+
+// SpeechConnector is implemented by providers that synthesize speech
+// (text-to-speech).
+type SpeechConnector interface {
+	Synthesize(ctx context.Context, req *SpeechRequest, creds Credentials) (*SpeechResponse, error)
+}
+
+// SearchConnector is implemented by providers that run web searches.
+type SearchConnector interface {
+	Search(ctx context.Context, req *SearchRequest, creds Credentials) (*SearchResponse, error)
+}
+
+// FetchConnector is implemented by providers that fetch and extract URL
+// content.
+type FetchConnector interface {
+	Fetch(ctx context.Context, req *FetchRequest, creds Credentials) (*FetchResponse, error)
 }
 
 // EmbeddingRequest is a canonical embeddings request.

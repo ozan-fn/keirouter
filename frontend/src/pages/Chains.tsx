@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { GitBranch, Plus, Trash2, X, ArrowRight } from "lucide-react";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, CardHeader, Button, Input, Select, Field, Badge, Spinner, EmptyState } from "../components/ui";
+import { Card, SectionHeader, CardHeader, Button, Input, Select, Field, Badge, Spinner, EmptyState } from "../components/ui";
 
 interface DraftStep {
   provider: string;
@@ -44,13 +45,14 @@ export function ChainsPage() {
     <>
       <PageHeader
         title="Routing Chains"
+        icon={GitBranch}
         description="Ordered fallback. Each request tries steps top to bottom, skipping models that can't honor it."
       />
 
       <Card className="mb-6">
-        <CardHeader title="Create chain" />
+        <SectionHeader title="Create chain" description="Define an ordered list of provider/model fallbacks." icon={Plus} />
         <form
-          className="space-y-4 p-5"
+          className="space-y-4 px-6 pb-6"
           onSubmit={(e) => {
             e.preventDefault();
             if (valid) create.mutate();
@@ -64,7 +66,9 @@ export function ChainsPage() {
             <span className="text-xs font-medium text-[var(--text-muted)]">Fallback steps</span>
             {steps.map((step, i) => (
               <div key={i} className="flex items-center gap-2">
-                <span className="w-5 text-center text-xs text-[var(--text-muted)]">{i + 1}</span>
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--bg-subtle)] text-xs font-medium text-[var(--text-muted)]">
+                  {i + 1}
+                </span>
                 <div className="w-48">
                   <Select value={step.provider} onChange={(e) => updateStep(i, { provider: e.target.value })}>
                     <option value="">Provider…</option>
@@ -82,14 +86,20 @@ export function ChainsPage() {
                   placeholder="model id, e.g. gpt-4o"
                 />
                 {steps.length > 1 && (
-                  <Button variant="ghost" type="button" onClick={() => setSteps((s) => s.filter((_, idx) => idx !== i))}>
-                    ✕
+                  <Button
+                    variant="ghost"
+                    type="button"
+                    className="px-2"
+                    onClick={() => setSteps((s) => s.filter((_, idx) => idx !== i))}
+                  >
+                    <X className="h-4 w-4" />
                   </Button>
                 )}
               </div>
             ))}
             <Button variant="ghost" type="button" onClick={() => setSteps((s) => [...s, { provider: "", model: "" }])}>
-              + Add step
+              <Plus className="h-4 w-4" />
+              Add step
             </Button>
           </div>
 
@@ -111,21 +121,24 @@ export function ChainsPage() {
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {chains.data.chains.map((c) => (
-              <div key={c.id} className="px-5 py-3">
+              <div key={c.id} className="px-6 py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-sm font-medium">chain:{c.name}</span>
-                    <Badge>{c.strategy}</Badge>
+                    <Badge tone="accent">{c.strategy}</Badge>
                   </div>
                   <Button variant="danger" onClick={() => remove.mutate(c.id)}>
+                    <Trash2 className="h-4 w-4" />
                     Remove
                   </Button>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {c.steps.map((s, i) => (
-                    <span key={i} className="font-mono text-xs text-[var(--text-muted)]">
-                      {i > 0 && <span className="mr-1.5">→</span>}
-                      {s.provider}/{s.model}
+                    <span key={i} className="flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)]">
+                      {i > 0 && <ArrowRight className="h-3 w-3" />}
+                      <span className="rounded-md bg-[var(--bg-subtle)] px-2 py-0.5">
+                        {s.provider}/{s.model}
+                      </span>
                     </span>
                   ))}
                 </div>

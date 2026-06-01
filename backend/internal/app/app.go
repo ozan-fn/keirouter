@@ -22,6 +22,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/gateway"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/meter"
+	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
@@ -87,6 +88,9 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 	mtr := meter.New(db.Usage(), pricing)
 	bud := budget.New(db.Budgets(), db.Usage())
 	disp := dispatch.New(connRegistry, db.Accounts(), v)
+	// Refresh expiring OAuth access tokens just-in-time before each upstream
+	// call, persisting the rotated tokens.
+	disp.SetTokenRefresher(oauth.NewTokenManager(v, db.Accounts()))
 	slim := slimmer.Default()
 	metrics := observ.New()
 
@@ -122,6 +126,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		Accounts: db.Accounts(),
 		Budgets:  db.Budgets(),
 		Usage:    db.Usage(),
+		Settings: db.Settings(),
 		Vault:    v,
 		Codecs:   codecs,
 		Metrics:  metrics,

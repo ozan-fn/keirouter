@@ -17,6 +17,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/identity"
+	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
 	"github.com/mydisha/keirouter/backend/internal/store"
@@ -35,9 +36,11 @@ type Server struct {
 	accounts *store.AccountRepo
 	budgets  *store.BudgetRepo
 	usage    *store.UsageRepo
+	settings *store.SettingsRepo
 	vault    *vault.Vault
 	codecs   *transform.Registry
 	metrics  *observ.Metrics
+	oauthSessions *oauth.SessionStore
 	router   chi.Router
 }
 
@@ -52,6 +55,7 @@ type Deps struct {
 	Accounts *store.AccountRepo
 	Budgets  *store.BudgetRepo
 	Usage    *store.UsageRepo
+	Settings *store.SettingsRepo
 	Vault    *vault.Vault
 	Codecs   *transform.Registry
 	Metrics  *observ.Metrics
@@ -73,9 +77,11 @@ func New(d Deps) *Server {
 		accounts: d.Accounts,
 		budgets:  d.Budgets,
 		usage:    d.Usage,
+		settings: d.Settings,
 		vault:    d.Vault,
 		codecs:   d.Codecs,
 		metrics:  d.Metrics,
+		oauthSessions: oauth.NewSessionStore(),
 	}
 	s.router = s.routes()
 	return s
@@ -113,7 +119,23 @@ func (s *Server) routes() chi.Router {
 		r.Use(s.authMiddleware)
 		r.Post("/v1/chat/completions", s.handleOpenAIChat)
 		r.Post("/v1/messages", s.handleAnthropicMessages)
+
+		// Gemini-native generateContent endpoint. The model + action are in the
+		// URL path ({model}:generateContent), matching Google's SDK clients.
+		r.Post("/v1beta/models/{modelAction}", s.handleGeminiGenerate)
+
+		// Multi-capability endpoints (Phase 2).
+		r.Post("/v1/embeddings", s.handleEmbeddings)
+		r.Post("/v1/images/generations", s.handleImageGeneration)
+		r.Post("/v1/audio/speech", s.handleAudioSpeech)
+		r.Post("/v1/audio/transcriptions", s.handleAudioTranscription)
+		r.Post("/v1/search", s.handleWebSearch)
+		r.Post("/v1/web/fetch", s.handleWebFetch)
+
+		// Model discovery.
 		r.Get("/v1/models", s.handleListModels)
+		r.Get("/v1/models/info", s.handleModelInfo)
+		r.Get("/v1/models/{kind}", s.handleListModelsByKind)
 	})
 
 	// Dashboard auth endpoints (login/logout/status) are loopback-guarded but
@@ -169,32 +191,6 @@ func errorType(status int) string {
 	default:
 		return "api_error"
 	}
-}
-
-// modelInfo is a single entry in the /v1/models listing.
-type modelInfo struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	OwnedBy string `json:"owned_by"`
-}
-
-// handleListModels reports the chains configured for the tenant as virtual
-// models the client can target, plus a hint about the provider/model form.
-func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
-	key, _ := authedKey(r.Context())
-	tenantID := tenantOf(key)
-
-	chains, err := s.chains.ListByTenant(r.Context(), tenantID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list models")
-		return
-	}
-
-	data := make([]modelInfo, 0, len(chains))
-	for _, c := range chains {
-		data = append(data, modelInfo{ID: c.Name, Object: "model", OwnedBy: "keirouter"})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
 // tenantOf returns the tenant id for an authenticated key, defaulting to the

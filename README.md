@@ -10,11 +10,16 @@ Written in Go for a small footprint (single static binary, ~20–30MB RAM idle,
 instant startup) with a React + Tailwind dashboard.
 
 > Status: active development. Implemented and tested: the core proxy; OpenAI /
-> Anthropic / Gemini format translation (unary + streaming); token saving;
-> capability-aware routing/fallback; metering; budgets; embeddings; a semantic
-> response cache; Prometheus metrics; dashboard auth with first-run onboarding;
-> CLI tool auto-config; and the React dashboard. Additional providers, OAuth
-> flows, and the MCP bridge are in progress.
+> Anthropic / Gemini format translation (unary + streaming); a 50+ provider
+> catalog with brand icons; multi-capability routing (chat, embeddings, image,
+> speech-to-text, text-to-speech, web search, web fetch) with per-kind model
+> discovery; RTK input compression + Caveman/terse output compression; OAuth
+> provider connections (authorization-code + PKCE and device-code flows) with
+> automatic token refresh; capability-aware routing/fallback; routing chains
+> exposed as callable "combo" models; metering; budgets; a semantic response
+> cache; Prometheus metrics; dashboard auth with first-run onboarding; CLI tool
+> auto-config; and the React dashboard. The MCP bridge and tunneling are in
+> progress.
 
 ## Why KeiRouter
 
@@ -104,7 +109,54 @@ The `model` field accepts:
 
 - `provider/model` — a single explicit target, e.g. `openai/gpt-4o`.
 - `chain:name` — a named routing chain with ordered fallback steps.
-- `name` — shorthand for a chain named `name`.
+- `name` — shorthand for a chain named `name`. Chains are also advertised by
+  `GET /v1/models` with `owned_by: "combo"`, so client tools can pick them.
+
+## Capabilities and endpoints
+
+Beyond chat, KeiRouter speaks the full OpenAI-style surface. Each endpoint
+routes by the same `provider/model` or chain string and falls back across
+accounts:
+
+| Capability | Endpoint | Example model |
+|---|---|---|
+| Chat | `POST /v1/chat/completions`, `POST /v1/messages` | `openai/gpt-4o` |
+| Chat (Gemini-native) | `POST /v1beta/models/{model}:generateContent` | path-encoded model |
+| Embeddings | `POST /v1/embeddings` | `openai/text-embedding-3-small` |
+| Image generation | `POST /v1/images/generations` | `openai/gpt-image-1` |
+| Speech-to-text | `POST /v1/audio/transcriptions` | `groq/whisper-large-v3` |
+| Text-to-speech | `POST /v1/audio/speech` | `openai/tts-1` |
+| Web search | `POST /v1/search` | `tavily/tavily-search` |
+| Web fetch | `POST /v1/web/fetch` | `firecrawl/firecrawl-scrape` |
+
+Discover what is available per capability:
+
+- `GET /v1/models` — chains (as combos) plus every catalogued LLM model.
+- `GET /v1/models/{kind}` — models for a service kind (`llm`, `embedding`,
+  `image`, `stt`, `tts`, `search`, `fetch`).
+- `GET /v1/models/info?id=provider/model` — metadata for a single model.
+
+## Token saving
+
+Two complementary layers reduce cost, configurable from the dashboard's Token
+Saving page (or `POST /api/settings/endpoint`):
+
+- **RTK input compression** (on by default) compresses bulky tool-result
+  payloads — diffs, greps, directory listings, build logs — before they reach
+  the model. It is safe by design: a filter that errors or would grow the
+  content is silently skipped.
+- **Caveman output compression** injects a terse "caveman speak" system
+  directive that keeps all technical substance while dropping filler, cutting
+  output tokens. Levels: `lite`, `full`, `ultra`. A separate `terse` mode offers
+  KeiRouter's own concise-output directive as an alternative.
+
+## OAuth provider connections
+
+Subscription/OAuth providers (Claude, Codex, Gemini CLI, GitHub Copilot, Qwen,
+xAI, ...) connect without an API key from the dashboard's Connections page. Two
+flows are supported: authorization-code with PKCE (browser sign-in) and device
+code (enter a code on the provider's verification page). Access tokens are
+sealed with envelope encryption and refreshed automatically before they expire.
 
 ## Architecture
 
@@ -117,11 +169,13 @@ backend/
     crypto/             envelope encryption + API key & password hashing
     store/              SQLite/Postgres repos + embedded migrations
     transform/          OpenAI / Anthropic / Gemini codecs (unary + streaming)
-    connectors/         provider drivers (chat + embeddings) + catalog
-    slimmer/            tool-output compression (token saver)
+    connectors/         provider drivers (chat/media/web) + catalog + models
+    slimmer/            RTK tool-output compression (input token saver)
     terse/              terse-mode prompt injection (output token saver)
+    caveman/            caveman output compression (output token saver)
+    oauth/              OAuth flows (PKCE + device code) + token refresh
     capability/         model capability matrix (anti-downgrade guard)
-    dispatch/           account selection + fallback + cooldown
+    dispatch/           account selection + fallback + cooldown + token refresh
     budget/             hard spend enforcement
     meter/              usage + cost recording
     cache/              semantic response cache + embedder
