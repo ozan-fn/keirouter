@@ -123,7 +123,10 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		started := time.Now()
 		attemptReq := cloneForAttempt(req, attempt.Target.Model)
 
-		resp, callErr := attempt.Conn.Chat(ctx, attemptReq, attempt.Creds)
+		// Inject proxy config from credentials into context so the connector's
+		// HTTP client uses the right proxy/relay for this account.
+		callCtx := core.WithProxy(ctx, attempt.Creds)
+		resp, callErr := attempt.Conn.Chat(callCtx, attemptReq, attempt.Creds)
 		latency := time.Since(started)
 
 		if callErr != nil {
@@ -193,7 +196,8 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		attemptReq := cloneForAttempt(req, attempt.Target.Model)
 		started := time.Now()
 
-		upstream, callErr := attempt.Conn.Stream(ctx, attemptReq, attempt.Creds)
+		callCtx := core.WithProxy(ctx, attempt.Creds)
+		upstream, callErr := attempt.Conn.Stream(callCtx, attemptReq, attempt.Creds)
 		if callErr != nil {
 			pe := core.AsProviderError(callErr)
 			lastErr = pe

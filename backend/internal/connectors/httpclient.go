@@ -404,23 +404,10 @@ func bearer(token string) string { return "Bearer " + token }
 
 // ---- context-based proxy injection -----------------------------------------
 
-type proxyKey struct{}
-
-// WithProxy returns a context carrying proxy configuration from credentials.
-// Call this at the top of a connector's Chat/Stream method:
-//
-//	ctx = WithProxy(ctx, creds)
-func WithProxy(ctx context.Context, creds core.Credentials) context.Context {
-	if creds.ProxyURL == "" && creds.RelayURL == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, proxyKey{}, creds)
-}
-
 // proxyClient returns an http.Client configured with proxy settings from ctx,
 // or the shared client when no proxy is configured.
 func proxyClient(ctx context.Context) *http.Client {
-	creds, ok := ctx.Value(proxyKey{}).(core.Credentials)
+	creds, ok := core.ProxyFromContext(ctx)
 	if !ok {
 		return sharedClient
 	}
@@ -429,7 +416,7 @@ func proxyClient(ctx context.Context) *http.Client {
 
 // proxyRewrite applies relay header rewriting to req if ctx carries a RelayURL.
 func proxyRewrite(ctx context.Context, req *http.Request) {
-	creds, ok := ctx.Value(proxyKey{}).(core.Credentials)
+	creds, ok := core.ProxyFromContext(ctx)
 	if !ok || creds.RelayURL == "" {
 		return
 	}

@@ -118,22 +118,26 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		Logger:     log,
 	})
 
+	// Resolve frontend dist directory. Check relative to binary, then cwd.
+	frontendDir := resolveFrontendDir()
+
 	gw := gateway.New(gateway.Deps{
-		Config:   cfg,
-		Logger:   log,
-		Identity: idSvc,
-		Auth:     authSvc,
-		Pipeline: pipe,
-		Chains:   db.Chains(),
-		Aliases:  db.Aliases(),
-		Accounts: db.Accounts(),
-		Pools:    db.ProxyPools(),
-		Budgets:  db.Budgets(),
-		Usage:    db.Usage(),
-		Settings: db.Settings(),
-		Vault:    v,
-		Codecs:   codecs,
-		Metrics:  metrics,
+		Config:      cfg,
+		Logger:      log,
+		Identity:    idSvc,
+		Auth:        authSvc,
+		Pipeline:    pipe,
+		Chains:      db.Chains(),
+		Aliases:     db.Aliases(),
+		Accounts:    db.Accounts(),
+		Pools:       db.ProxyPools(),
+		Budgets:     db.Budgets(),
+		Usage:       db.Usage(),
+		Settings:    db.Settings(),
+		Vault:       v,
+		Codecs:      codecs,
+		Metrics:     metrics,
+		FrontendDir: frontendDir,
 	})
 
 	srv := &http.Server{
@@ -219,6 +223,32 @@ func loadOrCreateMasterKey(cfg config.Config, dataDir string, log *slog.Logger) 
 	log.Warn("generated new master key", "path", keyPath,
 		"note", "back this up; losing it makes stored credentials unrecoverable")
 	return key, nil
+}
+
+// resolveFrontendDir locates the frontend dist directory. It checks relative
+// to the executable path first (for production builds), then the current
+// working directory (for development).
+func resolveFrontendDir() string {
+	candidates := []string{
+		"frontend/dist",
+		"../frontend/dist",
+		"../../frontend/dist",
+	}
+	// Also try relative to the executable.
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "frontend", "dist"),
+			filepath.Join(dir, "..", "frontend", "dist"),
+		)
+	}
+	for _, c := range candidates {
+		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
+			abs, _ := filepath.Abs(c)
+			return abs
+		}
+	}
+	return ""
 }
 
 // buildPricing projects the connector catalog into a meter pricing table.

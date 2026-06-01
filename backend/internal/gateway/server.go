@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -44,8 +45,9 @@ type Server struct {
 	vault    *vault.Vault
 	codecs   *transform.Registry
 	metrics  *observ.Metrics
-	cliTools *clitools.Registry
+	cliTools    *clitools.Registry
 	cliToolHome string
+	frontendDir string
 	oauthSessions *oauth.SessionStore
 	router   chi.Router
 }
@@ -67,8 +69,9 @@ type Deps struct {
 	Vault    *vault.Vault
 	Codecs   *transform.Registry
 	Metrics  *observ.Metrics
-	CLITools *clitools.Registry
-	CLITHome string
+	CLITools    *clitools.Registry
+	CLITHome    string
+	FrontendDir string
 }
 
 // New builds a gateway Server and wires its routes.
@@ -101,8 +104,9 @@ func New(d Deps) *Server {
 		vault:    d.Vault,
 		codecs:   d.Codecs,
 		metrics:  d.Metrics,
-		cliTools: cliTools,
+		cliTools:    cliTools,
 		cliToolHome: cliToolHome,
+		frontendDir: d.FrontendDir,
 		oauthSessions: oauth.NewSessionStore(),
 	}
 	s.router = s.routes()
@@ -125,6 +129,27 @@ func (s *Server) routes() chi.Router {
 	// Health check (unauthenticated).
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// Version / info endpoint (unauthenticated).
+	r.Get("/v1", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"name":    "KeiRouter",
+			"version": "0.1.0",
+			"status":  "ok",
+			"endpoints": []string{
+				"/v1/chat/completions",
+				"/v1/messages",
+				"/v1/responses",
+				"/v1/models",
+				"/v1/embeddings",
+				"/v1/images/generations",
+				"/v1/audio/speech",
+				"/v1/audio/transcriptions",
+				"/v1/search",
+				"/v1/web/fetch",
+			},
+		})
 	})
 
 	// Prometheus metrics endpoint. Loopback-guarded by default to avoid leaking
@@ -182,6 +207,23 @@ func (s *Server) routes() chi.Router {
 		r.Use(s.sessionMiddleware)
 		s.mountAdmin(r)
 	})
+
+	// Serve frontend static files. The dashboard is a Vite SPA; unmatched
+	// paths fall through to index.html so client-side routing works.
+	if s.frontendDir != "" {
+		fs := http.FileServer(http.Dir(s.frontendDir))
+		r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			if path == "/" {
+				path = "/index.html"
+			}
+			fullPath := filepath.Join(s.frontendDir, path)
+			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+				r.URL.Path = "/"
+			}
+			fs.ServeHTTP(w, r)
+		})
+	}
 
 	return r
 }
