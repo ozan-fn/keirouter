@@ -86,9 +86,11 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		Model: model, Input: inputs, Dimensions: body.Dimensions,
 	}, opts)
 	if perr != nil {
+		s.logRequest(provider, model, 0, 0, 0, false, perr)
 		s.writeMediaError(w, perr)
 		return
 	}
+	s.logRequest(provider, model, resp.Usage.TotalTokens, 0, 0, false, nil)
 
 	data := make([]map[string]any, 0, len(resp.Vectors))
 	for i, v := range resp.Vectors {
@@ -138,9 +140,11 @@ func (s *Server) handleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	req.Model = modelTail(opts.Targets)
 	resp, provider, perr := s.pipeline.GenerateImage(r.Context(), &req, opts)
 	if perr != nil {
+		s.logRequest(provider, req.Model, 0, 0, 0, false, perr)
 		s.writeMediaError(w, perr)
 		return
 	}
+	s.logRequest(provider, req.Model, 0, 0, 0, false, nil)
 	w.Header().Set("X-KeiRouter-Provider", provider)
 	writeJSON(w, http.StatusOK, map[string]any{"created": resp.Created, "data": resp.Data})
 }
@@ -252,9 +256,11 @@ func (s *Server) handleWebSearch(w http.ResponseWriter, r *http.Request) {
 	req.Model = modelTail(opts.Targets)
 	resp, provider, perr := s.pipeline.Search(r.Context(), &req, opts)
 	if perr != nil {
+		s.logRequest(provider, req.Model, 0, 0, 0, false, perr)
 		s.writeMediaError(w, perr)
 		return
 	}
+	s.logRequest(provider, req.Model, 0, 0, 0, false, nil)
 	w.Header().Set("X-KeiRouter-Provider", provider)
 	writeJSON(w, http.StatusOK, map[string]any{"query": resp.Query, "results": resp.Results})
 }
@@ -283,9 +289,11 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 	req.Model = modelTail(opts.Targets)
 	resp, provider, perr := s.pipeline.Fetch(r.Context(), &req, opts)
 	if perr != nil {
+		s.logRequest(provider, req.Model, 0, 0, 0, false, perr)
 		s.writeMediaError(w, perr)
 		return
 	}
+	s.logRequest(provider, req.Model, 0, 0, 0, false, nil)
 	w.Header().Set("X-KeiRouter-Provider", provider)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"url": resp.URL, "title": resp.Title, "content": resp.Content, "format": resp.Format,

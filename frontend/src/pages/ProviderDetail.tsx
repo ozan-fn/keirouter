@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, KeyRound, X, Zap } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, KeyRound, X, Zap, ArrowUp, ArrowDown, CheckCircle, XCircle, ToggleLeft, ToggleRight } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type UpstreamQuota } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { useToast } from "../components/Toast";
@@ -30,6 +30,12 @@ export function ProviderDetailPage() {
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
   const oauthProviders = useQuery({ queryKey: ["oauth-providers"], queryFn: () => api.oauthProviders() });
+  const pools = useQuery({ queryKey: ["proxy-pools"], queryFn: () => api.listProxyPools() });
+  const disabledModels = useQuery({
+    queryKey: ["disabled-models", id],
+    queryFn: () => api.listDisabledModels(id!),
+    enabled: !!id,
+  });
   const models = useQuery({
     queryKey: ["provider-models", id],
     queryFn: () => api.providerModels(id!),
@@ -90,6 +96,56 @@ export function ProviderDetailPage() {
     onError: (e: Error) => toast.error("Couldn't remove account", e.message),
   });
 
+  const updateAccount = useMutation({
+    mutationFn: ({ id: accId, patch }: { id: string; patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string } }) =>
+      api.updateAccount(accId, patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+    onError: (e: Error) => toast.error("Couldn't update account", e.message),
+  });
+
+  const testAccount = useMutation({
+    mutationFn: (accountId: string) => api.testAccount(accountId),
+    onSuccess: (data) => {
+      if (data.status === "ok") {
+        toast.success("Account test passed", "Account credentials are valid.");
+      } else {
+        toast.error("Account test failed", data.message);
+      }
+    },
+    onError: (e: Error) => toast.error("Test failed", e.message),
+  });
+
+  const disableModelsMut = useMutation({
+    mutationFn: (ids: string[]) => api.disableModels(id!, ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["disabled-models", id] });
+      toast.success("Models disabled");
+    },
+    onError: (e: Error) => toast.error("Couldn't disable models", e.message),
+  });
+
+  const enableModelsMut = useMutation({
+    mutationFn: (ids: string[]) => api.enableModels(id!, ids),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["disabled-models", id] });
+      toast.success("Models enabled");
+    },
+    onError: (e: Error) => toast.error("Couldn't enable models", e.message),
+  });
+
+  // Sort accounts by priority for display.
+  const sortedAccounts = [...myAccounts].sort((a, b) => a.priority - b.priority);
+  const disabledModelIds = new Set(disabledModels.data?.ids ?? []);
+
+  const moveAccount = (accId: string, direction: "up" | "down") => {
+    const idx = sortedAccounts.findIndex((a) => a.id === accId);
+    if (idx < 0) return;
+    const target = direction === "up" ? idx - 1 : idx + 1;
+    if (target < 0 || target >= sortedAccounts.length) return;
+    const newPriority = sortedAccounts[target].priority;
+    updateAccount.mutate({ id: accId, patch: { priority: newPriority } });
+  };
+
   if (providers.isLoading) return <Spinner />;
   if (!provider) {
     return (
@@ -145,17 +201,24 @@ export function ProviderDetailPage() {
             />
           ) : (
             <div className="divide-y divide-[var(--border)]">
-              {myAccounts.map((a) => (
-                <AccountRow key={a.id} account={a} onDelete={() => remove.mutate(a.id)} />
+              {sortedAccounts.map((a, i) => (
+                <AccountRow
+                  key={a.id}
+                  account={a}
+                  index={i}
+                  total={sortedAccounts.length}
+                  pools={pools.data?.pools ?? []}
+                  onDelete={() => remove.mutate(a.id)}
+                  onMoveUp={() => moveAccount(a.id, "up")}
+                  onMoveDown={() => moveAccount(a.id, "down")}
+                  onTest={() => testAccount.mutate(a.id)}
+                  onUpdateProxy={(poolId) => updateAccount.mutate({ id: a.id, patch: { proxy_pool_id: poolId } })}
+                  testing={testAccount.isPending}
+                />
               ))}
             </div>
           )}
         </Card>
-
-        {/* Quota / credit info for accounts that support it (e.g. Kiro). */}
-        {myAccounts.filter((a) => !a.disabled).map((a) => (
-          <AccountQuotaCard key={`quota-${a.id}`} accountId={a.id} providerName={provider.display_name} />
-        ))}
 
         {isKiro && (
           <Card>
@@ -260,9 +323,39 @@ export function ProviderDetailPage() {
               title="Available Models"
               description={`${models.data.models.length} model${models.data.models.length === 1 ? "" : "s"} configured for this provider.`}
             />
+            <div className="flex items-center gap-2 border-t border-[var(--border)] px-6 py-3">
+              <Button
+                variant="ghost"
+                onClick={() => enableModelsMut.mutate(models.data!.models.map((m) => m.id))}
+                disabled={enableModelsMut.isPending}
+              >
+                <ToggleRight className="h-4 w-4" />
+                Enable all
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => disableModelsMut.mutate(models.data!.models.map((m) => m.id))}
+                disabled={disableModelsMut.isPending}
+              >
+                <ToggleLeft className="h-4 w-4" />
+                Disable all
+              </Button>
+            </div>
             <div className="flex flex-wrap gap-2 border-t border-[var(--border)] px-6 py-5">
               {models.data.models.map((m) => (
-                <ModelChip key={m.id} model={m} provider={provider} />
+                <ModelChip
+                  key={m.id}
+                  model={m}
+                  provider={provider}
+                  disabled={disabledModelIds.has(m.id)}
+                  onToggleDisable={() => {
+                    if (disabledModelIds.has(m.id)) {
+                      enableModelsMut.mutate([m.id]);
+                    } else {
+                      disableModelsMut.mutate([m.id]);
+                    }
+                  }}
+                />
               ))}
             </div>
           </Card>
@@ -277,21 +370,144 @@ export function ProviderDetailPage() {
   );
 }
 
-function AccountRow({ account: a, onDelete }: { account: Account; onDelete: () => void }) {
+function AccountRow({
+  account: a,
+  index,
+  total,
+  pools,
+  onDelete,
+  onMoveUp,
+  onMoveDown,
+  onTest,
+  onUpdateProxy,
+  testing,
+}: {
+  account: Account;
+  index: number;
+  total: number;
+  pools: { id: string; name: string }[];
+  onDelete: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onTest: () => void;
+  onUpdateProxy: (poolId: string) => void;
+  testing: boolean;
+}) {
+  const quota = useQuery({
+    queryKey: ["account-quota", a.id],
+    queryFn: () => api.accountQuota(a.id),
+    staleTime: 60_000,
+    enabled: !a.disabled,
+  });
+
+  const hasQuota = quota.data?.supported && quota.data?.quotas && quota.data.quotas.length > 0;
+
   return (
-    <div className="flex items-center justify-between px-6 py-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{a.label || a.provider}</span>
-          <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
-          {a.disabled && <Badge tone="danger">disabled</Badge>}
+    <div className="px-6 py-4">
+      <div className="flex items-center justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">{a.label || a.provider}</span>
+            <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
+            {a.disabled && <Badge tone="danger">disabled</Badge>}
+          </div>
+          <p className="mt-0.5 text-xs text-[var(--text-muted)]">priority {a.priority}</p>
         </div>
-        <p className="mt-0.5 text-xs text-[var(--text-muted)]">priority {a.priority}</p>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" onClick={onMoveUp} disabled={index === 0} className="px-2">
+            <ArrowUp className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" onClick={onMoveDown} disabled={index === total - 1} className="px-2">
+            <ArrowDown className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" onClick={onTest} disabled={testing} className="px-2">
+            <CheckCircle className={`h-4 w-4 ${testing ? "animate-pulse" : ""}`} />
+          </Button>
+          <Button variant="danger" onClick={onDelete}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
-      <Button variant="danger" onClick={onDelete}>
-        <Trash2 className="h-4 w-4" />
-        Remove
-      </Button>
+      {pools.length > 0 && (
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-xs text-[var(--text-muted)]">Proxy pool:</span>
+          <select
+            value={a.proxy_pool_id || ""}
+            onChange={(e) => onUpdateProxy(e.target.value || "")}
+            className="rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs"
+          >
+            <option value="">None</option>
+            {pools.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Quota / credit info integrated into account row */}
+      {hasQuota && quota.data && (
+        <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2.5">
+          <div className="mb-2 flex items-center gap-2">
+            <Zap className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+            <span className="text-xs font-medium text-[var(--text)]">
+              {quota.data.plan_name ? `${quota.data.plan_name} — Credits` : "Credits & Quota"}
+            </span>
+            {quota.data.plan_name && (
+              <Badge tone="accent">{quota.data.plan_name}</Badge>
+            )}
+          </div>
+          {quota.data.message && (
+            <p className="mb-2 text-[11px] text-[var(--text-muted)]">{quota.data.message}</p>
+          )}
+          {quota.data.quotas && (
+            <div className="space-y-2">
+              {quota.data.quotas.map((q) => (
+                <QuotaBarInline key={q.resource_type} quota={q} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
+  const pct = q.limit > 0 ? Math.min(100, Math.round((q.used / q.limit) * 100)) : 0;
+  const remainingPct = q.limit > 0 ? Math.round((q.remaining / q.limit) * 100) : 0;
+  const tone =
+    remainingPct < 30
+      ? "bg-[color:var(--color-danger)]"
+      : remainingPct < 70
+        ? "bg-[color:var(--color-warning)]"
+        : "bg-accent-500";
+  const label = q.resource_type
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const resetDate = q.reset_at ? new Date(q.reset_at) : null;
+  const resetLabel = resetDate && !isNaN(resetDate.getTime())
+    ? resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-[11px]">
+        <span className="font-medium text-[var(--text)]">{label}</span>
+        <div className="flex items-center gap-2">
+          {resetLabel && (
+            <span className="text-[10px] text-[var(--text-muted)]">resets {resetLabel}</span>
+          )}
+          <span className="tabular-nums">
+            {q.used.toLocaleString()} / {q.limit.toLocaleString()}
+            <span className="ml-1 text-[var(--text-muted)]">({q.remaining.toLocaleString()} left)</span>
+          </span>
+        </div>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+        <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(2, pct)}%` }} />
+      </div>
     </div>
   );
 }
@@ -486,86 +702,19 @@ function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: (
 
 // ---- Account quota card -----------------------------------------------------
 
-function AccountQuotaCard({ accountId, providerName }: { accountId: string; providerName: string }) {
-  const quota = useQuery({
-    queryKey: ["account-quota", accountId],
-    queryFn: () => api.accountQuota(accountId),
-    staleTime: 60_000,
-  });
-
-  if (quota.isLoading) return null;
-  if (!quota.data?.supported) return null;
-
-  const { plan_name, message, quotas } = quota.data;
-  if (!quotas || quotas.length === 0) return null;
-
-  return (
-    <Card>
-      <SectionHeader
-        title="Credits & Quota"
-        description={plan_name ? `${providerName} — ${plan_name}` : `${providerName} usage limits`}
-        icon={Zap}
-      />
-      <div className="space-y-3 border-t border-[var(--border)] px-6 py-5">
-        {message && (
-          <p className="text-xs text-[var(--text-muted)]">{message}</p>
-        )}
-        {quotas.map((q) => (
-          <QuotaBar key={q.resource_type} quota={q} />
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-function QuotaBar({ quota: q }: { quota: UpstreamQuota }) {
-  const pct = q.limit > 0 ? Math.min(100, Math.round((q.used / q.limit) * 100)) : 0;
-  const remainingPct = q.limit > 0 ? Math.round((q.remaining / q.limit) * 100) : 0;
-  const tone =
-    remainingPct < 30
-      ? "bg-[color:var(--color-danger)]"
-      : remainingPct < 70
-        ? "bg-[color:var(--color-warning)]"
-        : "bg-accent-500";
-  const label = q.resource_type
-    .toLowerCase()
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-
-  const resetDate = q.reset_at ? new Date(q.reset_at) : null;
-  const resetLabel = resetDate && !isNaN(resetDate.getTime())
-    ? resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
-    : null;
-
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-xs">
-        <span className="font-medium text-[var(--text)]">{label}</span>
-        <div className="flex items-center gap-3">
-          {resetLabel && (
-            <span className="text-[11px] text-[var(--text-muted)]">resets {resetLabel}</span>
-          )}
-          <span className="tabular-nums">
-            {q.used.toLocaleString()} / {q.limit.toLocaleString()}
-            <span className="ml-1 text-[var(--text-muted)]">({q.remaining.toLocaleString()} left)</span>
-          </span>
-        </div>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
-        <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(2, pct)}%` }} />
-      </div>
-    </div>
-  );
-}
 
 // ModelChip renders a single model as a compact chip showing the model ID and
 // display name (matching 9router's ModelRow pattern).
 function ModelChip({
   model,
   provider,
+  disabled,
+  onToggleDisable,
 }: {
   model: { id: string; name: string; kind: string };
   provider: Provider;
+  disabled?: boolean;
+  onToggleDisable?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const fullModel = `${provider.alias || provider.id}/${model.id}`;
@@ -577,7 +726,7 @@ function ModelChip({
   };
 
   return (
-    <div className="group flex min-w-0 max-w-full items-start gap-2 rounded-lg border border-[var(--border)] px-3 py-2 transition-colors hover:bg-ink-50">
+    <div className={`group flex min-w-0 max-w-full items-start gap-2 rounded-lg border px-3 py-2 transition-colors hover:bg-ink-50 ${disabled ? "border-[color:var(--color-danger)]/30 opacity-60" : "border-[var(--border)]"}`}>
       <span className="mt-0.5 text-[var(--text-muted)]">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" />
@@ -589,17 +738,28 @@ function ModelChip({
           <span className="truncate text-[10px] italic text-[var(--text-muted)]">{model.name}</span>
         )}
       </div>
-      <button
-        onClick={handleCopy}
-        className="shrink-0 rounded p-0.5 text-[var(--text-muted)] opacity-100 transition-opacity hover:bg-ink-100 hover:text-[var(--text)] sm:opacity-0 sm:group-hover:opacity-100"
-        title="Copy model path"
-      >
-        {copied ? (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-        ) : (
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+      <div className="flex items-center gap-1">
+        {onToggleDisable && (
+          <button
+            onClick={onToggleDisable}
+            className="shrink-0 rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)]"
+            title={disabled ? "Enable model" : "Disable model"}
+          >
+            {disabled ? <XCircle className="h-3.5 w-3.5 text-[color:var(--color-danger)]" /> : <CheckCircle className="h-3.5 w-3.5 text-accent-500" />}
+          </button>
         )}
-      </button>
+        <button
+          onClick={handleCopy}
+          className="shrink-0 rounded p-0.5 text-[var(--text-muted)] opacity-100 transition-opacity hover:bg-ink-100 hover:text-[var(--text)] sm:opacity-0 sm:group-hover:opacity-100"
+          title="Copy model path"
+        >
+          {copied ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+          )}
+        </button>
+      </div>
     </div>
   );
 }

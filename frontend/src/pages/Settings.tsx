@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Sparkles, Zap, MessageSquare, Layers } from "lucide-react";
+import {
+  Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database,
+} from "lucide-react";
 import { api, type EndpointSettings } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
-import { Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner } from "../components/ui";
+import {
+  Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner, Button, Input, Field,
+} from "../components/ui";
 
 // Caveman compression maps to a Gentle / Balanced / Strong segmented control.
 const cavemanOptions = [
@@ -56,15 +60,16 @@ export function SettingsPage() {
   return (
     <>
       <PageHeader
-        title="Token Saving"
+        title="Settings"
         icon={Sparkles}
-        description="Cut token usage on both sides of every request. Changes apply immediately to new requests."
+        description="Configure token saving, routing strategy, network, and more."
       />
 
       {settings.isLoading || !local ? (
         <Spinner />
       ) : (
         <div className="space-y-6">
+          {/* Token Saving */}
           <Card>
             <SectionHeader
               title="RTK input compression"
@@ -128,9 +133,280 @@ export function SettingsPage() {
             )}
           </Card>
 
+          {/* Routing Strategy */}
+          <RoutingStrategy local={local} update={update} />
+
+          {/* Network */}
+          <NetworkSettings local={local} update={update} />
+
+          {/* Observability */}
+          <Card>
+            <SectionHeader
+              title="Observability"
+              description="Record request details for inspection in the logs view."
+              icon={Monitor}
+            />
+            <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
+              <span className="text-sm font-medium">Enable request detail recording</span>
+              <Toggle
+                checked={local.observability_enabled !== false}
+                onChange={(v) => update({ observability_enabled: v })}
+              />
+            </div>
+          </Card>
+
+          {/* Database */}
+          <DatabaseSettings />
+
           {save.isError && <ErrorBanner message={`Failed to save: ${(save.error as Error).message}`} />}
         </div>
       )}
     </>
+  );
+}
+
+function RoutingStrategy({
+  local,
+  update,
+}: {
+  local: EndpointSettings;
+  update: (patch: Partial<EndpointSettings>) => void;
+}) {
+  return (
+    <Card>
+      <SectionHeader
+        title="Routing Strategy"
+        description="Control how requests are distributed across accounts and combos."
+        icon={Route}
+      />
+      <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
+        <div className="flex items-center justify-between gap-4 px-6 py-4">
+          <div>
+            <p className="text-sm font-medium">Round Robin</p>
+            <p className="mt-0.5 text-xs text-[var(--text-muted)]">Cycle through accounts to distribute load</p>
+          </div>
+          <Toggle
+            checked={local.routing_strategy === "round-robin"}
+            onChange={() => update({ routing_strategy: local.routing_strategy === "round-robin" ? "fill-first" : "round-robin" })}
+          />
+        </div>
+
+        {local.routing_strategy === "round-robin" && (
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <div>
+              <p className="text-sm font-medium">Sticky Limit</p>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">Calls per account before switching</p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              value={local.sticky_limit || 3}
+              onChange={(e) => update({ sticky_limit: parseInt(e.target.value) || 3 })}
+              className="w-20 text-center"
+            />
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-4 px-6 py-4">
+          <div>
+            <p className="text-sm font-medium">Combo Round Robin</p>
+            <p className="mt-0.5 text-xs text-[var(--text-muted)]">Cycle through providers in combos instead of always starting with first</p>
+          </div>
+          <Toggle
+            checked={local.combo_strategy === "round-robin"}
+            onChange={() => update({ combo_strategy: local.combo_strategy === "round-robin" ? "fallback" : "round-robin" })}
+          />
+        </div>
+
+        {local.combo_strategy === "round-robin" && (
+          <div className="flex items-center justify-between gap-4 px-6 py-4">
+            <div>
+              <p className="text-sm font-medium">Combo Sticky Limit</p>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">Calls per combo model before switching</p>
+            </div>
+            <Input
+              type="number"
+              min={1}
+              max={100}
+              value={local.combo_sticky_limit || 1}
+              onChange={(e) => update({ combo_sticky_limit: parseInt(e.target.value) || 1 })}
+              className="w-20 text-center"
+            />
+          </div>
+        )}
+
+        <div className="px-6 py-3">
+          <p className="text-xs text-[var(--text-muted)] italic">
+            {local.routing_strategy === "round-robin"
+              ? `Distributing requests across all available accounts with ${local.sticky_limit || 3} calls per account.`
+              : "Using accounts in priority order (Fill First)."}
+            {local.combo_strategy === "round-robin"
+              ? ` Combos rotate after ${local.combo_sticky_limit || 1} call${(local.combo_sticky_limit || 1) === 1 ? "" : "s"} per model.`
+              : " Combos always start with their first model."}
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function NetworkSettings({
+  local,
+  update,
+}: {
+  local: EndpointSettings;
+  update: (patch: Partial<EndpointSettings>) => void;
+}) {
+  const [testResult, setTestResult] = useState<string>("");
+  const [testing, setTesting] = useState(false);
+
+  const testProxy = async () => {
+    if (!local.outbound_proxy_url) return;
+    setTesting(true);
+    setTestResult("");
+    try {
+      const res = await api.testProxy(local.outbound_proxy_url);
+      if (res.ok) {
+        setTestResult(`Proxy test OK (${res.status}) in ${res.elapsedMs}ms`);
+      } else {
+        setTestResult(`Proxy test failed: ${res.error}`);
+      }
+    } catch (e) {
+      setTestResult(`Error: ${(e as Error).message}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Network"
+        description="Configure outbound proxy for provider requests."
+        icon={Wifi}
+      />
+      <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
+        <div className="flex items-center justify-between gap-4 px-6 py-4">
+          <div>
+            <p className="text-sm font-medium">Outbound Proxy</p>
+            <p className="mt-0.5 text-xs text-[var(--text-muted)]">Enable proxy for OAuth + provider outbound requests.</p>
+          </div>
+          <Toggle
+            checked={local.outbound_proxy_enabled}
+            onChange={(v) => update({ outbound_proxy_enabled: v })}
+          />
+        </div>
+
+        {local.outbound_proxy_enabled && (
+          <>
+            <div className="px-6 py-4">
+              <Field label="Proxy URL">
+                <Input
+                  placeholder="http://127.0.0.1:7897"
+                  value={local.outbound_proxy_url}
+                  onChange={(e) => update({ outbound_proxy_url: e.target.value })}
+                />
+                <p className="mt-1 text-xs text-[var(--text-muted)]">Leave empty to inherit existing env proxy (if any).</p>
+              </Field>
+            </div>
+            <div className="px-6 py-4">
+              <Field label="No Proxy">
+                <Input
+                  placeholder="localhost,127.0.0.1"
+                  value={local.outbound_no_proxy}
+                  onChange={(e) => update({ outbound_no_proxy: e.target.value })}
+                />
+                <p className="mt-1 text-xs text-[var(--text-muted)]">Comma-separated hostnames/domains to bypass the proxy.</p>
+              </Field>
+            </div>
+            <div className="flex items-center gap-3 px-6 py-4">
+              <Button variant="ghost" onClick={testProxy} disabled={testing || !local.outbound_proxy_url}>
+                {testing ? "Testing…" : "Test proxy URL"}
+              </Button>
+              {testResult && (
+                <span className={`text-xs ${testResult.startsWith("Proxy test OK") ? "text-green-600" : "text-[color:var(--color-danger)]"}`}>
+                  {testResult}
+                </span>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function DatabaseSettings() {
+  const toast = useToast();
+  const importRef = useRef<HTMLInputElement>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleExport = async () => {
+    setLoading(true);
+    try {
+      const data = await api.exportDatabase();
+      const content = JSON.stringify(data, null, 2);
+      const blob = new Blob([content], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[.:]/g, "-");
+      a.href = url;
+      a.download = `keirouter-backup-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("Backup downloaded", "Database exported successfully.");
+    } catch (e) {
+      toast.error("Export failed", (e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    try {
+      const raw = await file.text();
+      const payload = JSON.parse(raw);
+      const result = await api.importDatabase(payload);
+      toast.success("Import complete", `${result.imported} items imported.`);
+    } catch (e) {
+      toast.error("Import failed", (e as Error).message);
+    } finally {
+      if (importRef.current) importRef.current.value = "";
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Database"
+        description="Export or import your KeiRouter configuration."
+        icon={Database}
+      />
+      <div className="flex items-center gap-3 border-t border-[var(--border)] px-6 py-4">
+        <Button variant="ghost" onClick={handleExport} disabled={loading}>
+          <Database className="h-4 w-4" />
+          Download Backup
+        </Button>
+        <Button variant="ghost" onClick={() => importRef.current?.click()} disabled={loading}>
+          <Database className="h-4 w-4" />
+          Import Backup
+        </Button>
+        <input
+          ref={importRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={handleImport}
+        />
+      </div>
+    </Card>
   );
 }

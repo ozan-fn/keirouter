@@ -27,7 +27,7 @@ export function SectionHeader({
   iconTone = "accent",
   action,
 }: {
-  title: string;
+  title: ReactNode;
   description?: string;
   icon?: LucideIcon;
   iconTone?: "accent" | "neutral" | "danger";

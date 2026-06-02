@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Plus, Copy, Check } from "lucide-react";
+import { KeyRound, Plus, Copy, Check, ToggleLeft, ToggleRight } from "lucide-react";
 import { api, type CreatedKey } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
@@ -33,6 +33,15 @@ export function KeysPage() {
       toast.success("Key revoked");
     },
     onError: (e: Error) => toast.error("Couldn't revoke key", e.message),
+  });
+
+  const toggleDisabled = useMutation({
+    mutationFn: ({ id, disabled }: { id: string; disabled: boolean }) => api.updateKey(id, { disabled }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["keys"] });
+      toast.success(data.disabled ? "Key disabled" : "Key enabled");
+    },
+    onError: (e: Error) => toast.error("Couldn't update key", e.message),
   });
 
   return (
@@ -113,9 +122,20 @@ export function KeysPage() {
                   </div>
                   <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{k.display}</p>
                 </div>
-                <Button variant="danger" onClick={() => remove.mutate(k.id)}>
-                  Revoke
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    onClick={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}
+                    disabled={toggleDisabled.isPending}
+                    className="px-2"
+                    title={k.disabled ? "Enable key" : "Disable key"}
+                  >
+                    {k.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4" />}
+                  </Button>
+                  <Button variant="danger" onClick={() => remove.mutate(k.id)}>
+                    Revoke
+                  </Button>
+                </div>
               </div>
             ))}
           </div>

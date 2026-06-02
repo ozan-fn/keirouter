@@ -29,16 +29,37 @@ type EndpointSettings struct {
 	// of "light", "medium", "aggressive".
 	TerseEnabled bool   `json:"terse_enabled"`
 	TerseLevel   string `json:"terse_level"`
+
+	// Routing strategy fields (mirrors 9router).
+	RoutingStrategy     string `json:"routing_strategy"`      // "fill-first" | "round-robin"
+	StickyLimit         int    `json:"sticky_limit"`          // calls per account before switching
+	ComboStrategy       string `json:"combo_strategy"`        // "fallback" | "round-robin"
+	ComboStickyLimit    int    `json:"combo_sticky_limit"`    // calls per combo model before switching
+
+	// Outbound proxy settings.
+	OutboundProxyEnabled bool   `json:"outbound_proxy_enabled"`
+	OutboundProxyURL     string `json:"outbound_proxy_url"`
+	OutboundNoProxy      string `json:"outbound_no_proxy"`
+
+	// Observability.
+	ObservabilityEnabled *bool `json:"observability_enabled,omitempty"`
 }
 
 // defaultEndpointSettings mirrors 9router's defaults: RTK on, caveman/terse off.
 func defaultEndpointSettings() EndpointSettings {
 	return EndpointSettings{
-		RTKEnabled:     true,
-		CavemanEnabled: false,
-		CavemanLevel:   string(caveman.LevelFull),
-		TerseEnabled:   false,
-		TerseLevel:     string(terse.LevelMedium),
+		RTKEnabled:           true,
+		CavemanEnabled:       false,
+		CavemanLevel:         string(caveman.LevelFull),
+		TerseEnabled:         false,
+		TerseLevel:           string(terse.LevelMedium),
+		RoutingStrategy:      "fill-first",
+		StickyLimit:          3,
+		ComboStrategy:        "fallback",
+		ComboStickyLimit:     1,
+		OutboundProxyEnabled: false,
+		OutboundProxyURL:     "",
+		OutboundNoProxy:      "",
 	}
 }
 
@@ -63,6 +84,18 @@ func (s *Server) loadEndpointSettings(ctx context.Context) EndpointSettings {
 	}
 	if es.TerseLevel == "" {
 		es.TerseLevel = def.TerseLevel
+	}
+	if es.RoutingStrategy == "" {
+		es.RoutingStrategy = def.RoutingStrategy
+	}
+	if es.StickyLimit == 0 {
+		es.StickyLimit = def.StickyLimit
+	}
+	if es.ComboStrategy == "" {
+		es.ComboStrategy = def.ComboStrategy
+	}
+	if es.ComboStickyLimit == 0 {
+		es.ComboStickyLimit = def.ComboStickyLimit
 	}
 	return es
 }
@@ -102,11 +135,19 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	current := s.loadEndpointSettings(r.Context())
 
 	var patch struct {
-		RTKEnabled     *bool   `json:"rtk_enabled"`
-		CavemanEnabled *bool   `json:"caveman_enabled"`
-		CavemanLevel   *string `json:"caveman_level"`
-		TerseEnabled   *bool   `json:"terse_enabled"`
-		TerseLevel     *string `json:"terse_level"`
+		RTKEnabled           *bool   `json:"rtk_enabled"`
+		CavemanEnabled       *bool   `json:"caveman_enabled"`
+		CavemanLevel         *string `json:"caveman_level"`
+		TerseEnabled         *bool   `json:"terse_enabled"`
+		TerseLevel           *string `json:"terse_level"`
+		RoutingStrategy      *string `json:"routing_strategy"`
+		StickyLimit          *int    `json:"sticky_limit"`
+		ComboStrategy        *string `json:"combo_strategy"`
+		ComboStickyLimit     *int    `json:"combo_sticky_limit"`
+		OutboundProxyEnabled *bool   `json:"outbound_proxy_enabled"`
+		OutboundProxyURL     *string `json:"outbound_proxy_url"`
+		OutboundNoProxy      *string `json:"outbound_no_proxy"`
+		ObservabilityEnabled *bool   `json:"observability_enabled"`
 	}
 	if !decodeJSON(w, r, &patch) {
 		return
@@ -130,6 +171,30 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	}
 	if patch.TerseLevel != nil {
 		current.TerseLevel = *patch.TerseLevel
+	}
+	if patch.RoutingStrategy != nil {
+		current.RoutingStrategy = *patch.RoutingStrategy
+	}
+	if patch.StickyLimit != nil {
+		current.StickyLimit = *patch.StickyLimit
+	}
+	if patch.ComboStrategy != nil {
+		current.ComboStrategy = *patch.ComboStrategy
+	}
+	if patch.ComboStickyLimit != nil {
+		current.ComboStickyLimit = *patch.ComboStickyLimit
+	}
+	if patch.OutboundProxyEnabled != nil {
+		current.OutboundProxyEnabled = *patch.OutboundProxyEnabled
+	}
+	if patch.OutboundProxyURL != nil {
+		current.OutboundProxyURL = *patch.OutboundProxyURL
+	}
+	if patch.OutboundNoProxy != nil {
+		current.OutboundNoProxy = *patch.OutboundNoProxy
+	}
+	if patch.ObservabilityEnabled != nil {
+		current.ObservabilityEnabled = patch.ObservabilityEnabled
 	}
 
 	raw, err := json.Marshal(current)

@@ -5,12 +5,47 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/mydisha/keirouter/backend/internal/clitools"
 )
 
-// handleCLITools returns the status of all supported CLI tools.
+// handleCLITools returns the status and config snippets for all supported CLI
+// tools. The frontend uses the snippet fields for copy-to-clipboard; the status
+// fields drive the installed/configured badges.
 func (s *Server) handleCLITools(w http.ResponseWriter, r *http.Request) {
 	statuses := s.cliTools.DetectAll(s.cliToolHome)
-	writeJSON(w, http.StatusOK, map[string]any{"tools": statuses})
+	baseURL := s.publicBaseURL(r)
+	model := r.URL.Query().Get("model")
+
+	// Build a lookup so we can merge snippet metadata with live status.
+	snippets := generateSnippets(baseURL, model, "")
+
+	// Merge: for each snippet entry, find the matching status and combine.
+	type toolResp struct {
+		cliToolSnippet
+		Installed  bool   `json:"installed"`
+		Configured bool   `json:"configured"`
+		ConfigPath string `json:"config_path"`
+	}
+	statusMap := make(map[string]clitools.Status, len(statuses))
+	for _, st := range statuses {
+		statusMap[st.ID] = st
+	}
+	tools := make([]toolResp, 0, len(snippets))
+	for _, sn := range snippets {
+		tr := toolResp{cliToolSnippet: sn}
+		if st, ok := statusMap[sn.ID]; ok {
+			tr.Installed = st.Installed
+			tr.Configured = st.Configured
+			tr.ConfigPath = st.ConfigPath
+		}
+		tools = append(tools, tr)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"base_url": baseURL,
+		"model":    model,
+		"tools":    tools,
+	})
 }
 
 // handleCLIToolConfigure writes KeiRouter config into a specific tool.

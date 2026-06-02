@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/store"
 )
@@ -39,8 +40,11 @@ func resolveTargets(ctx context.Context, chains ChainSource, aliases AliasSource
 		return chainTargets(ctx, chains, tenantID, name)
 	}
 
-	// provider/model
+	// provider/model — resolve provider alias (e.g. "mmtp" -> "xiaomi-tokenplan").
 	if provider, rest, ok := strings.Cut(model, "/"); ok && provider != "" && rest != "" {
+		if spec, ok := connectors.SpecByAlias(provider); ok {
+			provider = spec.ID
+		}
 		return []dispatch.Target{{Provider: provider, Model: rest}}, nil
 	}
 

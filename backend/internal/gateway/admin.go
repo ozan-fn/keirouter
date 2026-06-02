@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/vault"
@@ -25,6 +27,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/keys", s.adminListKeys)
 	r.Post("/keys", s.adminCreateKey)
+	r.Patch("/keys/{id}", s.adminUpdateKey)
 	r.Delete("/keys/{id}", s.adminDeleteKey)
 
 	r.Get("/accounts", s.adminListAccounts)
@@ -36,6 +39,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/chains", s.adminListChains)
 	r.Post("/chains", s.adminCreateChain)
+	r.Patch("/chains/{id}", s.adminUpdateChain)
 	r.Delete("/chains/{id}", s.adminDeleteChain)
 
 	r.Get("/budgets", s.adminListBudgets)
@@ -46,6 +50,8 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/usage/insights", s.adminUsageInsights)
 	r.Get("/quota", s.adminQuotaUsage)
 	r.Get("/console", s.adminConsoleLog)
+	r.Delete("/console", s.adminConsoleClear)
+	r.Get("/console/stream", s.adminConsoleStream)
 
 	r.Get("/proxy-pools", s.adminListProxyPools)
 	r.Post("/proxy-pools", s.adminCreateProxyPool)
@@ -61,10 +67,17 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Put("/models/alias", s.adminSetAlias)
 	r.Delete("/models/alias", s.adminDeleteAlias)
 
+	r.Get("/models/disabled", s.adminListDisabledModels)
+	r.Post("/models/disabled", s.adminDisableModels)
+	r.Delete("/models/disabled", s.adminEnableModels)
+
 	r.Get("/settings/endpoint", s.adminGetEndpointSettings)
 	r.Post("/settings/endpoint", s.adminUpdateEndpointSettings)
 	r.Get("/settings/access", s.adminGetAccessSettings)
 	r.Post("/settings/access", s.adminUpdateAccessSettings)
+	r.Get("/settings/database", s.adminExportDatabase)
+	r.Post("/settings/database", s.adminImportDatabase)
+	r.Post("/settings/proxy-test", s.adminTestProxy)
 
 	s.mountOAuth(r)
 	s.mountKiro(r)
@@ -244,6 +257,26 @@ func (s *Server) adminDeleteKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminUpdateKey toggles a key's disabled state.
+func (s *Server) adminUpdateKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Disabled *bool `json:"disabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Disabled == nil {
+		writeError(w, http.StatusBadRequest, "disabled field is required")
+		return
+	}
+	if err := s.identity.SetDisabled(r.Context(), id, *body.Disabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "disabled": *body.Disabled})
 }
 
 // ---- accounts ---------------------------------------------------------------
@@ -527,6 +560,54 @@ func (s *Server) adminDeleteChain(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	existing, err := s.chains.Get(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "chain not found")
+		return
+	}
+
+	var body struct {
+		Name     *string `json:"name"`
+		Strategy *string `json:"strategy"`
+		Steps    *[]struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"steps"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	if body.Name != nil {
+		existing.Name = *body.Name
+	}
+	if body.Strategy != nil {
+		existing.Strategy = *body.Strategy
+	}
+	if body.Steps != nil {
+		now := time.Now()
+		existing.Steps = make([]store.ChainStep, len(*body.Steps))
+		for i, st := range *body.Steps {
+			existing.Steps[i] = store.ChainStep{
+				ID:        uuid.NewString(),
+				ChainID:   id,
+				Position:  i,
+				Provider:  st.Provider,
+				Model:     st.Model,
+				CreatedAt: now,
+			}
+		}
+	}
+
+	if err := s.chains.Update(r.Context(), existing); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": existing.ID, "name": existing.Name})
+}
+
 // ---- budgets ----------------------------------------------------------------
 
 func (s *Server) adminListBudgets(w http.ResponseWriter, r *http.Request) {
@@ -677,6 +758,414 @@ func (s *Server) adminDeleteAlias(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ---- disabled models --------------------------------------------------------
+
+const disabledModelsPrefix = "disabled_models_" // + provider alias
+
+func (s *Server) loadDisabledModels(ctx context.Context, provider string) []string {
+	if s.settings == nil {
+		return nil
+	}
+	raw, err := s.settings.Get(ctx, disabledModelsPrefix+provider)
+	if err != nil || raw == "" {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		return nil
+	}
+	return ids
+}
+
+func (s *Server) saveDisabledModels(ctx context.Context, provider string, ids []string) error {
+	if s.settings == nil {
+		return nil
+	}
+	raw, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	return s.settings.Set(ctx, disabledModelsPrefix+provider, string(raw))
+}
+
+func (s *Server) adminListDisabledModels(w http.ResponseWriter, r *http.Request) {
+	provider := r.URL.Query().Get("provider")
+	if provider == "" {
+		writeError(w, http.StatusBadRequest, "provider query param is required")
+		return
+	}
+	ids := s.loadDisabledModels(r.Context(), provider)
+	writeJSON(w, http.StatusOK, map[string]any{"ids": ids})
+}
+
+func (s *Server) adminDisableModels(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Provider string   `json:"providerAlias"`
+		IDs      []string `json:"ids"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Provider == "" {
+		writeError(w, http.StatusBadRequest, "providerAlias is required")
+		return
+	}
+	existing := s.loadDisabledModels(r.Context(), body.Provider)
+	seen := map[string]bool{}
+	for _, id := range existing {
+		seen[id] = true
+	}
+	for _, id := range body.IDs {
+		seen[id] = true
+	}
+	merged := make([]string, 0, len(seen))
+	for id := range seen {
+		merged = append(merged, id)
+	}
+	if err := s.saveDisabledModels(r.Context(), body.Provider, merged); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ids": merged})
+}
+
+func (s *Server) adminEnableModels(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Provider string   `json:"providerAlias"`
+		IDs      []string `json:"ids"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Provider == "" {
+		writeError(w, http.StatusBadRequest, "providerAlias is required")
+		return
+	}
+	existing := s.loadDisabledModels(r.Context(), body.Provider)
+	remove := map[string]bool{}
+	for _, id := range body.IDs {
+		remove[id] = true
+	}
+	var kept []string
+	for _, id := range existing {
+		if !remove[id] {
+			kept = append(kept, id)
+		}
+	}
+	if err := s.saveDisabledModels(r.Context(), body.Provider, kept); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ids": kept})
+}
+
+// ---- console SSE stream -----------------------------------------------------
+
+func (s *Server) adminConsoleStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Send initial history.
+	lines := s.consoleLog.Lines()
+	initData, _ := json.Marshal(map[string]any{"type": "init", "logs": lines})
+	fmt.Fprintf(w, "data: %s\n\n", initData)
+	flusher.Flush()
+
+	// Subscribe to new log lines.
+	listener := &consolelog.Listener{
+		OnLine: func(line string) {
+			data, _ := json.Marshal(map[string]any{"type": "line", "line": line})
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		},
+		OnClear: func() {
+			data, _ := json.Marshal(map[string]any{"type": "clear"})
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		},
+	}
+	s.consoleLog.Subscribe(listener)
+	defer s.consoleLog.Unsubscribe(listener)
+
+	// Keepalive ping every 25s.
+	keepalive := time.NewTicker(25 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-keepalive.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// adminConsoleClear clears the log buffer.
+func (s *Server) adminConsoleClear(w http.ResponseWriter, r *http.Request) {
+	s.consoleLog.Clear()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- database export/import -------------------------------------------------
+
+func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	export := map[string]any{}
+
+	// Export providers (accounts).
+	accs, _ := s.accounts.ListByTenant(ctx, adminTenant)
+	accountsOut := make([]map[string]any, 0, len(accs))
+	for _, a := range accs {
+		accountsOut = append(accountsOut, map[string]any{
+			"id": a.ID, "provider": a.Provider, "label": a.Label,
+			"auth_kind": a.AuthKind, "priority": a.Priority,
+			"disabled": a.Disabled, "proxy_pool_id": a.ProxyPoolID,
+			"metadata": a.Metadata,
+		})
+	}
+	export["accounts"] = accountsOut
+
+	// Export chains.
+	chains, _ := s.chains.ListByTenant(ctx, adminTenant)
+	chainsOut := make([]map[string]any, 0, len(chains))
+	for _, c := range chains {
+		steps := make([]map[string]any, 0, len(c.Steps))
+		for _, st := range c.Steps {
+			steps = append(steps, map[string]any{
+				"provider": st.Provider, "model": st.Model, "position": st.Position,
+			})
+		}
+		chainsOut = append(chainsOut, map[string]any{
+			"name": c.Name, "strategy": c.Strategy, "steps": steps,
+		})
+	}
+	export["chains"] = chainsOut
+
+	// Export API keys (names only, not hashes).
+	keys, _ := s.identity.List(ctx, adminTenant)
+	keysOut := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		keysOut = append(keysOut, map[string]any{
+			"name": k.Name, "disabled": k.Disabled,
+		})
+	}
+	export["keys"] = keysOut
+
+	// Export budgets.
+	budgets, _ := s.budgets.ListByTenant(ctx, adminTenant)
+	budgetsOut := make([]map[string]any, 0, len(budgets))
+	for _, b := range budgets {
+		budgetsOut = append(budgetsOut, map[string]any{
+			"scope_kind": b.ScopeKind, "scope_id": b.ScopeID,
+			"limit_micros": b.LimitMicros, "period": b.Period,
+			"alert_pct": b.AlertPct, "hard_cutoff": b.HardCutoff,
+		})
+	}
+	export["budgets"] = budgetsOut
+
+	// Export proxy pools.
+	pools, _ := s.pools.List(ctx)
+	poolsOut := make([]map[string]any, 0, len(pools))
+	for _, p := range pools {
+		poolsOut = append(poolsOut, map[string]any{
+			"name": p.Name, "proxy_url": p.ProxyURL, "no_proxy": p.NoProxy,
+			"strict": p.Strict, "is_active": p.IsActive,
+		})
+	}
+	export["proxy_pools"] = poolsOut
+
+	// Export settings.
+	export["endpoint_settings"] = s.loadEndpointSettings(ctx)
+	export["access_settings"] = s.loadAccessSettings(ctx)
+
+	// Export aliases.
+	aliases, _ := s.aliases.List(ctx)
+	aliasMap := map[string]string{}
+	for _, a := range aliases {
+		aliasMap[a.Alias] = a.Target
+	}
+	export["aliases"] = aliasMap
+
+	writeJSON(w, http.StatusOK, export)
+}
+
+func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
+	var payload map[string]json.RawMessage
+	if !decodeJSON(w, r, &payload) {
+		return
+	}
+	ctx := r.Context()
+	imported := 0
+
+	// Import chains.
+	if raw, ok := payload["chains"]; ok {
+		var chains []struct {
+			Name     string `json:"name"`
+			Strategy string `json:"strategy"`
+			Steps    []struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+				Position int    `json:"position"`
+			} `json:"steps"`
+		}
+		if err := json.Unmarshal(raw, &chains); err == nil {
+			for _, c := range chains {
+				now := time.Now()
+				chain := store.Chain{
+					ID:        uuid.NewString(),
+					TenantID:  adminTenant,
+					Name:      c.Name,
+					Strategy:  defaultStr(c.Strategy, "priority"),
+					CreatedAt: now,
+					UpdatedAt: now,
+				}
+				for _, st := range c.Steps {
+					chain.Steps = append(chain.Steps, store.ChainStep{
+						ID: uuid.NewString(), ChainID: chain.ID, Position: st.Position,
+						Provider: st.Provider, Model: st.Model, CreatedAt: now,
+					})
+				}
+				if err := s.chains.Create(ctx, chain); err == nil {
+					imported++
+				}
+			}
+		}
+	}
+
+	// Import budgets.
+	if raw, ok := payload["budgets"]; ok {
+		var budgets []struct {
+			ScopeKind  string  `json:"scope_kind"`
+			ScopeID    string  `json:"scope_id"`
+			LimitMicros int64  `json:"limit_micros"`
+			Period     string  `json:"period"`
+			AlertPct   int     `json:"alert_pct"`
+			HardCutoff bool    `json:"hard_cutoff"`
+		}
+		if err := json.Unmarshal(raw, &budgets); err == nil {
+			for _, b := range budgets {
+				now := time.Now()
+				budget := store.Budget{
+					ID:          uuid.NewString(),
+					TenantID:    adminTenant,
+					ScopeKind:   store.BudgetScope(defaultStr(b.ScopeKind, string(store.ScopeTenant))),
+					ScopeID:     defaultStr(b.ScopeID, adminTenant),
+					LimitMicros: b.LimitMicros,
+					Period:      defaultStr(b.Period, "monthly"),
+					AlertPct:    defaultInt(b.AlertPct, 80),
+					HardCutoff:  b.HardCutoff,
+					CreatedAt:   now,
+					UpdatedAt:   now,
+				}
+				if err := s.budgets.Create(ctx, budget); err == nil {
+					imported++
+				}
+			}
+		}
+	}
+
+	// Import proxy pools.
+	if raw, ok := payload["proxy_pools"]; ok {
+		var pools []struct {
+			Name     string `json:"name"`
+			ProxyURL string `json:"proxy_url"`
+			NoProxy  string `json:"no_proxy"`
+			Strict   bool   `json:"strict"`
+			IsActive bool   `json:"is_active"`
+		}
+		if err := json.Unmarshal(raw, &pools); err == nil {
+			for _, p := range pools {
+				now := time.Now()
+				pool := store.ProxyPool{
+					ID:        uuid.NewString(),
+					Name:      p.Name,
+					Type:      "http",
+					ProxyURL:  p.ProxyURL,
+					NoProxy:   p.NoProxy,
+					Strict:    p.Strict,
+					IsActive:  defaultBool(p.IsActive, true),
+					TestStatus: "unknown",
+					CreatedAt: now,
+					UpdatedAt: now,
+				}
+				if err := s.pools.Create(ctx, pool); err == nil {
+					imported++
+				}
+			}
+		}
+	}
+
+	// Import endpoint settings.
+	if raw, ok := payload["endpoint_settings"]; ok {
+		if err := s.settings.Set(ctx, endpointSettingsKey, string(raw)); err == nil {
+			imported++
+		}
+	}
+
+	// Import aliases.
+	if raw, ok := payload["aliases"]; ok {
+		var aliases map[string]string
+		if err := json.Unmarshal(raw, &aliases); err == nil {
+			for alias, target := range aliases {
+				_ = s.aliases.Set(ctx, alias, target)
+				imported++
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"imported": imported})
+}
+
+// ---- proxy test -------------------------------------------------------------
+
+func (s *Server) adminTestProxy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProxyURL string `json:"proxyUrl"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.ProxyURL == "" {
+		writeError(w, http.StatusBadRequest, "proxyUrl is required")
+		return
+	}
+
+	start := time.Now()
+	// Simple connectivity test — try to reach a known endpoint through the proxy.
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequestWithContext(r.Context(), "GET", "https://httpbin.org/ip", nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp, err := client.Do(req)
+	elapsed := time.Since(start)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"status":    resp.StatusCode,
+		"elapsedMs": elapsed.Milliseconds(),
+	})
+}
+
 // ---- helpers ----------------------------------------------------------------
 
 // validateAccountCredentials unseals an account's credentials and, if the
@@ -733,4 +1222,8 @@ func defaultInt(v, def int) int {
 		return def
 	}
 	return v
+}
+
+func defaultBool(v, def bool) bool {
+	return v || (!v && def)
 }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Network, Plus, Trash2 } from "lucide-react";
+import { Network, Plus, Trash2, PlayCircle, Upload } from "lucide-react";
 import { api, type ProxyPool } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
@@ -14,6 +14,8 @@ export function ProxyPoolsPage() {
   const [name, setName] = useState("");
   const [proxies, setProxies] = useState("");
   const [error, setError] = useState("");
+  const [showBatchImport, setShowBatchImport] = useState(false);
+  const [batchText, setBatchText] = useState("");
 
   const create = useMutation({
     mutationFn: () =>
@@ -37,6 +39,39 @@ export function ProxyPoolsPage() {
     },
   });
 
+  const batchCreate = useMutation({
+    mutationFn: async () => {
+      const lines = batchText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (lines.length === 0) throw new Error("No proxy URLs provided");
+
+      // Parse "host:port:user:pass" format to "http://user:pass@host:port"
+      const parsed = lines.map((line) => {
+        if (line.includes("://")) return line; // already a URL
+        const parts = line.split(":");
+        if (parts.length === 4) {
+          return `http://${parts[2]}:${parts[3]}@${parts[0]}:${parts[1]}`;
+        }
+        return `http://${line}`;
+      });
+
+      return api.createProxyPool({
+        name: name || `import-${Date.now()}`,
+        proxies: parsed,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["proxy-pools"] });
+      setBatchText("");
+      setName("");
+      setShowBatchImport(false);
+      toast.success("Batch import complete");
+    },
+    onError: (e) => toast.error("Batch import failed", (e as Error).message),
+  });
+
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteProxyPool(id),
     onSuccess: () => {
@@ -44,6 +79,19 @@ export function ProxyPoolsPage() {
       toast.success("Proxy pool removed");
     },
     onError: (e) => toast.error("Couldn't remove proxy pool", (e as Error).message),
+  });
+
+  const testPool = useMutation({
+    mutationFn: (id: string) => api.testProxyPool(id),
+    onSuccess: (data) => {
+      if (data.ok) {
+        toast.success("Pool test passed", "Pool connectivity verified.");
+      } else {
+        toast.error("Pool test failed", data.message);
+      }
+      qc.invalidateQueries({ queryKey: ["proxy-pools"] });
+    },
+    onError: (e) => toast.error("Test failed", (e as Error).message),
   });
 
   return (
@@ -85,7 +133,32 @@ export function ProxyPoolsPage() {
                 <Plus className="h-4 w-4" />
                 {create.isPending ? "Creating…" : "Create pool"}
               </Button>
+              <Button variant="ghost" onClick={() => setShowBatchImport(!showBatchImport)}>
+                <Upload className="h-4 w-4" />
+                Batch import
+              </Button>
             </div>
+
+            {showBatchImport && (
+              <div className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+                <p className="text-xs text-[var(--text-muted)]">
+                  Paste proxy URLs, one per line. Supports both <code>protocol://user:pass@host:port</code> and <code>host:port:user:pass</code> formats.
+                </p>
+                <textarea
+                  value={batchText}
+                  onChange={(e) => setBatchText(e.target.value)}
+                  rows={6}
+                  placeholder="host:port:user:pass\nhttp://user:pass@host:port"
+                  className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 font-mono text-xs placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+                />
+                <Button
+                  onClick={() => batchCreate.mutate()}
+                  disabled={!batchText.trim() || batchCreate.isPending}
+                >
+                  {batchCreate.isPending ? "Importing…" : "Import proxies"}
+                </Button>
+              </div>
+            )}
           </div>
         </Card>
 
@@ -101,7 +174,13 @@ export function ProxyPoolsPage() {
           ) : (
             <div className="divide-y divide-[var(--border)]">
               {pools.data.pools.map((p) => (
-                <PoolRow key={p.id} pool={p} onDelete={() => remove.mutate(p.id)} />
+                <PoolRow
+                  key={p.id}
+                  pool={p}
+                  onDelete={() => remove.mutate(p.id)}
+                  onTest={() => testPool.mutate(p.id)}
+                  testing={testPool.isPending}
+                />
               ))}
             </div>
           )}
@@ -111,10 +190,20 @@ export function ProxyPoolsPage() {
   );
 }
 
-function PoolRow({ pool, onDelete }: { pool: ProxyPool; onDelete: () => void }) {
+function PoolRow({
+  pool,
+  onDelete,
+  onTest,
+  testing,
+}: {
+  pool: ProxyPool;
+  onDelete: () => void;
+  onTest: () => void;
+  testing: boolean;
+}) {
   return (
     <div className="flex items-start justify-between gap-4 px-6 py-4">
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">{pool.name}</span>
           <Badge tone={pool.enabled ? "success" : "neutral"}>
@@ -137,9 +226,14 @@ function PoolRow({ pool, onDelete }: { pool: ProxyPool; onDelete: () => void }) 
           </ul>
         )}
       </div>
-      <Button variant="danger" onClick={onDelete} className="shrink-0">
-        <Trash2 className="h-4 w-4" />
-      </Button>
+      <div className="flex items-center gap-1">
+        <Button variant="ghost" onClick={onTest} disabled={testing} className="px-2">
+          <PlayCircle className={`h-4 w-4 ${testing ? "animate-pulse" : ""}`} />
+        </Button>
+        <Button variant="danger" onClick={onDelete} className="shrink-0">
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 }

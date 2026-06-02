@@ -289,35 +289,10 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 
 // ---- console log ------------------------------------------------------------
 
-// adminConsoleLog returns the most recent metered requests as a chronological
-// console feed. It is the data source for the Console Log page.
+// adminConsoleLog returns the buffered log lines from the console log.
 func (s *Server) adminConsoleLog(w http.ResponseWriter, r *http.Request) {
-	recent, err := s.usage.Recent(r.Context(), adminTenant, 100)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	rows := make([]map[string]any, 0, len(recent))
-	for _, rec := range recent {
-		level := "info"
-		if rec.LatencyMS == 0 {
-			level = "error"
-		} else if rec.LatencyMS > 8000 {
-			level = "warn"
-		}
-		rows = append(rows, map[string]any{
-			"id":         rec.ID,
-			"level":      level,
-			"provider":   rec.Provider,
-			"model":      rec.Model,
-			"tokens":     rec.PromptTokens + rec.CompletionTokens,
-			"cost_usd":   float64(rec.CostMicros) / 1_000_000,
-			"cache_hit":  rec.CacheHit,
-			"latency_ms": rec.LatencyMS,
-			"created_at": rec.CreatedAt,
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": rows})
+	lines := s.consoleLog.Lines()
+	writeJSON(w, http.StatusOK, map[string]any{"logs": lines})
 }
 
 // ---- proxy pools ------------------------------------------------------------

@@ -1,75 +1,122 @@
-import { useQuery } from "@tanstack/react-query";
-import { ScrollText, RefreshCw } from "lucide-react";
-import { api, type ConsoleEntry } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { ScrollText, Trash2 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
-import { Card, CardHeader, Button, Spinner, EmptyState } from "../components/ui";
+import { Card, Button, EmptyState } from "../components/ui";
 
-const levelMeta: Record<string, { label: string; className: string }> = {
-  info: { label: "INFO", className: "text-accent-600 dark:text-accent-300" },
-  warn: { label: "WARN", className: "text-[color:var(--color-warning)]" },
-  error: { label: "ERR ", className: "text-[color:var(--color-danger)]" },
+const LOG_LEVEL_COLORS: Record<string, string> = {
+  LOG: "text-green-400",
+  INFO: "text-blue-400",
+  WARN: "text-yellow-400",
+  ERROR: "text-red-400",
+  DEBUG: "text-purple-400",
 };
 
+function colorLine(line: string) {
+  // Extract level tag from patterns like [INFO] or [ERROR]
+  const match = line.match(/\[(\w+)\]/g);
+  const levelTag = match ? match[1]?.replace(/\[|\]/g, "") : null;
+  const color = LOG_LEVEL_COLORS[levelTag || ""] || "text-green-400";
+  return <span className={color}>{line}</span>;
+}
+
 export function ConsoleLogPage() {
-  const log = useQuery({ queryKey: ["console-log"], queryFn: () => api.consoleLog() });
-  const entries = log.data?.entries ?? [];
+  const [logs, setLogs] = useState<string[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const es = new EventSource("/api/console/stream");
+
+    es.onopen = () => setConnected(true);
+
+    es.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "init") {
+        setLogs(msg.logs || []);
+        setLoading(false);
+      } else if (msg.type === "line") {
+        setLogs((prev) => {
+          const next = [...prev, msg.line];
+          // Cap at 500 lines.
+          return next.length > 500 ? next.slice(-500) : next;
+        });
+      } else if (msg.type === "clear") {
+        setLogs([]);
+      }
+    };
+
+    es.onerror = () => {
+      setConnected(false);
+    };
+
+    return () => es.close();
+  }, []);
+
+  // Auto-scroll to bottom on new logs.
+  useEffect(() => {
+    if (!logRef.current) return;
+    logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logs]);
+
+  const handleClear = async () => {
+    try {
+      await fetch("/api/console", { method: "DELETE" });
+      // UI cleared via SSE "clear" event
+    } catch {
+      // ignore
+    }
+  };
 
   return (
     <>
       <PageHeader
         title="Console Log"
         icon={ScrollText}
-        description="A live feed of the requests KeiRouter has handled, newest first."
+        description={
+          connected
+            ? "Live debug feed — request pipeline output appears here."
+            : "Connecting to live stream…"
+        }
         action={
-          <Button variant="ghost" onClick={() => log.refetch()} disabled={log.isFetching}>
-            <RefreshCw className={`h-4 w-4 ${log.isFetching ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <span className={`h-2 w-2 rounded-full ${connected ? "bg-green-500" : "bg-[var(--text-muted)]"}`} />
+            <Button variant="ghost" onClick={handleClear} disabled={logs.length === 0}>
+              <Trash2 className="h-4 w-4" />
+              Clear
+            </Button>
+          </div>
         }
       />
 
       <Card>
-        <CardHeader title={`${entries.length} entries`} />
-        {log.isLoading ? (
-          <Spinner />
-        ) : !entries.length ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--border)] border-t-accent-500" />
+          </div>
+        ) : !logs.length ? (
           <EmptyState
-            title="No log entries yet"
+            title="No console logs yet"
             hint="Requests will appear here once traffic flows through KeiRouter."
           />
         ) : (
-          <div className="max-h-[60vh] overflow-y-auto rounded-b-2xl bg-[var(--bg-subtle)] p-4 font-mono text-xs leading-relaxed">
-            {entries.map((e) => (
-              <LogLine key={e.id} entry={e} />
-            ))}
+          <div
+            ref={logRef}
+            className="rounded-b-2xl bg-black p-4 font-mono text-xs leading-relaxed"
+            style={{ height: "calc(100vh - 220px)", overflowY: "auto" }}
+          >
+            {logs.length === 0 ? (
+              <span className="text-[var(--text-muted)]">No console logs yet.</span>
+            ) : (
+              <div className="space-y-0.5">
+                {logs.map((line, i) => (
+                  <div key={i}>{colorLine(line)}</div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </Card>
     </>
   );
-}
-
-function LogLine({ entry: e }: { entry: ConsoleEntry }) {
-  const meta = levelMeta[e.level] ?? levelMeta.info;
-  return (
-    <div className="flex gap-3 py-0.5">
-      <span className="shrink-0 text-[var(--text-muted)]">{fmtTime(e.created_at)}</span>
-      <span className={`shrink-0 font-semibold ${meta.className}`}>{meta.label}</span>
-      <span className="min-w-0 flex-1 truncate">
-        <span className="text-[var(--text)]">{e.provider}</span>
-        <span className="text-[var(--text-muted)]"> · {e.model || "—"}</span>
-        <span className="text-[var(--text-muted)]">
-          {" "}
-          · {e.tokens.toLocaleString()} tok · ${e.cost_usd.toFixed(3)} · {e.latency_ms}ms
-          {e.cache_hit ? " · cache" : ""}
-        </span>
-      </span>
-    </div>
-  );
-}
-
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "--:--:--";
-  return d.toLocaleTimeString([], { hour12: false });
 }

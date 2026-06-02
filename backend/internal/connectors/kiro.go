@@ -177,7 +177,10 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	if region == "" {
 		region = "us-east-1"
 	}
-	profileArn := creds.Extra["kiro_profile_arn"]
+	profileArn := creds.Extra["profile_arn"]
+	if profileArn == "" {
+		profileArn = creds.Extra["kiro_profile_arn"]
+	}
 	authMethod := creds.Extra["kiro_auth_method"]
 	if profileArn == "" {
 		profileArn = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
@@ -267,23 +270,47 @@ type kiroQuotaBreakdown struct {
 	} `json:"freeTrialInfo"`
 }
 
-// parseKiroPrecision extracts an int from a field that may be a bare number or
-// an object {"value": N, "precision": "EXACT"}.
+// parseKiroDateField extracts a date string from a field that may be a bare
+// string or a Unix timestamp number.
+func parseKiroDateField(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// Try string first.
+	var s string
+	if json.Unmarshal(raw, &s) == nil && s != "" {
+		return s
+	}
+	// Try number (Unix timestamp).
+	var n int64
+	if json.Unmarshal(raw, &n) == nil && n > 0 {
+		return fmt.Sprintf("%d", n)
+	}
+	// Try float.
+	var f float64
+	if json.Unmarshal(raw, &f) == nil && f > 0 {
+		return fmt.Sprintf("%d", int64(f))
+	}
+	return ""
+}
+
+// parseKiroPrecision extracts an int from a field that may be a bare number
+// (int or float) or an object {"value": N, "precision": "EXACT"}.
 func parseKiroPrecision(raw json.RawMessage) int {
 	if len(raw) == 0 {
 		return 0
 	}
-	// Try bare number first.
-	var n int
-	if json.Unmarshal(raw, &n) == nil {
-		return n
+	// Try bare number first (int or float).
+	var f float64
+	if json.Unmarshal(raw, &f) == nil {
+		return int(f)
 	}
 	// Try object form.
 	var obj struct {
-		Value int `json:"value"`
+		Value float64 `json:"value"`
 	}
 	if json.Unmarshal(raw, &obj) == nil {
-		return obj.Value
+		return int(obj.Value)
 	}
 	return 0
 }
@@ -296,16 +323,16 @@ func parseKiroQuota(body []byte) (*QuotaResult, error) {
 		SubscriptionInfo   struct {
 			SubscriptionTitle string `json:"subscriptionTitle"`
 		} `json:"subscriptionInfo"`
-		NextDateReset string `json:"nextDateReset"`
-		ResetDate     string `json:"resetDate"`
+		NextDateReset json.RawMessage `json:"nextDateReset"`
+		ResetDate     json.RawMessage `json:"resetDate"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, fmt.Errorf("parse quota: %w", err)
 	}
 
-	resetAt := data.NextDateReset
+	resetAt := parseKiroDateField(data.NextDateReset)
 	if resetAt == "" {
-		resetAt = data.ResetDate
+		resetAt = parseKiroDateField(data.ResetDate)
 	}
 
 	planName := data.SubscriptionInfo.SubscriptionTitle

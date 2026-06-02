@@ -35,6 +35,14 @@ export interface EndpointSettings {
   caveman_level: string;
   terse_enabled: boolean;
   terse_level: string;
+  routing_strategy: string;
+  sticky_limit: number;
+  combo_strategy: string;
+  combo_sticky_limit: number;
+  outbound_proxy_enabled: boolean;
+  outbound_proxy_url: string;
+  outbound_no_proxy: string;
+  observability_enabled?: boolean;
 }
 
 export interface OAuthProvider {
@@ -83,6 +91,7 @@ export interface Account {
   auth_kind: string;
   priority: number;
   disabled: boolean;
+  proxy_pool_id?: string;
   created_at: string;
 }
 
@@ -195,17 +204,8 @@ export interface QuotaAccount {
   updated_at: string;
 }
 
-export interface ConsoleEntry {
-  id: string;
-  level: string; // info | warn | error
-  provider: string;
-  model: string;
-  tokens: number;
-  cost_usd: number;
-  cache_hit: boolean;
-  latency_ms: number;
-  created_at: string;
-}
+// Console log now uses raw text lines (like 9router).
+// The /api/console endpoint returns { logs: string[] }.
 
 export interface ProxyPool {
   id: string;
@@ -237,6 +237,9 @@ export interface CLITool {
   dialect: string;
   instructions: string;
   snippet: string;
+  installed: boolean;
+  configured: boolean;
+  config_path: string;
 }
 
 export interface CLIToolsResponse {
@@ -299,12 +302,14 @@ export const api = {
 
   listKeys: () => request<{ keys: APIKey[] }>("GET", "/keys"),
   createKey: (name: string) => request<CreatedKey>("POST", "/keys", { name }),
+  updateKey: (id: string, patch: { disabled: boolean }) =>
+    request<{ id: string; disabled: boolean }>("PATCH", `/keys/${id}`, patch),
   deleteKey: (id: string) => request<void>("DELETE", `/keys/${id}`),
 
   listAccounts: () => request<{ accounts: Account[] }>("GET", "/accounts"),
   createAccount: (input: { provider: string; label: string; api_key: string; base_url?: string; region?: string }) =>
     request<{ id: string }>("POST", "/accounts", input),
-  updateAccount: (id: string, patch: { label?: string; priority?: number; disabled?: boolean }) =>
+  updateAccount: (id: string, patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string }) =>
     request<{ id: string }>("PATCH", `/accounts/${id}`, patch),
   deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${id}`),
   testAccount: (id: string) =>
@@ -317,6 +322,8 @@ export const api = {
   listChains: () => request<{ chains: Chain[] }>("GET", "/chains"),
   createChain: (input: { name: string; steps: { provider: string; model: string }[] }) =>
     request<{ id: string }>("POST", "/chains", input),
+  updateChain: (id: string, patch: { name?: string; strategy?: string; steps?: { provider: string; model: string }[] }) =>
+    request<{ id: string }>("PATCH", `/chains/${id}`, patch),
   deleteChain: (id: string) => request<void>("DELETE", `/chains/${id}`),
 
   listBudgets: () => request<{ budgets: Budget[] }>("GET", "/budgets"),
@@ -331,10 +338,14 @@ export const api = {
   quota: (period: string) =>
     request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=${period}`),
 
-  consoleLog: () => request<{ entries: ConsoleEntry[] }>("GET", "/console"),
+  consoleLog: () => request<{ logs: string[] }>("GET", "/console"),
 
   cliTools: (model?: string) =>
     request<CLIToolsResponse>("GET", model ? `/cli-tools?model=${encodeURIComponent(model)}` : "/cli-tools"),
+  cliToolConfigure: (toolId: string, body: { base_url: string; api_key: string; models?: string[] }) =>
+    request<{ ok: boolean }>("POST", `/cli-tools/${toolId}/configure`, body),
+  cliToolRemove: (toolId: string) =>
+    request<{ ok: boolean }>("POST", `/cli-tools/${toolId}/remove`),
 
   listProxyPools: () => request<{ pools: ProxyPool[] }>("GET", "/proxy-pools"),
   createProxyPool: (input: { name: string; proxies: string[]; enabled?: boolean }) =>
@@ -355,6 +366,27 @@ export const api = {
   accessSettings: () => request<AccessSettings>("GET", "/settings/access"),
   updateAccessSettings: (patch: Partial<Omit<AccessSettings, "endpoint_url">>) =>
     request<AccessSettings>("POST", "/settings/access", patch),
+
+  // Model management.
+  listDisabledModels: (providerAlias: string) =>
+    request<{ ids: string[] }>("GET", `/models/disabled?provider=${encodeURIComponent(providerAlias)}`),
+  disableModels: (providerAlias: string, ids: string[]) =>
+    request<{ ids: string[] }>("POST", "/models/disabled", { providerAlias, ids }),
+  enableModels: (providerAlias: string, ids: string[]) =>
+    request<{ ids: string[] }>("DELETE", "/models/disabled", { providerAlias, ids }),
+
+  // Database export/import.
+  exportDatabase: () => request<Record<string, unknown>>("GET", "/settings/database"),
+  importDatabase: (payload: Record<string, unknown>) =>
+    request<{ imported: number }>("POST", "/settings/database", payload),
+
+  // Proxy test.
+  testProxy: (proxyUrl: string) =>
+    request<{ ok: boolean; status?: number; elapsedMs?: number; error?: string }>("POST", "/settings/proxy-test", { proxyUrl }),
+
+  // Proxy pool test.
+  testProxyPool: (id: string) =>
+    request<{ ok: boolean; message?: string }>("POST", `/proxy-pools/${id}/test`),
 
   // OAuth provider connections.
   oauthProviders: () => request<{ providers: OAuthProvider[] }>("GET", "/oauth/providers"),

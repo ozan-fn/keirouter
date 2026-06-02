@@ -12,6 +12,8 @@ import {
   KeyRound,
   Plus,
   Trash2,
+  ToggleLeft,
+  ToggleRight,
 } from "lucide-react";
 import { api, type AccessSettings, type EndpointSettings, type APIKey, type CreatedKey } from "../lib/api";
 import { PageHeader } from "../components/Layout";
@@ -294,6 +296,11 @@ function APIKeys() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["keys"] }),
   });
 
+  const toggleDisabled = useMutation({
+    mutationFn: ({ id, disabled }: { id: string; disabled: boolean }) => api.updateKey(id, { disabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["keys"] }),
+  });
+
   return (
     <Card>
       <CardHeader
@@ -334,7 +341,7 @@ function APIKeys() {
       ) : (
         <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
           {keys.data.keys.map((k) => (
-            <KeyRow key={k.id} k={k} onDelete={() => remove.mutate(k.id)} />
+            <KeyRow key={k.id} k={k} onDelete={() => remove.mutate(k.id)} onToggle={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })} />
           ))}
         </div>
       )}
@@ -342,7 +349,7 @@ function APIKeys() {
   );
 }
 
-function KeyRow({ k, onDelete }: { k: APIKey; onDelete: () => void }) {
+function KeyRow({ k, onDelete, onToggle }: { k: APIKey; onDelete: () => void; onToggle: () => void }) {
   return (
     <div className="flex items-center justify-between gap-4 px-6 py-4">
       <div className="flex items-center gap-3">
@@ -356,6 +363,9 @@ function KeyRow({ k, onDelete }: { k: APIKey; onDelete: () => void }) {
       </div>
       <div className="flex items-center gap-3">
         <Badge tone={k.disabled ? "neutral" : "success"}>{k.disabled ? "Disabled" : "Active"}</Badge>
+        <Button variant="ghost" onClick={onToggle} className="px-2" title={k.disabled ? "Enable key" : "Disable key"}>
+          {k.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4" />}
+        </Button>
         <Button variant="danger" onClick={onDelete}>
           <Trash2 className="h-4 w-4" />
         </Button>

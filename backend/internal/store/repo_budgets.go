@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // BudgetRepo persists spend limits and chains.
@@ -197,6 +198,35 @@ func (r *ChainRepo) Delete(ctx context.Context, id string) error {
 	q := r.db.rebind(`DELETE FROM chains WHERE id = ?`)
 	_, err := r.db.sql.ExecContext(ctx, q, id)
 	return err
+}
+
+// Update replaces a chain's name, strategy, and steps in a transaction.
+func (r *ChainRepo) Update(ctx context.Context, c Chain) error {
+	tx, err := r.db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	uq := r.db.rebind(`UPDATE chains SET name = ?, strategy = ?, updated_at = ? WHERE id = ?`)
+	if _, err := tx.ExecContext(ctx, uq, c.Name, c.Strategy, formatTime(time.Now()), c.ID); err != nil {
+		return fmt.Errorf("store: update chain: %w", err)
+	}
+
+	// Replace steps: delete old, insert new.
+	dq := r.db.rebind(`DELETE FROM chain_steps WHERE chain_id = ?`)
+	if _, err := tx.ExecContext(ctx, dq, c.ID); err != nil {
+		return fmt.Errorf("store: delete chain steps: %w", err)
+	}
+
+	sq := r.db.rebind(`INSERT INTO chain_steps (id, chain_id, position, provider, model, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`)
+	for _, s := range c.Steps {
+		if _, err := tx.ExecContext(ctx, sq, s.ID, c.ID, s.Position, s.Provider, s.Model, formatTime(time.Now())); err != nil {
+			return fmt.Errorf("store: create chain step: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (r *ChainRepo) steps(ctx context.Context, chainID string) ([]ChainStep, error) {

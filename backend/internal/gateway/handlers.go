@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
@@ -13,6 +14,29 @@ import (
 
 // maxBodyBytes caps inbound request bodies to protect against oversized uploads.
 const maxBodyBytes = 32 << 20 // 32 MiB
+
+// logRequest logs a completed request to the console log buffer.
+func (s *Server) logRequest(provider, model string, tokens int, costMicros int64, latencyMs int, cacheHit bool, err error) {
+	if s.consoleLog == nil {
+		return
+	}
+	level := "INFO"
+	if err != nil {
+		level = "ERROR"
+	} else if latencyMs > 8000 {
+		level = "WARN"
+	}
+	cost := float64(costMicros) / 1_000_000
+	cache := ""
+	if cacheHit {
+		cache = " · cache"
+	}
+	s.consoleLog.Logf(level, "%s · %s · %d tok · $%.4f · %dms%s",
+		provider, model, tokens, cost, latencyMs, cache)
+	if err != nil {
+		s.consoleLog.Logf("ERROR", "  └─ %v", err)
+	}
+}
 
 // handleOpenAIChat serves /v1/chat/completions in the OpenAI dialect.
 func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
@@ -89,8 +113,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 
 // unaryChat runs a non-streaming request and renders the response.
 func (s *Server) unaryChat(w http.ResponseWriter, r *http.Request, codec transform.Codec, req *core.ChatRequest, opts pipeline.Options) {
+	start := time.Now()
 	result, err := s.pipeline.Chat(r.Context(), req, opts)
+	latency := int(time.Since(start).Milliseconds())
 	if err != nil {
+		s.logRequest(req.Model, req.Model, 0, 0, latency, false, err)
 		s.writeProviderError(w, err)
 		return
 	}
@@ -100,6 +127,8 @@ func (s *Server) unaryChat(w http.ResponseWriter, r *http.Request, codec transfo
 		writeError(w, http.StatusInternalServerError, "failed to render response")
 		return
 	}
+	tokens := result.Response.Usage.PromptTokens + result.Response.Usage.CompletionTokens
+	s.logRequest(result.Provider, result.Model, tokens, result.CostMicros, latency, false, nil)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-KeiRouter-Provider", result.Provider)
 	w.Header().Set("X-KeiRouter-Model", result.Model)
@@ -122,8 +151,11 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		return
 	}
 
+	start := time.Now()
 	result, err := s.pipeline.Stream(r.Context(), req, opts)
 	if err != nil {
+		latency := int(time.Since(start).Milliseconds())
+		s.logRequest(req.Model, req.Model, 0, 0, latency, false, err)
 		s.writeProviderError(w, err)
 		return
 	}
@@ -137,6 +169,8 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	flusher.Flush()
 
 	state := &transform.StreamState{Model: result.Model}
+	streamStart := time.Now()
+	var totalTokens int
 
 	for chunk := range result.Chunks {
 		if chunk.Type == core.ChunkError {
@@ -161,6 +195,9 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		_, _ = w.Write(ev)
 	}
 	flusher.Flush()
+
+	latency := int(time.Since(streamStart).Milliseconds())
+	s.logRequest(result.Provider, result.Model, totalTokens, 0, latency, false, nil)
 }
 
 // writeProviderError maps a structured provider error to an HTTP status.

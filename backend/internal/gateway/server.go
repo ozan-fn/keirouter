@@ -20,6 +20,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/clitools"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/observ"
@@ -47,6 +48,7 @@ type Server struct {
 	vault    *vault.Vault
 	codecs   *transform.Registry
 	metrics  *observ.Metrics
+	consoleLog *consolelog.Buffer
 	cliTools    *clitools.Registry
 	cliToolHome string
 	frontendDir string
@@ -72,6 +74,7 @@ type Deps struct {
 	Vault    *vault.Vault
 	Codecs   *transform.Registry
 	Metrics  *observ.Metrics
+	ConsoleLog *consolelog.Buffer
 	CLITools    *clitools.Registry
 	CLITHome    string
 	FrontendDir string
@@ -91,6 +94,10 @@ func New(d Deps) *Server {
 	if cliToolHome == "" {
 		cliToolHome, _ = os.UserHomeDir()
 	}
+	conLog := d.ConsoleLog
+	if conLog == nil {
+		conLog = consolelog.New()
+	}
 	s := &Server{
 		cfg:      d.Config,
 		log:      log,
@@ -108,6 +115,7 @@ func New(d Deps) *Server {
 		vault:    d.Vault,
 		codecs:   d.Codecs,
 		metrics:  d.Metrics,
+		consoleLog: conLog,
 		cliTools:    cliTools,
 		cliToolHome: cliToolHome,
 		frontendDir: d.FrontendDir,
