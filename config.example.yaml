@@ -41,14 +41,34 @@ security:
   bind_loopback_only: true
 
 cache:
-  # Semantic response cache (Pro feature). Off by default.
+  # Semantic response cache. Off by default. When enabled, repeated or
+  # near-identical prompts are served from cache for zero upstream cost.
   enabled: false
-  # "memory" (local) or "redis".
+  # "memory" (in-process, lost on restart) or "redis" (persistent, shared).
   backend: memory
+  # Redis URL for backend=redis. Format: redis://host:port[/db]
   redis_url: ""
-  # A candidate cache hit must score at least this cosine similarity.
+  # A candidate cache hit must score at least this cosine similarity [0,1].
+  # Lower values allow more fuzzy matches (e.g. 0.85 catches paraphrases);
+  # higher values restrict to near-exact prompts.
   similarity_threshold: 0.95
+  # How long a cached entry stays valid.
   ttl: 1h
+
+  # Embedding provider. "hash" (default) gives exact-match caching with zero
+  # dependencies. "api" calls an OpenAI-compatible embeddings API for true
+  # semantic near-match caching — prompts like "How do Go channels work?" and
+  # "Explain Go channels" will match, saving 30-60% on repetitive workloads.
+  embedding_provider: hash
+  # Base URL for the embedding API (OpenAI, Voyage, local TEI, etc.).
+  embedding_api_url: "https://api.openai.com/v1"
+  # API key for the embedding provider. Can also be set via
+  # KEIROUTER_CACHE__EMBEDDING_API_KEY env var.
+  embedding_api_key: ""
+  # Embedding model name.
+  embedding_model: "text-embedding-3-small"
+  # Output vector dimensions (must match the model's native dimension).
+  embedding_dims: 1536
 
 log:
   # debug | info | warn | error

@@ -53,6 +53,20 @@ func (r *BudgetRepo) Get(ctx context.Context, id string) (Budget, error) {
 	return b, err
 }
 
+// Update modifies an existing budget's mutable fields.
+func (r *BudgetRepo) Update(ctx context.Context, b Budget) error {
+	q := r.db.rebind(`UPDATE budgets SET limit_micros = ?, period = ?, alert_pct = ?, hard_cutoff = ?, updated_at = ? WHERE id = ?`)
+	res, err := r.db.sql.ExecContext(ctx, q, b.LimitMicros, b.Period, b.AlertPct, boolToInt(b.HardCutoff), formatTime(b.UpdatedAt), b.ID)
+	if err != nil {
+		return fmt.Errorf("store: update budget: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Delete removes a budget.
 func (r *BudgetRepo) Delete(ctx context.Context, id string) error {
 	q := r.db.rebind(`DELETE FROM budgets WHERE id = ?`)

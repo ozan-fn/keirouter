@@ -12,8 +12,8 @@ const sessionCookie = "kr_session"
 
 // mountAuth registers unauthenticated auth endpoints and the session-protected
 // dashboard status endpoint.
+// Note: login is registered separately in server.go with rate limiting.
 func (s *Server) mountAuth(r chi.Router) {
-	r.Post("/login", s.handleLogin)
 	r.Post("/logout", s.handleLogout)
 	// Status reports onboarding/default-password state so the UI can decide
 	// whether to show the onboarding flow. Safe to expose unauthenticated: it
@@ -61,6 +61,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -86,7 +87,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.auth.SetPassword(r.Context(), body.NewPassword); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, sanitizeError(s.log, err, "password change failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -94,7 +95,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCompleteOnboarding(w http.ResponseWriter, r *http.Request) {
 	if err := s.auth.CompleteOnboarding(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "onboarding completion failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -108,6 +109,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 		Path:     "/",
 		Expires:  time.Now().Add(s.auth.TTL()),
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 }

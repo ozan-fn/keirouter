@@ -25,10 +25,9 @@ type EndpointSettings struct {
 	CavemanEnabled bool   `json:"caveman_enabled"`
 	CavemanLevel   string `json:"caveman_level"`
 
-	// TerseEnabled toggles the alternative terse output mode; TerseLevel is one
-	// of "light", "medium", "aggressive".
-	TerseEnabled bool   `json:"terse_enabled"`
-	TerseLevel   string `json:"terse_level"`
+	// TerseEnabled toggles terse mode, which serializes messages and tools into
+	// the compact TERSE format for token-efficient context.
+	TerseEnabled bool `json:"terse_enabled"`
 
 	// Routing strategy fields (mirrors 9router).
 	RoutingStrategy     string `json:"routing_strategy"`      // "fill-first" | "round-robin"
@@ -52,7 +51,6 @@ func defaultEndpointSettings() EndpointSettings {
 		CavemanEnabled:       false,
 		CavemanLevel:         string(caveman.LevelFull),
 		TerseEnabled:         false,
-		TerseLevel:           string(terse.LevelMedium),
 		RoutingStrategy:      "fill-first",
 		StickyLimit:          3,
 		ComboStrategy:        "fallback",
@@ -82,9 +80,6 @@ func (s *Server) loadEndpointSettings(ctx context.Context) EndpointSettings {
 	if es.CavemanLevel == "" {
 		es.CavemanLevel = def.CavemanLevel
 	}
-	if es.TerseLevel == "" {
-		es.TerseLevel = def.TerseLevel
-	}
 	if es.RoutingStrategy == "" {
 		es.RoutingStrategy = def.RoutingStrategy
 	}
@@ -109,7 +104,7 @@ func (s *Server) slimmerConfig() slimmer.Config {
 // terseConfig resolves terse-mode settings from endpoint settings.
 func (s *Server) terseConfig() terse.Config {
 	es := s.loadEndpointSettings(context.Background())
-	return terse.Config{Enabled: es.TerseEnabled, Level: terse.Level(es.TerseLevel)}
+	return terse.Config{Enabled: es.TerseEnabled}
 }
 
 // cavemanConfig resolves caveman settings from endpoint settings.
@@ -139,7 +134,6 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 		CavemanEnabled       *bool   `json:"caveman_enabled"`
 		CavemanLevel         *string `json:"caveman_level"`
 		TerseEnabled         *bool   `json:"terse_enabled"`
-		TerseLevel           *string `json:"terse_level"`
 		RoutingStrategy      *string `json:"routing_strategy"`
 		StickyLimit          *int    `json:"sticky_limit"`
 		ComboStrategy        *string `json:"combo_strategy"`
@@ -168,9 +162,6 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	}
 	if patch.TerseEnabled != nil {
 		current.TerseEnabled = *patch.TerseEnabled
-	}
-	if patch.TerseLevel != nil {
-		current.TerseLevel = *patch.TerseLevel
 	}
 	if patch.RoutingStrategy != nil {
 		current.RoutingStrategy = *patch.RoutingStrategy
@@ -219,9 +210,11 @@ const accessSettingsKey = "access_settings"
 // preferences; the actual tunnels are provisioned out-of-band, so the toggles
 // record intent and surface the primary endpoint URL.
 type AccessSettings struct {
-	LocalEnabled  bool `json:"local_enabled"`
-	TunnelEnabled bool `json:"tunnel_enabled"`
-	Tailscale     bool `json:"tailscale_enabled"`
+	LocalEnabled  bool   `json:"local_enabled"`
+	TunnelEnabled bool   `json:"tunnel_enabled"`
+	Tailscale     bool   `json:"tailscale_enabled"`
+	TunnelURL     string `json:"tunnel_url,omitempty"`
+	TailscaleURL  string `json:"tailscale_url,omitempty"`
 }
 
 func defaultAccessSettings() AccessSettings {
@@ -252,6 +245,8 @@ func (s *Server) adminGetAccessSettings(w http.ResponseWriter, r *http.Request) 
 		"local_enabled":     as.LocalEnabled,
 		"tunnel_enabled":    as.TunnelEnabled,
 		"tailscale_enabled": as.Tailscale,
+		"tunnel_url":        as.TunnelURL,
+		"tailscale_url":     as.TailscaleURL,
 		"endpoint_url":      s.publicBaseURL(r) + "/v1",
 	})
 }

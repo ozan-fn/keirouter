@@ -1,24 +1,34 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import {
-  TerminalSquare,
-  Copy,
-  Check,
-  Settings,
-  Trash2,
-  CheckCircle2,
-  XCircle,
-  Loader2,
+  TerminalSquare, ChevronRight, CheckCircle2, XCircle, CircleDot,
 } from "lucide-react";
-import { api, type CLITool } from "../lib/api";
+import { api } from "../lib/api";
+import { brandColor } from "../lib/brand-colors";
 import { PageHeader } from "../components/Layout";
-import { Card, SectionHeader, Input, Field, Spinner } from "../components/ui";
+import { Card } from "../components/ui";
+
+// Tool metadata — descriptions and images. Colors come from brand-colors.ts.
+const toolMeta: Record<string, { description: string; image: string }> = {
+  claude:       { description: "Anthropic's CLI coding agent", image: "/providers/claude.png" },
+  codex:        { description: "OpenAI Codex CLI", image: "/providers/codex.png" },
+  cline:        { description: "VS Code AI coding assistant", image: "/providers/cline.png" },
+  copilot:      { description: "GitHub Copilot Chat", image: "/providers/copilot.png" },
+  droid:        { description: "Factory Droid CLI", image: "/providers/droid.png" },
+  openclaw:     { description: "OpenClaw agent framework", image: "/providers/openclaw.png" },
+  opencode:     { description: "OpenCode multi-model agent", image: "/providers/opencode.png" },
+  kilo:         { description: "Kilo Code AI assistant", image: "/providers/kilocode.png" },
+  hermes:       { description: "Hermes Agent CLI", image: "/providers/hermes.png" },
+  deepseek:     { description: "DeepSeek TUI", image: "/providers/deepseek-tui.png" },
+  jcode:        { description: "jcode coding agent", image: "/providers/jcode.png" },
+};
 
 export function CLIToolsPage() {
-  const [model, setModel] = useState("");
+  const navigate = useNavigate();
   const tools = useQuery({
-    queryKey: ["cli-tools", model],
-    queryFn: () => api.cliTools(model || undefined),
+    queryKey: ["cli-tools"],
+    queryFn: () => api.cliTools(),
   });
 
   return (
@@ -26,35 +36,44 @@ export function CLIToolsPage() {
       <PageHeader
         title="CLI Tools"
         icon={TerminalSquare}
-        description="Copy-paste configuration for coding tools, wired to this KeiRouter instance."
+        description="One-click configuration for coding tools, wired to this KeiRouter instance."
       />
 
-      <Card className="mb-6 p-5">
-        <Field label="Model to embed in snippets">
-          <Input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="openai/gpt-4o or chain:my-chain"
-            className="max-w-md"
-          />
-        </Field>
-        {tools.data && (
-          <p className="mt-3 text-xs text-[var(--text-muted)]">
-            Base URL: <span className="font-mono">{tools.data.base_url}</span>
-          </p>
-        )}
-      </Card>
-
       {tools.isLoading ? (
-        <Spinner />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Card key={i} className="h-24 animate-pulse">&nbsp;</Card>
+          ))}
+        </div>
       ) : tools.isError ? (
         <Card className="px-6 py-10 text-center text-sm text-[color:var(--color-danger)]">
           Failed to load CLI tools.
         </Card>
       ) : (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {tools.data!.tools.map((t) => (
-            <ToolCard key={t.id} tool={t} baseURL={tools.data!.base_url} />
+            <button
+              key={t.id}
+              onClick={() => navigate(`/cli-tools/${t.id}`)}
+              className="group flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-5 py-4 text-left transition-colors hover:border-accent-500/40 hover:shadow-[var(--shadow-pop)]"
+            >
+              {/* Icon */}
+              <ToolIcon id={t.id} />
+
+              {/* Info */}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium">{t.name}</span>
+                  <StatusBadge installed={t.installed} configured={t.configured} />
+                </div>
+                <p className="mt-0.5 truncate text-xs text-[var(--text-muted)]">
+                  {toolMeta[t.id]?.description ?? t.dialect}
+                </p>
+              </div>
+
+              {/* Chevron */}
+              <ChevronRight className="h-4 w-4 shrink-0 text-[var(--text-muted)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--text)]" />
+            </button>
           ))}
         </div>
       )}
@@ -62,164 +81,50 @@ export function CLIToolsPage() {
   );
 }
 
-function ToolCard({
-  tool,
-  baseURL,
-}: {
-  tool: CLITool;
-  baseURL: string;
-}) {
-  const [copied, setCopied] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [showConfigure, setShowConfigure] = useState(false);
-  const queryClient = useQueryClient();
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(tool.snippet);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard unavailable; no-op
-    }
-  };
-
-  const configureMut = useMutation({
-    mutationFn: () =>
-      api.cliToolConfigure(tool.id, {
-        base_url: baseURL,
-        api_key: apiKey || "sk_keirouter",
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["cli-tools"] });
-      setShowConfigure(false);
-      setApiKey("");
-    },
-  });
-
-  const removeMut = useMutation({
-    mutationFn: () => api.cliToolRemove(tool.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["cli-tools"] });
-    },
-  });
-
-  return (
-    <Card>
-      <SectionHeader
-        title={
-          <span className="flex items-center gap-2">
-            {tool.name}
-            {tool.configured ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
-                <CheckCircle2 className="h-3 w-3" />
-                configured
-              </span>
-            ) : tool.installed ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                <XCircle className="h-3 w-3" />
-                not configured
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
-                not installed
-              </span>
-            )}
-          </span>
-        }
-        description={tool.instructions}
-        icon={TerminalSquare}
-        iconTone="neutral"
-        action={
-          <div className="flex items-center gap-1">
-            {/* Auto-configure button */}
-            <button
-              onClick={() => setShowConfigure(!showConfigure)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
-              title="Auto-configure"
-            >
-              <Settings className="h-4 w-4" />
-            </button>
-            {/* Remove config button */}
-            {tool.configured && (
-              <button
-                onClick={() => removeMut.mutate()}
-                disabled={removeMut.isPending}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
-                title="Remove KeiRouter config"
-              >
-                {removeMut.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4" />
-                )}
-              </button>
-            )}
-            {/* Copy snippet button */}
-            <button
-              onClick={copy}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
-              title="Copy snippet"
-            >
-              {copied ? (
-                <Check className="h-4 w-4 text-accent-600 dark:text-accent-300" />
-              ) : (
-                <Copy className="h-4 w-4" />
-              )}
-            </button>
-          </div>
-        }
-      />
-
-      {/* Auto-configure form */}
-      {showConfigure && (
-        <div className="mx-6 mb-4 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
-          <p className="mb-2 text-xs text-[var(--text-muted)]">
-            Write KeiRouter config directly into{" "}
-            <span className="font-mono">{tool.config_path}</span>
-          </p>
-          <div className="flex items-end gap-3">
-            <Field label="API Key">
-              <Input
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk_keirouter"
-                className="max-w-xs"
-                type="password"
-              />
-            </Field>
-            <button
-              onClick={() => configureMut.mutate()}
-              disabled={configureMut.isPending}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-accent-600 px-3 text-sm font-medium text-white transition-colors hover:bg-accent-700 disabled:opacity-50 dark:bg-accent-500 dark:hover:bg-accent-600"
-            >
-              {configureMut.isPending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Settings className="h-3.5 w-3.5" />
-              )}
-              Configure
-            </button>
-          </div>
-          {configureMut.isError && (
-            <p className="mt-2 text-xs text-[color:var(--color-danger)]">
-              {(configureMut.error as Error)?.message || "Configuration failed"}
-            </p>
-          )}
-          {configureMut.isSuccess && (
-            <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
-              ✓ Configured successfully
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Snippet preview */}
-      <div className="px-6 pb-6">
-        <pre className="overflow-x-auto rounded-lg bg-[var(--bg-subtle)] p-3 font-mono text-xs leading-relaxed">
-          {tool.snippet}
-        </pre>
+function ToolIcon({ id }: { id: string }) {
+  const [errored, setErrored] = useState(false);
+  const meta = toolMeta[id];
+  if (errored || !meta?.image) {
+    return (
+      <div
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white"
+        style={{ backgroundColor: brandColor(id) }}
+      >
+        {id.slice(0, 2).toUpperCase()}
       </div>
-    </Card>
+    );
+  }
+  return (
+    <img
+      src={meta.image}
+      alt={id}
+      onError={() => setErrored(true)}
+      className="h-10 w-10 shrink-0 rounded-xl object-contain"
+    />
+  );
+}
+
+function StatusBadge({ installed, configured }: { installed: boolean; configured: boolean }) {
+  if (configured) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+        <CheckCircle2 className="h-3 w-3" />
+        Connected
+      </span>
+    );
+  }
+  if (installed) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+        <XCircle className="h-3 w-3" />
+        Not configured
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
+      <CircleDot className="h-3 w-3" />
+      Not installed
+    </span>
   );
 }

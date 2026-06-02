@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { WifiOff } from "lucide-react";
 import { api } from "../lib/api";
 import { Card, Button, Input, Field, Spinner } from "./ui";
 
@@ -16,7 +17,26 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
   if (status.isError) {
-    return <CenteredCard title="Cannot reach KeiRouter" body="Is the backend running on :20180?" />;
+    return (
+      <div className="flex h-full items-center justify-center px-4">
+        <Card className="w-full max-w-sm p-8 text-center shadow-[var(--shadow-pop)]">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[color:var(--color-danger)]/10">
+            <WifiOff className="h-7 w-7 text-[color:var(--color-danger)]" strokeWidth={1.75} />
+          </div>
+          <img src="/keirouter-logo.png" alt="KeiRouter" className="mx-auto h-10 object-contain opacity-60" />
+          <h1 className="mt-4 text-base font-semibold tracking-tight">Cannot reach KeiRouter</h1>
+          <p className="mt-1.5 text-sm text-[var(--text-muted)]">
+            Is the backend running on <code className="rounded-md bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-xs">:20180</code>?
+          </p>
+          <button
+            onClick={() => status.refetch()}
+            className="mt-5 inline-flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2 text-sm font-medium text-[var(--text)] transition-colors hover:bg-ink-100 dark:hover:bg-ink-800"
+          >
+            Try again
+          </button>
+        </Card>
+      </div>
+    );
   }
 
   const s = status.data!;
@@ -27,17 +47,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return <OnboardingScreen />;
   }
   return <>{children}</>;
-}
-
-function CenteredCard({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="flex h-full items-center justify-center px-4">
-      <Card className="w-full max-w-sm p-6 text-center">
-        <h1 className="text-base font-semibold tracking-tight">{title}</h1>
-        <p className="mt-2 text-sm text-[var(--text-muted)]">{body}</p>
-      </Card>
-    </div>
-  );
 }
 
 function LoginScreen() {
@@ -58,7 +67,7 @@ function LoginScreen() {
     <div className="flex h-full items-center justify-center px-4">
       <Card className="w-full max-w-sm p-8 shadow-[var(--shadow-pop)]">
         <div className="mb-6 flex flex-col items-center text-center">
-          <img src="/keirouter-logo.png" alt="KeiRouter" className="h-12 object-contain" />
+          <img src="/keirouter-logo.png" alt="KeiRouter" className="h-16 object-contain" />
           <h1 className="mt-4 text-lg font-semibold tracking-tight">Sign in to your dashboard</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">Enter your dashboard password to continue.</p>
         </div>
@@ -120,7 +129,7 @@ function OnboardingScreen() {
   return (
     <div className="flex h-full items-center justify-center px-4">
       <Card className="w-full max-w-md p-8 shadow-[var(--shadow-pop)]">
-        <img src="/keirouter-logo.png" alt="KeiRouter" className="mb-4 h-11 object-contain" />
+        <img src="/keirouter-logo.png" alt="KeiRouter" className="mb-4 h-16 object-contain" />
         <h1 className="text-lg font-semibold tracking-tight">Welcome to KeiRouter</h1>
         <p className="mt-2 text-sm text-[var(--text-muted)]">
           You're signed in with the default password. Set a new one to secure your dashboard.

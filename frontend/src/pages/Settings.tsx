@@ -49,7 +49,7 @@ export function SettingsPage() {
       setLocal(data);
       qc.setQueryData(["endpoint-settings"], data);
     },
-    onError: (e) => toast.error("Couldn't save settings", (e as Error).message),
+    onError: (e) => toast.error("Settings save failed", (e as Error).message),
   });
 
   const update = (patch: Partial<EndpointSettings>) => {
@@ -325,7 +325,7 @@ function NetworkSettings({
                 {testing ? "Testing…" : "Test proxy URL"}
               </Button>
               {testResult && (
-                <span className={`text-xs ${testResult.startsWith("Proxy test OK") ? "text-green-600" : "text-[color:var(--color-danger)]"}`}>
+                <span className={`text-xs ${testResult.startsWith("Proxy test OK") ? "text-green-600 dark:text-green-400" : "text-[color:var(--color-danger)]"}`}>
                   {testResult}
                 </span>
               )}
@@ -357,7 +357,7 @@ function DatabaseSettings() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast.success("Backup downloaded", "Database exported successfully.");
+      toast.success("Backup downloaded", "Full database snapshot saved as JSON. Store it safely for disaster recovery.");
     } catch (e) {
       toast.error("Export failed", (e as Error).message);
     } finally {
@@ -374,7 +374,7 @@ function DatabaseSettings() {
       const raw = await file.text();
       const payload = JSON.parse(raw);
       const result = await api.importDatabase(payload);
-      toast.success("Import complete", `${result.imported} items imported.`);
+      toast.success("Import complete", `${result.imported} records restored. Existing data was merged or updated.`);
     } catch (e) {
       toast.error("Import failed", (e as Error).message);
     } finally {

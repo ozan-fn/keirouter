@@ -69,7 +69,7 @@ func (e *Engine) Check(ctx context.Context, scope Scope) (Decision, error) {
 			return Decision{}, fmt.Errorf("budget: list %s budgets: %w", c.kind, err)
 		}
 		for _, b := range budgets {
-			spent, err := e.usage.SpendSince(ctx, b.ScopeKind, b.ScopeID, periodStart(b.Period, time.Now()))
+			spent, err := e.usage.SpendSince(ctx, b.ScopeKind, b.ScopeID, PeriodStart(b.Period, time.Now()))
 			if err != nil {
 				return Decision{}, fmt.Errorf("budget: spend lookup: %w", err)
 			}
@@ -103,8 +103,8 @@ func (e *Engine) CheckOrError(ctx context.Context, scope Scope) error {
 	return nil
 }
 
-// periodStart returns the start of the current budget window for a period.
-func periodStart(period string, now time.Time) time.Time {
+// PeriodStart returns the start of the current budget window for a period.
+func PeriodStart(period string, now time.Time) time.Time {
 	now = now.UTC()
 	switch period {
 	case "daily":

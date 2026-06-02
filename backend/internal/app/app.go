@@ -28,6 +28,8 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/transform"
+	"github.com/mydisha/keirouter/backend/internal/tunnel/cloudflare"
+	"github.com/mydisha/keirouter/backend/internal/tunnel/tailscale"
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
 
@@ -97,15 +99,45 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 	metrics := observ.New()
 
 	// Semantic cache. Defaults to a local in-memory store keyed by a
-	// deterministic hash embedder (exact-prompt caching). A provider-backed
-	// embedder can be substituted for true near-match semantic caching.
+	// deterministic hash embedder (exact-prompt caching). When configured with
+	// backend=redis + embedding_provider=api, uses Redis for persistence and
+	// an embedding API for true semantic near-match caching.
+	var cacheStore cache.Store
+	if cfg.Cache.Backend == "redis" && cfg.Cache.RedisURL != "" {
+		rs, err := cache.NewRedisStore(cache.RedisStoreConfig{
+			URL:       cfg.Cache.RedisURL,
+			TTL:       cfg.Cache.TTL,
+			Logger:    log,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("app: redis cache store: %w", err)
+		}
+		cacheStore = rs
+		log.Info("semantic cache: redis backend", "url", cfg.Cache.RedisURL)
+	}
+
+	var embedder cache.Embedder
+	if cfg.Cache.EmbeddingProvider == "api" && cfg.Cache.EmbeddingAPIKey != "" {
+		embedder = cache.NewAPIEmbedder(cache.APIEmbedderConfig{
+			BaseURL: cfg.Cache.EmbeddingAPIURL,
+			APIKey:  cfg.Cache.EmbeddingAPIKey,
+			Model:   cfg.Cache.EmbeddingModel,
+			Dims:    cfg.Cache.EmbeddingDims,
+		})
+		log.Info("semantic cache: API embedder", "model", cfg.Cache.EmbeddingModel)
+	} else {
+		embedder = cache.NewHashEmbedder(32)
+		if cfg.Cache.Enabled {
+			log.Info("semantic cache: hash embedder (exact-match only)")
+		}
+	}
+
 	semanticCache := cache.New(cache.Config{
 		Enabled:             cfg.Cache.Enabled,
 		SimilarityThreshold: cfg.Cache.SimilarityThreshold,
 		TTL:                 cfg.Cache.TTL,
 		MaxEntries:          10000,
-	}, nil)
-	embedder := cache.NewHashEmbedder(32)
+	}, cacheStore)
 
 	pipe := pipeline.New(pipeline.Deps{
 		Dispatcher: disp,
@@ -120,6 +152,10 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 
 	// Resolve frontend dist directory. Check relative to binary, then cwd.
 	frontendDir := resolveFrontendDir()
+
+	// Tunnel managers for Cloudflare quick tunnel and Tailscale funnel.
+	cfManager := cloudflare.NewManager(dataDir, cfg.Server.Port, log)
+	tsManager := tailscale.NewManager(dataDir, cfg.Server.Port, log)
 
 	gw := gateway.New(gateway.Deps{
 		Config:      cfg,
@@ -139,6 +175,9 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		Codecs:      codecs,
 		Metrics:     metrics,
 		FrontendDir: frontendDir,
+		DataDir:     dataDir,
+		CfManager:   cfManager,
+		TsManager:   tsManager,
 	})
 
 	srv := &http.Server{

@@ -118,6 +118,20 @@ export interface Budget {
   hard_cutoff: boolean;
 }
 
+export interface BudgetStatus {
+  id: string;
+  scope_kind: string;
+  scope_id: string;
+  scope_name: string;
+  limit_micros: number;
+  period: string;
+  alert_pct: number;
+  hard_cutoff: boolean;
+  spent_micros: number;
+  pct_used: number;
+  period_start: string;
+}
+
 export interface UsageSummary {
   total_requests: number;
   prompt_tokens: number;
@@ -149,6 +163,16 @@ export interface RecentActivity {
   cache_hit: boolean;
   latency_ms: number;
   created_at: string;
+}
+
+export interface ModelUsage {
+  provider: string;
+  provider_name: string;
+  model: string;
+  total_requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
 }
 
 export interface SeriesPoint {
@@ -210,9 +234,14 @@ export interface QuotaAccount {
 export interface ProxyPool {
   id: string;
   name: string;
-  proxies: string[];
-  enabled: boolean;
-  created_at: string;
+  type: string; // http | vercel | cloudflare | deno
+  proxy_url: string;
+  no_proxy: string;
+  strict: boolean;
+  is_active: boolean;
+  test_status: string; // unknown | active | error
+  last_tested?: string;
+  last_error?: string;
 }
 
 export interface Skill {
@@ -228,7 +257,60 @@ export interface AccessSettings {
   local_enabled: boolean;
   tunnel_enabled: boolean;
   tailscale_enabled: boolean;
+  tunnel_url?: string;
+  tailscale_url?: string;
   endpoint_url: string;
+}
+
+export interface TunnelStatus {
+  enabled: boolean;
+  settingsEnabled: boolean;
+  tunnelUrl: string;
+  shortId: string;
+  publicUrl: string;
+  running: boolean;
+}
+
+export interface TailscaleStatus {
+  enabled: boolean;
+  settingsEnabled: boolean;
+  tunnelUrl: string;
+  running: boolean;
+  loggedIn: boolean;
+  installed: boolean;
+  platform: string;
+}
+
+export interface TunnelCombinedStatus {
+  tunnel: TunnelStatus;
+  tailscale: TailscaleStatus;
+  download: { downloading: boolean; progress: number };
+}
+
+export interface TunnelEnableResult {
+  success: boolean;
+  tunnelUrl: string;
+  shortId: string;
+  publicUrl: string;
+  alreadyRunning?: boolean;
+}
+
+export interface TailscaleCheckResult {
+  installed: boolean;
+  loggedIn: boolean;
+  platform: string;
+  daemonRunning: boolean;
+  hasCachedPassword: boolean;
+}
+
+export interface TailscaleEnableResult {
+  success: boolean;
+  tunnelUrl?: string;
+  needsLogin?: boolean;
+  authUrl?: string;
+  funnelNotEnabled?: boolean;
+  enableUrl?: string;
+  error?: string;
 }
 
 export interface CLITool {
@@ -314,26 +396,33 @@ export const api = {
   deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${id}`),
   testAccount: (id: string) =>
     request<{ id: string; status: string; message: string }>("POST", `/accounts/${id}/test`),
+  validateKey: (input: { provider: string; api_key: string; base_url?: string; region?: string }) =>
+    request<{ status: string; message?: string }>("POST", "/validate-key", input),
   accountQuota: (id: string) =>
     request<{ provider: string; supported: boolean; plan_name?: string; message?: string; quotas?: UpstreamQuota[] }>(
       "GET", `/accounts/${id}/quota`,
     ),
 
   listChains: () => request<{ chains: Chain[] }>("GET", "/chains"),
-  createChain: (input: { name: string; steps: { provider: string; model: string }[] }) =>
+  createChain: (input: { name: string; strategy?: string; steps: { provider: string; model: string }[] }) =>
     request<{ id: string }>("POST", "/chains", input),
   updateChain: (id: string, patch: { name?: string; strategy?: string; steps?: { provider: string; model: string }[] }) =>
     request<{ id: string }>("PATCH", `/chains/${id}`, patch),
   deleteChain: (id: string) => request<void>("DELETE", `/chains/${id}`),
 
   listBudgets: () => request<{ budgets: Budget[] }>("GET", "/budgets"),
-  createBudget: (input: { scope_kind?: string; limit_usd: number; period?: string }) =>
+  budgetStatus: () => request<{ budgets: BudgetStatus[] }>("GET", "/budgets/status"),
+  createBudget: (input: { scope_kind?: string; scope_id?: string; limit_usd: number; period?: string; alert_pct?: number; hard_cutoff?: boolean }) =>
     request<{ id: string }>("POST", "/budgets", input),
+  updateBudget: (id: string, patch: { limit_usd?: number; period?: string; alert_pct?: number; hard_cutoff?: boolean }) =>
+    request<void>("PATCH", `/budgets/${id}`, patch),
   deleteBudget: (id: string) => request<void>("DELETE", `/budgets/${id}`),
 
   usage: (period: string) => request<UsageSummary>("GET", `/usage?period=${period}`),
   usageInsights: (period: string) =>
     request<UsageInsights>("GET", `/usage/insights?period=${period}`),
+  modelUsage: (period: string) =>
+    request<{ models: ModelUsage[] }>("GET", `/usage/models?period=${period}`),
 
   quota: (period: string) =>
     request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=${period}`),
@@ -348,8 +437,10 @@ export const api = {
     request<{ ok: boolean }>("POST", `/cli-tools/${toolId}/remove`),
 
   listProxyPools: () => request<{ pools: ProxyPool[] }>("GET", "/proxy-pools"),
-  createProxyPool: (input: { name: string; proxies: string[]; enabled?: boolean }) =>
-    request<ProxyPool>("POST", "/proxy-pools", input),
+  createProxyPool: (input: { name: string; type?: string; proxy_url: string; no_proxy?: string; strict?: boolean; is_active?: boolean }) =>
+    request<{ id: string }>("POST", "/proxy-pools", input),
+  updateProxyPool: (id: string, patch: { name?: string; proxy_url?: string; no_proxy?: string; strict?: boolean; is_active?: boolean }) =>
+    request<void>("PATCH", `/proxy-pools/${id}`, patch),
   deleteProxyPool: (id: string) => request<void>("DELETE", `/proxy-pools/${id}`),
 
   listSkills: () => request<{ skills: Skill[] }>("GET", "/skills"),
@@ -366,6 +457,15 @@ export const api = {
   accessSettings: () => request<AccessSettings>("GET", "/settings/access"),
   updateAccessSettings: (patch: Partial<Omit<AccessSettings, "endpoint_url">>) =>
     request<AccessSettings>("POST", "/settings/access", patch),
+
+  // Tunnel management.
+  tunnelStatus: () => request<TunnelCombinedStatus>("GET", "/tunnel/status"),
+  tunnelEnable: () => request<TunnelEnableResult>("POST", "/tunnel/enable"),
+  tunnelDisable: () => request<{ success: boolean }>("POST", "/tunnel/disable"),
+  tailscaleCheck: () => request<TailscaleCheckResult>("GET", "/tunnel/tailscale-check"),
+  tailscaleEnable: (sudoPassword?: string) =>
+    request<TailscaleEnableResult>("POST", "/tunnel/tailscale-enable", sudoPassword ? { sudoPassword } : {}),
+  tailscaleDisable: () => request<{ success: boolean }>("POST", "/tunnel/tailscale-disable"),
 
   // Model management.
   listDisabledModels: (providerAlias: string) =>
@@ -386,7 +486,7 @@ export const api = {
 
   // Proxy pool test.
   testProxyPool: (id: string) =>
-    request<{ ok: boolean; message?: string }>("POST", `/proxy-pools/${id}/test`),
+    request<{ status: string; last_tested?: string }>("POST", `/proxy-pools/${id}/test`),
 
   // OAuth provider connections.
   oauthProviders: () => request<{ providers: OAuthProvider[] }>("GET", "/oauth/providers"),

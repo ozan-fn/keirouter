@@ -12,15 +12,20 @@ import { EndpointsPage } from "./pages/Endpoints";
 import { UsagePage } from "./pages/Usage";
 import { QuotaPage } from "./pages/Quota";
 import { CLIToolsPage } from "./pages/CLITools";
+import { CLIToolDetailPage } from "./pages/CLIToolDetail";
 import { MediaProvidersPage } from "./pages/MediaProviders";
+import { MediaProviderDetailPage } from "./pages/MediaProviderDetail";
 import { ProxyPoolsPage } from "./pages/ProxyPools";
 import { SkillsPage } from "./pages/Skills";
 import { ConsoleLogPage } from "./pages/ConsoleLog";
+import { OAuthCallbackPage } from "./pages/OAuthCallback";
 
 export function App() {
   return (
     <AuthGate>
       <Routes>
+        {/* OAuth callback — standalone page, no sidebar layout */}
+        <Route path="oauth/callback" element={<OAuthCallbackPage />} />
         <Route element={<Layout />}>
           <Route index element={<OverviewPage />} />
           <Route path="providers" element={<ProvidersPage />} />
@@ -30,7 +35,10 @@ export function App() {
           <Route path="usage" element={<UsagePage />} />
           <Route path="quota" element={<QuotaPage />} />
           <Route path="cli-tools" element={<CLIToolsPage />} />
+          <Route path="cli-tools/:toolId" element={<CLIToolDetailPage />} />
           <Route path="media" element={<MediaProvidersPage />} />
+          <Route path="media/:kind" element={<MediaProvidersPage />} />
+          <Route path="media/:kind/:id" element={<MediaProviderDetailPage />} />
           <Route path="proxy-pools" element={<ProxyPoolsPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="console" element={<ConsoleLogPage />} />

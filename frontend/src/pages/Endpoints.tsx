@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Network,
@@ -7,15 +7,26 @@ import {
   Monitor,
   Lock,
   Radar,
-  Zap,
-  MessageSquare,
   KeyRound,
   Plus,
   Trash2,
   ToggleLeft,
   ToggleRight,
+  Loader2,
+  ExternalLink,
+  Shield,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
-import { api, type AccessSettings, type EndpointSettings, type APIKey, type CreatedKey } from "../lib/api";
+import {
+  api,
+  type AccessSettings,
+  type APIKey,
+  type CreatedKey,
+  type TunnelCombinedStatus,
+  type TailscaleCheckResult,
+  type TailscaleEnableResult,
+} from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import {
   Card,
@@ -28,14 +39,15 @@ import {
   Spinner,
   EmptyState,
   Toggle,
-  SegmentedControl,
 } from "../components/ui";
 
-const cavemanOptions = [
-  { value: "lite", label: "Gentle" },
-  { value: "full", label: "Balanced" },
-  { value: "ultra", label: "Strong" },
-];
+// Polling intervals (ms).
+const STATUS_POLL_FAST = 5000;
+const STATUS_POLL_SLOW = 30000;
+const PING_INTERVAL = 2000;
+const PING_TIMEOUT = 5000;
+const PING_MAX_MS = 300000;
+const REACHABLE_MISS_THRESHOLD = 5;
 
 export function EndpointsPage() {
   return (
@@ -47,8 +59,8 @@ export function EndpointsPage() {
       />
       <div className="space-y-6">
         <PrimaryEndpoint />
-        <AccessOptions />
-        <ResponseOptimization />
+        <SecureTunnel />
+        <TailscaleFunnel />
         <APIKeys />
       </div>
     </>
@@ -94,181 +106,440 @@ function PrimaryEndpoint() {
   );
 }
 
-// ---- access options ---------------------------------------------------------
+// ---- secure tunnel (Cloudflare) --------------------------------------------
 
-function AccessOptions() {
+function SecureTunnel() {
   const qc = useQueryClient();
-  const access = useQuery({ queryKey: ["access-settings"], queryFn: () => api.accessSettings() });
-  const [local, setLocal] = useState<AccessSettings | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [reachable, setReachable] = useState<boolean | null>(null);
+  const missRef = useRef(0);
+  const pingTimerRef = useRef<ReturnType<typeof setInterval>>();
+  const pollTimerRef = useRef<ReturnType<typeof setInterval>>();
 
+  const status = useQuery({
+    queryKey: ["tunnel-status"],
+    queryFn: () => api.tunnelStatus(),
+    refetchInterval: STATUS_POLL_SLOW,
+  });
+
+  const tunnel = status.data?.tunnel;
+  const download = status.data?.download;
+  const tunnelUrl = tunnel?.tunnelUrl || "";
+  const publicUrl = tunnel?.publicUrl || "";
+  const isRunning = tunnel?.running ?? false;
+  const isEnabled = tunnel?.settingsEnabled ?? false;
+
+  // Browser-side health ping.
+  const pingTunnel = useCallback(async () => {
+    const url = publicUrl || tunnelUrl;
+    if (!url) return;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), PING_TIMEOUT);
+      const res = await fetch(`${url}/healthz`, { mode: "cors", signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        setReachable(true);
+        missRef.current = 0;
+      } else {
+        missRef.current++;
+        if (missRef.current >= REACHABLE_MISS_THRESHOLD) setReachable(false);
+      }
+    } catch {
+      missRef.current++;
+      if (missRef.current >= REACHABLE_MISS_THRESHOLD) setReachable(false);
+    }
+  }, [publicUrl, tunnelUrl]);
+
+  // Start/stop ping based on tunnel state.
   useEffect(() => {
-    if (access.data) setLocal(access.data);
-  }, [access.data]);
+    if (isRunning && (publicUrl || tunnelUrl)) {
+      pingTunnel();
+      pingTimerRef.current = setInterval(pingTunnel, PING_INTERVAL);
+      const stopAt = Date.now() + PING_MAX_MS;
+      const check = setInterval(() => {
+        if (Date.now() > stopAt) {
+          clearInterval(pingTimerRef.current);
+          clearInterval(check);
+        }
+      }, 10000);
+      return () => {
+        clearInterval(pingTimerRef.current);
+        clearInterval(check);
+      };
+    } else {
+      setReachable(null);
+      missRef.current = 0;
+    }
+  }, [isRunning, publicUrl, tunnelUrl, pingTunnel]);
 
-  const save = useMutation({
-    mutationFn: (patch: Partial<Omit<AccessSettings, "endpoint_url">>) =>
-      api.updateAccessSettings(patch),
-    onSuccess: (data) => {
-      setLocal(data);
-      qc.setQueryData(["access-settings"], data);
+  // Fast poll during enable.
+  useEffect(() => {
+    if (loading) {
+      pollTimerRef.current = setInterval(() => qc.invalidateQueries({ queryKey: ["tunnel-status"] }), STATUS_POLL_FAST);
+      return () => clearInterval(pollTimerRef.current);
+    }
+  }, [loading, qc]);
+
+  const enable = useMutation({
+    mutationFn: () => api.tunnelEnable(),
+    onMutate: () => setLoading(true),
+    onSuccess: () => {
+      setLoading(false);
+      qc.invalidateQueries({ queryKey: ["tunnel-status"] });
+      qc.invalidateQueries({ queryKey: ["access-settings"] });
+    },
+    onError: () => setLoading(false),
+  });
+
+  const disable = useMutation({
+    mutationFn: () => api.tunnelDisable(),
+    onSuccess: () => {
+      setReachable(null);
+      qc.invalidateQueries({ queryKey: ["tunnel-status"] });
+      qc.invalidateQueries({ queryKey: ["access-settings"] });
     },
   });
 
-  const update = (patch: Partial<Omit<AccessSettings, "endpoint_url">>) => {
-    if (local) setLocal({ ...local, ...patch });
-    save.mutate(patch);
-  };
+  const displayUrl = publicUrl || tunnelUrl;
 
   return (
     <Card>
       <SectionHeader
-        title="Access options"
-        description="Choose how you'd like to reach the KeiRouter API. You can enable one or more options."
+        title="Secure tunnel"
+        description="Expose KeiRouter to the internet via a Cloudflare quick tunnel. No account needed."
         icon={Lock}
       />
-      {!local ? (
-        <Spinner />
-      ) : (
-        <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
-          <AccessRow
-            icon={Monitor}
-            title="Local access"
-            description="Reach KeiRouter over your local network."
-            checked={local.local_enabled}
-            onChange={(v) => update({ local_enabled: v })}
-          />
-          <AccessRow
-            icon={Lock}
-            title="Secure tunnel"
-            description="Route traffic through a secure tunnel for added privacy."
-            checked={local.tunnel_enabled}
-            onChange={(v) => update({ tunnel_enabled: v })}
-          />
-          <AccessRow
-            icon={Radar}
-            title="Tailscale"
-            description="Access KeiRouter over your private Tailscale network."
-            checked={local.tailscale_enabled}
-            onChange={(v) => update({ tailscale_enabled: v })}
-          />
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function AccessRow({
-  icon: Icon,
-  title,
-  description,
-  checked,
-  onChange,
-}: {
-  icon: typeof Monitor;
-  title: string;
-  description: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 px-6 py-4">
-      <div className="flex items-start gap-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300">
-          <Icon className="h-[18px] w-[18px]" />
-        </span>
-        <div>
-          <p className="text-sm font-medium">{title}</p>
-          <p className="mt-0.5 text-xs text-[var(--text-muted)]">{description}</p>
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-[var(--text-muted)]">{checked ? "On" : "Off"}</span>
-        <Toggle checked={checked} onChange={onChange} />
-      </div>
-    </div>
-  );
-}
-
-// ---- response optimization --------------------------------------------------
-
-function ResponseOptimization() {
-  const qc = useQueryClient();
-  const settings = useQuery({ queryKey: ["endpoint-settings"], queryFn: () => api.endpointSettings() });
-  const [local, setLocal] = useState<EndpointSettings | null>(null);
-
-  useEffect(() => {
-    if (settings.data) setLocal(settings.data);
-  }, [settings.data]);
-
-  const save = useMutation({
-    mutationFn: (patch: Partial<EndpointSettings>) => api.updateEndpointSettings(patch),
-    onSuccess: (data) => {
-      setLocal(data);
-      qc.setQueryData(["endpoint-settings"], data);
-    },
-  });
-
-  const update = (patch: Partial<EndpointSettings>) => {
-    if (local) setLocal({ ...local, ...patch });
-    save.mutate(patch);
-  };
-
-  return (
-    <Card>
-      <SectionHeader
-        title="Response optimization"
-        description="Tune how KeiRouter formats responses to reduce size and improve performance."
-        icon={Zap}
-      />
-      {!local ? (
-        <Spinner />
-      ) : (
-        <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
-          <div className="flex items-center justify-between gap-4 px-6 py-4">
-            <div className="flex items-start gap-3">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
-                <Zap className="h-[18px] w-[18px]" />
-              </span>
-              <div>
-                <p className="text-sm font-medium">Compact tool output</p>
+      <div className="border-t border-[var(--border)] px-6 py-5 space-y-4">
+        {/* Status row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <StatusDot active={isRunning} reachable={reachable} />
+            <div>
+              <p className="text-sm font-medium">
+                {loading ? "Connecting…" : isRunning ? "Tunnel active" : "Tunnel inactive"}
+              </p>
+              {isRunning && displayUrl && (
+                <a
+                  href={displayUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-0.5 flex items-center gap-1 font-mono text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+                >
+                  {displayUrl}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+              {download?.downloading && (
                 <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                  Reduce the size of tool results and logs (RTK).
+                  Downloading cloudflared… {download.progress}%
                 </p>
-              </div>
-            </div>
-            <Toggle checked={local.rtk_enabled} onChange={(v) => update({ rtk_enabled: v })} />
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4">
-            <div className="flex items-start gap-3">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
-                <MessageSquare className="h-[18px] w-[18px]" />
-              </span>
-              <div>
-                <p className="text-sm font-medium">Compact AI responses</p>
-                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                  Shorten AI responses while preserving meaning (caveman).
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <Toggle
-                checked={local.caveman_enabled}
-                onChange={(v) => update({ caveman_enabled: v })}
-              />
-              {local.caveman_enabled && (
-                <SegmentedControl
-                  value={local.caveman_level}
-                  onChange={(v) => update({ caveman_level: v })}
-                  options={cavemanOptions}
-                />
               )}
             </div>
           </div>
+          <div className="flex items-center gap-2">
+            {isRunning && (
+              <Badge tone={reachable === true ? "success" : reachable === false ? "danger" : "neutral"}>
+                {reachable === true ? "Reachable" : reachable === false ? "Unreachable" : "Checking…"}
+              </Badge>
+            )}
+            {isRunning ? (
+              <Button variant="danger" onClick={() => disable.mutate()} disabled={disable.isPending}>
+                {disable.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Disable"}
+              </Button>
+            ) : (
+              <Button onClick={() => enable.mutate()} disabled={loading || enable.isPending}>
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Enable"}
+              </Button>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </Card>
   );
+}
+
+// ---- tailscale funnel -------------------------------------------------------
+
+function TailscaleFunnel() {
+  const qc = useQueryClient();
+  const [loading, setLoading] = useState(false);
+  const [reachable, setReachable] = useState<boolean | null>(null);
+  const [sudoPassword, setSudoPassword] = useState("");
+  const [installLog, setInstallLog] = useState<string[]>([]);
+  const [installing, setInstalling] = useState(false);
+  const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const missRef = useRef(0);
+  const pingTimerRef = useRef<ReturnType<typeof setInterval>>();
+
+  const status = useQuery({
+    queryKey: ["tunnel-status"],
+    queryFn: () => api.tunnelStatus(),
+    refetchInterval: STATUS_POLL_SLOW,
+  });
+
+  const tsCheck = useQuery({
+    queryKey: ["tailscale-check"],
+    queryFn: () => api.tailscaleCheck(),
+    refetchInterval: STATUS_POLL_SLOW,
+  });
+
+  const ts = status.data?.tailscale;
+  const isRunning = ts?.running ?? false;
+  const isLoggedIn = ts?.loggedIn ?? false;
+  const isInstalled = tsCheck.data?.installed ?? false;
+  const tunnelUrl = ts?.tunnelUrl || "";
+
+  // Browser-side health ping.
+  const pingTailscale = useCallback(async () => {
+    if (!tunnelUrl) return;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), PING_TIMEOUT);
+      const res = await fetch(`${tunnelUrl}/healthz`, { mode: "cors", signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        setReachable(true);
+        missRef.current = 0;
+      } else {
+        missRef.current++;
+        if (missRef.current >= REACHABLE_MISS_THRESHOLD) setReachable(false);
+      }
+    } catch {
+      missRef.current++;
+      if (missRef.current >= REACHABLE_MISS_THRESHOLD) setReachable(false);
+    }
+  }, [tunnelUrl]);
+
+  useEffect(() => {
+    if (isRunning && tunnelUrl) {
+      pingTailscale();
+      pingTimerRef.current = setInterval(pingTailscale, PING_INTERVAL);
+      return () => clearInterval(pingTimerRef.current);
+    } else {
+      setReachable(null);
+    }
+  }, [isRunning, tunnelUrl, pingTailscale]);
+
+  // Install Tailscale via SSE.
+  const handleInstall = async () => {
+    setInstalling(true);
+    setInstallLog([]);
+    try {
+      const res = await fetch("/api/tunnel/tailscale-install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sudoPassword }),
+      });
+      if (!res.ok || !res.body) {
+        setInstallLog((prev) => [...prev, "Failed to start install"]);
+        setInstalling(false);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            const event = line.slice(7);
+            const dataLine = lines[lines.indexOf(line) + 1];
+            if (dataLine?.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(dataLine.slice(6));
+                if (event === "progress") {
+                  setInstallLog((prev) => [...prev, data.message]);
+                } else if (event === "done") {
+                  setInstallLog((prev) => [...prev, "Installation complete!"]);
+                  setInstalling(false);
+                  qc.invalidateQueries({ queryKey: ["tailscale-check"] });
+                } else if (event === "error") {
+                  setInstallLog((prev) => [...prev, `Error: ${data.error}`]);
+                  setInstalling(false);
+                }
+              } catch { /* ignore parse errors */ }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      setInstallLog((prev) => [...prev, `Error: ${(e as Error).message}`]);
+      setInstalling(false);
+    }
+  };
+
+  // Enable Tailscale funnel.
+  const enable = useMutation({
+    mutationFn: () => api.tailscaleEnable(sudoPassword || undefined),
+    onMutate: () => setLoading(true),
+    onSuccess: (data: TailscaleEnableResult) => {
+      setLoading(false);
+      if (data.needsLogin && data.authUrl) {
+        setAuthUrl(data.authUrl);
+        window.open(data.authUrl, "_blank", "width=600,height=700");
+      } else if (data.funnelNotEnabled && data.enableUrl) {
+        window.open(data.enableUrl, "_blank", "width=600,height=700");
+      } else if (data.success) {
+        setAuthUrl(null);
+        qc.invalidateQueries({ queryKey: ["tunnel-status"] });
+        qc.invalidateQueries({ queryKey: ["access-settings"] });
+      }
+    },
+    onError: () => setLoading(false),
+  });
+
+  const disable = useMutation({
+    mutationFn: () => api.tailscaleDisable(),
+    onSuccess: () => {
+      setReachable(null);
+      qc.invalidateQueries({ queryKey: ["tunnel-status"] });
+      qc.invalidateQueries({ queryKey: ["access-settings"] });
+    },
+  });
+
+  // Not installed state.
+  if (!isInstalled) {
+    return (
+      <Card>
+        <SectionHeader
+          title="Tailscale"
+          description="Access KeiRouter over your private Tailscale network with HTTPS."
+          icon={Radar}
+        />
+        <div className="border-t border-[var(--border)] px-6 py-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <WifiOff className="h-5 w-5 text-[var(--text-muted)]" />
+            <p className="text-sm">Tailscale is not installed on this machine.</p>
+          </div>
+          {showPassword ? (
+            <div className="space-y-3">
+              <Field label="Sudo password (required for installation)">
+                <Input
+                  type="password"
+                  value={sudoPassword}
+                  onChange={(e) => setSudoPassword(e.target.value)}
+                  placeholder="Enter sudo password"
+                />
+              </Field>
+              <div className="flex gap-2">
+                <Button onClick={handleInstall} disabled={installing || !sudoPassword.trim()}>
+                  {installing ? <Loader2 className="h-4 w-4 animate-spin" /> : "Install Tailscale"}
+                </Button>
+                <Button variant="ghost" onClick={() => setShowPassword(false)}>Cancel</Button>
+              </div>
+              {installLog.length > 0 && (
+                <div className="mt-3 max-h-48 overflow-y-auto rounded-lg bg-ink-950 p-3 font-mono text-xs text-ink-300">
+                  {installLog.map((line, i) => (
+                    <div key={i}>{line}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <Button onClick={() => setShowPassword(true)}>Install Tailscale</Button>
+          )}
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Tailscale"
+        description="Access KeiRouter over your private Tailscale network with HTTPS."
+        icon={Radar}
+      />
+      <div className="border-t border-[var(--border)] px-6 py-5 space-y-4">
+        {/* Status row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <StatusDot active={isRunning} reachable={reachable} />
+            <div>
+              <p className="text-sm font-medium">
+                {loading ? "Connecting…" : isRunning ? "Funnel active" : isLoggedIn ? "Logged in" : "Not connected"}
+              </p>
+              {isRunning && tunnelUrl && (
+                <a
+                  href={tunnelUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-0.5 flex items-center gap-1 font-mono text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+                >
+                  {tunnelUrl}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+              {!isLoggedIn && (
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+                  Log in to your Tailscale account to use the funnel.
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {isRunning && (
+              <Badge tone={reachable === true ? "success" : reachable === false ? "danger" : "neutral"}>
+                {reachable === true ? "Reachable" : reachable === false ? "Unreachable" : "Checking…"}
+              </Badge>
+            )}
+            {isRunning ? (
+              <Button variant="danger" onClick={() => disable.mutate()} disabled={disable.isPending}>
+                {disable.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Disable"}
+              </Button>
+            ) : (
+              <Button onClick={() => enable.mutate()} disabled={loading || enable.isPending}>
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Enable"}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Auth URL notice */}
+        {authUrl && (
+          <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 dark:border-accent-800/50 dark:bg-accent-800/20">
+            <p className="text-xs font-medium text-accent-700 dark:text-accent-200">
+              Tailscale login required.{" "}
+              <a href={authUrl} target="_blank" rel="noopener noreferrer" className="underline">
+                Click here to authenticate
+              </a>
+            </p>
+          </div>
+        )}
+
+        {/* Sudo password for enable */}
+        {!isRunning && isLoggedIn && (
+          <Field label="Sudo password (optional, for TUN mode)">
+            <Input
+              type="password"
+              value={sudoPassword}
+              onChange={(e) => setSudoPassword(e.target.value)}
+              placeholder="Leave empty for userspace networking"
+            />
+          </Field>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// ---- status dot component ---------------------------------------------------
+
+function StatusDot({ active, reachable }: { active: boolean; reachable: boolean | null }) {
+  const color = active
+    ? reachable === true
+      ? "bg-green-500"
+      : reachable === false
+        ? "bg-red-500"
+        : "bg-yellow-500 animate-pulse"
+    : "bg-ink-300 dark:bg-ink-600";
+  return <span className={`block h-3 w-3 rounded-full ${color}`} />;
 }
 
 // ---- API keys ---------------------------------------------------------------

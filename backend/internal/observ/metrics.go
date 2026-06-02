@@ -22,6 +22,8 @@ type Metrics struct {
 	Fallbacks       *prometheus.CounterVec
 	CacheHits       prometheus.Counter
 	CacheMisses     prometheus.Counter
+	CacheLatency    *prometheus.HistogramVec
+	CacheSize       prometheus.Gauge
 	UpstreamErrors  *prometheus.CounterVec
 }
 
@@ -62,6 +64,15 @@ func New() *Metrics {
 		CacheMisses: factory.NewCounter(prometheus.CounterOpts{
 			Name: "keirouter_cache_misses_total",
 			Help: "Semantic cache misses.",
+		}),
+		CacheLatency: factory.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "keirouter_cache_lookup_seconds",
+			Help:    "Cache lookup latency in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.0005, 2, 10), // 0.5ms .. ~256ms
+		}, []string{"backend"}),
+		CacheSize: factory.NewGauge(prometheus.GaugeOpts{
+			Name: "keirouter_cache_entries",
+			Help: "Current number of entries in the semantic cache.",
 		}),
 		UpstreamErrors: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "keirouter_upstream_errors_total",
@@ -111,4 +122,14 @@ func (m *Metrics) RecordCache(hit bool) {
 	} else {
 		m.CacheMisses.Inc()
 	}
+}
+
+// RecordCacheLookup records how long a cache lookup took, labeled by backend.
+func (m *Metrics) RecordCacheLookup(backend string, seconds float64) {
+	m.CacheLatency.WithLabelValues(backend).Observe(seconds)
+}
+
+// SetCacheSize updates the current cache entry count gauge.
+func (m *Metrics) SetCacheSize(n int) {
+	m.CacheSize.Set(float64(n))
 }

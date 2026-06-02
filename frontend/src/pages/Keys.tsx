@@ -21,27 +21,32 @@ export function KeysPage() {
       qc.invalidateQueries({ queryKey: ["keys"] });
       setCreated(data);
       setName("");
-      toast.success("API key created", "Copy it now — it won't be shown again.");
+      toast.success("Key created", "Copy the key below — it won't be shown again after you leave this page.");
     },
-    onError: (e: Error) => toast.error("Couldn't create key", e.message),
+    onError: (e: Error) => toast.error("Key creation failed", e.message),
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteKey(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["keys"] });
-      toast.success("Key revoked");
+      toast.success("Key revoked", "The key has been permanently deleted and can no longer authenticate requests.");
     },
-    onError: (e: Error) => toast.error("Couldn't revoke key", e.message),
+    onError: (e: Error) => toast.error("Revocation failed", e.message),
   });
 
   const toggleDisabled = useMutation({
     mutationFn: ({ id, disabled }: { id: string; disabled: boolean }) => api.updateKey(id, { disabled }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["keys"] });
-      toast.success(data.disabled ? "Key disabled" : "Key enabled");
+      toast.success(
+        data.disabled ? "Key disabled" : "Key enabled",
+        data.disabled
+          ? "Requests using this key will be rejected until re-enabled."
+          : "This key can now authenticate requests again.",
+      );
     },
-    onError: (e: Error) => toast.error("Couldn't update key", e.message),
+    onError: (e: Error) => toast.error("Key update failed", e.message),
   });
 
   return (
@@ -120,7 +125,18 @@ export function KeysPage() {
                     <span className="text-sm font-medium">{k.name}</span>
                     {k.disabled ? <Badge tone="danger">disabled</Badge> : <Badge tone="success">active</Badge>}
                   </div>
-                  <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{k.display}</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(k.display);
+                      toast.success("Key copied", "The masked key identifier has been copied to your clipboard.");
+                    }}
+                    className="mt-0.5 flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+                    title="Copy key"
+                  >
+                    {k.display}
+                    <Copy className="h-3 w-3 opacity-50 transition-opacity hover:opacity-100" />
+                  </button>
                 </div>
                 <div className="flex items-center gap-2">
                   <Button

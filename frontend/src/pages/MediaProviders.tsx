@@ -1,18 +1,19 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Image, AudioLines, Mic, Search, Globe, Boxes } from "lucide-react";
+import { useParams, useNavigate } from "react-router-dom";
+import { Image, AudioLines, Mic, Search, Globe, Boxes, ArrowRight } from "lucide-react";
 import { api, type Provider } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { Card, CardHeader, Badge, Spinner, EmptyState } from "../components/ui";
 
 // Media service kinds — everything that isn't a plain chat/LLM provider.
 const mediaKinds = [
-  { id: "embedding", label: "Embeddings", icon: Boxes },
-  { id: "image", label: "Image", icon: Image },
-  { id: "tts", label: "Text-to-Speech", icon: AudioLines },
-  { id: "stt", label: "Speech-to-Text", icon: Mic },
-  { id: "search", label: "Web Search", icon: Search },
-  { id: "fetch", label: "Web Fetch", icon: Globe },
+  { id: "embedding", label: "Embeddings", icon: Boxes, description: "Text embedding models for search and RAG" },
+  { id: "image", label: "Image", icon: Image, description: "Text-to-image generation providers" },
+  { id: "tts", label: "Text-to-Speech", icon: AudioLines, description: "Voice synthesis providers" },
+  { id: "stt", label: "Speech-to-Text", icon: Mic, description: "Audio transcription providers" },
+  { id: "search", label: "Web Search", icon: Search, description: "Web search API providers" },
+  { id: "fetch", label: "Web Fetch", icon: Globe, description: "Web page content extraction" },
 ];
 
 const kindLabels: Record<string, string> = {
@@ -25,17 +26,26 @@ const kindLabels: Record<string, string> = {
 };
 
 export function MediaProvidersPage() {
+  const { kind: urlKind } = useParams();
+  const navigate = useNavigate();
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
-  const [filter, setFilter] = useState("embedding");
+  const [filter, setFilter] = useState(urlKind || "embedding");
+
+  // Sync filter with URL
+  const activeFilter = urlKind || filter;
+  const setActiveFilter = (k: string) => {
+    setFilter(k);
+    navigate(`/media/${k}`, { replace: true });
+  };
 
   const list = useMemo(() => {
     const all = providers.data?.providers ?? [];
     return all
       .filter((p) => !p.hidden)
-      .filter((p) => p.service_kinds.includes(filter));
-  }, [providers.data, filter]);
+      .filter((p) => p.service_kinds.includes(activeFilter));
+  }, [providers.data, activeFilter]);
 
-  const activeKind = mediaKinds.find((k) => k.id === filter) ?? mediaKinds[0];
+  const activeKind = mediaKinds.find((k) => k.id === activeFilter) ?? mediaKinds[0];
 
   return (
     <>
@@ -45,13 +55,14 @@ export function MediaProvidersPage() {
         description="Connect providers for embeddings, image generation, speech, and web access."
       />
 
+      {/* Kind tabs */}
       <div className="mb-5 flex flex-wrap gap-1.5">
         {mediaKinds.map((k) => (
           <button
             key={k.id}
-            onClick={() => setFilter(k.id)}
+            onClick={() => setActiveFilter(k.id)}
             className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
-              filter === k.id
+              activeFilter === k.id
                 ? "bg-accent-600 text-white shadow-sm"
                 : "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-muted)] hover:bg-ink-100 dark:hover:bg-ink-800"
             }`}
@@ -62,6 +73,11 @@ export function MediaProvidersPage() {
         ))}
       </div>
 
+      {/* Kind description */}
+      <div className="mb-4">
+        <p className="text-sm text-[var(--text-muted)]">{activeKind.description}</p>
+      </div>
+
       <Card>
         <CardHeader
           title={`${activeKind.label} providers`}
@@ -70,11 +86,11 @@ export function MediaProvidersPage() {
         {providers.isLoading ? (
           <Spinner />
         ) : !list.length ? (
-          <EmptyState title="No providers for this capability" />
+          <EmptyState title="No providers for this capability" hint="Add a provider account first in the Providers page." />
         ) : (
           <div className="grid grid-cols-1 gap-px overflow-hidden rounded-b-2xl bg-[var(--border)] sm:grid-cols-2">
             {list.map((p) => (
-              <MediaRow key={p.id} provider={p} />
+              <MediaRow key={p.id} provider={p} kind={activeFilter} />
             ))}
           </div>
         )}
@@ -83,9 +99,14 @@ export function MediaProvidersPage() {
   );
 }
 
-function MediaRow({ provider: p }: { provider: Provider }) {
+function MediaRow({ provider: p, kind }: { provider: Provider; kind: string }) {
+  const navigate = useNavigate();
+
   return (
-    <div className="flex items-start gap-3 bg-[var(--bg-elevated)] px-5 py-4 transition-colors hover:bg-ink-50 dark:hover:bg-ink-800/40">
+    <button
+      onClick={() => navigate(`/media/${kind}/${p.id}`)}
+      className="flex items-start gap-3 bg-[var(--bg-elevated)] px-5 py-4 text-left transition-colors hover:bg-ink-50 dark:hover:bg-ink-800/40"
+    >
       <ProviderIcon provider={p} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -94,14 +115,15 @@ function MediaRow({ provider: p }: { provider: Provider }) {
         </div>
         <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{p.id}</p>
         <div className="mt-2 flex flex-wrap gap-1">
-          {p.service_kinds.map((k) => (
+          {p.service_kinds.filter((k) => k !== "llm").map((k) => (
             <Badge key={k} tone="accent">
               {kindLabels[k] ?? k}
             </Badge>
           ))}
         </div>
       </div>
-    </div>
+      <ArrowRight className="mt-3 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+    </button>
   );
 }
 
@@ -111,7 +133,7 @@ function ProviderIcon({ provider: p }: { provider: Provider }) {
     return (
       <div
         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-bold text-white"
-        style={{ backgroundColor: p.color || "#64748b" }}
+        style={{ backgroundColor: p.color || "var(--text-muted)" }}
       >
         {p.display_name.slice(0, 1).toUpperCase()}
       </div>

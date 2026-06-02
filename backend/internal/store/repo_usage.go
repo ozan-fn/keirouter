@@ -223,6 +223,49 @@ func (r *UsageRepo) ByAccount(ctx context.Context, tenantID string, since time.T
 	return out, rows.Err()
 }
 
+// ModelUsage aggregates usage for a single provider+model pair. It powers the
+// per-model breakdown table on the Usage page.
+type ModelUsage struct {
+	Provider         string
+	Model            string
+	TotalRequests    int64
+	PromptTokens     int64
+	CompletionTokens int64
+	CostMicros       int64
+}
+
+// ByModel returns per-model aggregate usage for a tenant since the given time,
+// ordered by request volume (busiest first).
+func (r *UsageRepo) ByModel(ctx context.Context, tenantID string, since time.Time) ([]ModelUsage, error) {
+	q := r.db.rebind(`
+		SELECT
+			provider,
+			model,
+			COUNT(*),
+			COALESCE(SUM(prompt_tokens), 0),
+			COALESCE(SUM(completion_tokens), 0),
+			COALESCE(SUM(cost_micros), 0)
+		FROM usage_records
+		WHERE tenant_id = ? AND created_at >= ?
+		GROUP BY provider, model
+		ORDER BY COUNT(*) DESC`)
+	rows, err := r.db.sql.QueryContext(ctx, q, tenantID, formatTime(since))
+	if err != nil {
+		return nil, fmt.Errorf("store: usage by model: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ModelUsage
+	for rows.Next() {
+		var m ModelUsage
+		if err := rows.Scan(&m.Provider, &m.Model, &m.TotalRequests, &m.PromptTokens, &m.CompletionTokens, &m.CostMicros); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // TimePoint is the created_at + cost of a single record, used to build the
 // activity-over-time series in the handler (bucketed in Go for engine
 // portability).

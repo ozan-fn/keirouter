@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/store"
 )
 
@@ -156,6 +157,38 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 		"series":    series,
 		"busiest":   busiest,
 	})
+}
+
+// adminModelUsage returns per-provider+model aggregate usage for the granular
+// model usage table on the Usage page.
+func (s *Server) adminModelUsage(w http.ResponseWriter, r *http.Request) {
+	period := r.URL.Query().Get("period")
+	since := sinceForPeriod(period)
+	ctx := r.Context()
+
+	models, err := s.usage.ByModel(ctx, adminTenant, since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	out := make([]map[string]any, 0, len(models))
+	for _, m := range models {
+		display := m.Provider
+		if spec, ok := connectors.SpecByID(m.Provider); ok {
+			display = spec.DisplayName
+		}
+		out = append(out, map[string]any{
+			"provider":          m.Provider,
+			"provider_name":     display,
+			"model":             m.Model,
+			"total_requests":    m.TotalRequests,
+			"prompt_tokens":     m.PromptTokens,
+			"completion_tokens": m.CompletionTokens,
+			"cost_usd":          float64(m.CostMicros) / 1_000_000,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }
 
 type timeBucket struct {
@@ -332,6 +365,14 @@ func (s *Server) adminCreateProxyPool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name and proxy_url are required")
 		return
 	}
+
+	// SSRF Protection: Validate proxy URL before use
+	if err := httputil.ValidateProxyURL(body.ProxyURL); err != nil {
+		s.log.Warn("blocked suspicious proxy URL", "url", body.ProxyURL, "error", err)
+		writeError(w, http.StatusBadRequest, "invalid proxy_url: URL blocked by security policy")
+		return
+	}
+
 	poolType := body.Type
 	if poolType == "" {
 		poolType = "http"
@@ -354,10 +395,49 @@ func (s *Server) adminCreateProxyPool(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:  now,
 	}
 	if err := s.pools.Create(r.Context(), pool); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "proxy pool creation failed"))
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": pool.ID, "name": pool.Name})
+}
+
+func (s *Server) adminUpdateProxyPool(w http.ResponseWriter, r *http.Request) {
+	pool, err := s.pools.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pool not found")
+		return
+	}
+	var body struct {
+		Name     *string `json:"name"`
+		ProxyURL *string `json:"proxy_url"`
+		NoProxy  *string `json:"no_proxy"`
+		Strict   *bool   `json:"strict"`
+		IsActive *bool   `json:"is_active"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Name != nil {
+		pool.Name = *body.Name
+	}
+	if body.ProxyURL != nil {
+		pool.ProxyURL = *body.ProxyURL
+	}
+	if body.NoProxy != nil {
+		pool.NoProxy = *body.NoProxy
+	}
+	if body.Strict != nil {
+		pool.Strict = *body.Strict
+	}
+	if body.IsActive != nil {
+		pool.IsActive = *body.IsActive
+	}
+	pool.UpdatedAt = time.Now()
+	if err := s.pools.Update(r.Context(), pool); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) adminDeleteProxyPool(w http.ResponseWriter, r *http.Request) {

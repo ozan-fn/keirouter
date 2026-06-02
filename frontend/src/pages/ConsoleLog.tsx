@@ -4,18 +4,18 @@ import { PageHeader } from "../components/Layout";
 import { Card, Button, EmptyState } from "../components/ui";
 
 const LOG_LEVEL_COLORS: Record<string, string> = {
-  LOG: "text-green-400",
-  INFO: "text-blue-400",
-  WARN: "text-yellow-400",
-  ERROR: "text-red-400",
-  DEBUG: "text-purple-400",
+  LOG: "text-green-400 dark:text-green-400",
+  INFO: "text-blue-400 dark:text-blue-400",
+  WARN: "text-yellow-400 dark:text-yellow-400",
+  ERROR: "text-red-400 dark:text-red-400",
+  DEBUG: "text-purple-400 dark:text-purple-400",
 };
 
 function colorLine(line: string) {
   // Extract level tag from patterns like [INFO] or [ERROR]
   const match = line.match(/\[(\w+)\]/g);
   const levelTag = match ? match[1]?.replace(/\[|\]/g, "") : null;
-  const color = LOG_LEVEL_COLORS[levelTag || ""] || "text-green-400";
+  const color = LOG_LEVEL_COLORS[levelTag || ""] || "text-green-400 dark:text-green-400";
   return <span className={color}>{line}</span>;
 }
 
@@ -80,7 +80,7 @@ export function ConsoleLogPage() {
         }
         action={
           <div className="flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${connected ? "bg-green-500" : "bg-[var(--text-muted)]"}`} />
+            <span className={`h-2 w-2 rounded-full ${connected ? "bg-green-500 dark:bg-green-400" : "bg-[var(--text-muted)]"}`} />
             <Button variant="ghost" onClick={handleClear} disabled={logs.length === 0}>
               <Trash2 className="h-4 w-4" />
               Clear

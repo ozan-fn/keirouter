@@ -1,21 +1,21 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ReactFlow,
-  Handle,
-  Position,
-  Controls,
-  useNodesState,
-  useEdgesState,
-  type Node,
-  type Edge,
+  ReactFlow, Handle, Position, Controls,
+  useNodesState, useEdgesState,
+  type Node, type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Activity, DollarSign, Zap } from "lucide-react";
-import { AreaChart, Area, ResponsiveContainer } from "recharts";
-import { api, type ProviderUsage, type RecentActivity } from "../lib/api";
+import {
+  Activity, DollarSign, Zap, RefreshCw, TrendingUp, Clock, Search, ArrowUpDown, ArrowUp, ArrowDown,
+} from "lucide-react";
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from "recharts";
+import { api, type ProviderUsage, type RecentActivity, type SeriesPoint, type ModelUsage } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { Card, Spinner, ErrorCard } from "../components/ui";
+import { useToast } from "../components/Toast";
 
 const periods = [
   { value: "today", label: "Today" },
@@ -26,10 +26,24 @@ const periods = [
 
 export function UsagePage() {
   const [period, setPeriod] = useState("today");
+  const qc = useQueryClient();
+  const toast = useToast();
+
   const insights = useQuery({
     queryKey: ["usage-insights", period],
     queryFn: () => api.usageInsights(period),
+    refetchInterval: 10_000, // 10s for fresher recent requests
   });
+
+  const modelUsage = useQuery({
+    queryKey: ["usage-models", period],
+    queryFn: () => api.modelUsage(period),
+  });
+
+  const handleRefresh = () => {
+    qc.invalidateQueries({ queryKey: ["usage-insights"] });
+    toast.success("Usage data refreshed", "All usage metrics and breakdowns have been re-fetched from the server.");
+  };
 
   return (
     <>
@@ -38,82 +52,95 @@ export function UsagePage() {
         icon={Activity}
         description="Monitor request flow and provider distribution."
         action={
-          <div className="flex items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-1">
-            {periods.map((p) => (
-              <button
-                key={p.value}
-                onClick={() => setPeriod(p.value)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                  period === p.value
-                    ? "bg-accent-600 text-white shadow-sm"
-                    : "text-[var(--text-muted)] hover:text-[var(--text)]"
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-1">
+              {periods.map((p) => (
+                <button key={p.value} onClick={() => setPeriod(p.value)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${period === p.value ? "bg-accent-600 text-white shadow-sm" : "text-[var(--text-muted)] hover:text-[var(--text)]"}`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <button onClick={handleRefresh}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]">
+              <RefreshCw className="h-4 w-4" />
+            </button>
           </div>
         }
       />
 
-      {insights.isLoading ? (
-        <Spinner />
-      ) : insights.isError ? (
-        <ErrorCard message="Failed to load usage. Is the backend running?" />
-      ) : (
-        <UsageContent data={insights.data!} />
-      )}
+      {insights.isLoading ? <Spinner />
+        : insights.isError ? <ErrorCard message="Failed to load usage. Is the backend running?" />
+        : <UsageContent data={insights.data!} models={modelUsage.data?.models ?? []} />}
     </>
   );
 }
 
-function UsageContent({ data }: { data: any }) {
+function UsageContent({ data, models }: { data: any; models: ModelUsage[] }) {
   const { summary, providers, recent, series } = data;
+  const activeProviders = providers.filter((p: ProviderUsage) => p.share_pct > 0);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Overview cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <OverviewCard label="Requests" value={fmtNum(summary.total_requests)} icon={Activity} color="accent" />
-        <OverviewCard label="Input Tokens" value={fmtNum(summary.prompt_tokens)} icon={Zap} color="blue" />
-        <OverviewCard label="Output Tokens" value={fmtNum(summary.completion_tokens)} icon={Zap} color="green" />
-        <OverviewCard label="Est. Cost" value={`$${summary.cost_usd.toFixed(2)}`} icon={DollarSign} color="amber" />
+        <StatCard label="Requests" value={fmtNum(summary.total_requests)} icon={Activity} color="accent" />
+        <StatCard label="Input Tokens" value={fmtNum(summary.prompt_tokens)} icon={Zap} color="blue" />
+        <StatCard label="Output Tokens" value={fmtNum(summary.completion_tokens)} icon={Zap} color="green" />
+        <StatCard label="Est. Cost" value={`$${summary.cost_usd.toFixed(2)}`} icon={DollarSign} color="amber" />
       </div>
 
-      {/* Main content: topology + recent */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-        {/* Provider topology */}
+      {/* Topology + Recent side by side */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+        {/* Topology */}
         <Card className="overflow-hidden">
-          <div className="border-b border-[var(--border)] px-5 py-3">
-            <h3 className="text-sm font-semibold">Routing Topology</h3>
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-[var(--text-muted)]" />
+              <h3 className="text-sm font-semibold">Routing Topology</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              {activeProviders.length > 0 && (
+                <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  </span>
+                  {activeProviders.length} active
+                </span>
+              )}
+            </div>
           </div>
           <ProviderTopology providers={providers} />
         </Card>
 
-        {/* Recent requests */}
-        <Card className="flex h-[420px] flex-col overflow-hidden">
-          <div className="border-b border-[var(--border)] px-5 py-3">
-            <h3 className="text-sm font-semibold">Recent Requests</h3>
+        {/* Recent Requests */}
+        <Card className="flex max-h-[440px] flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-[var(--text-muted)]" />
+              <h3 className="text-sm font-semibold">Recent Requests</h3>
+            </div>
+            <span className="text-[10px] text-[var(--text-muted)]">auto-refresh 10s</span>
           </div>
           {!recent.length ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-[var(--text-muted)]">
-              No requests yet
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10">
+              <Activity className="h-8 w-8 text-[var(--text-muted)] opacity-20" />
+              <p className="text-xs text-[var(--text-muted)]">No requests yet</p>
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto">
               <table className="w-full border-collapse text-xs">
                 <thead className="sticky top-0 z-10 bg-[var(--bg)]">
                   <tr className="border-b border-[var(--border)]">
-                    <th className="px-4 py-2 text-left font-medium text-[var(--text-muted)]" />
-                    <th className="px-4 py-2 text-left font-medium text-[var(--text-muted)]">Model</th>
-                    <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Tokens</th>
-                    <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">When</th>
+                    <th className="w-6 px-3 py-2" />
+                    <th className="px-3 py-2 text-left font-medium text-[var(--text-muted)]">Model</th>
+                    <th className="px-3 py-2 text-right font-medium text-[var(--text-muted)]">Tokens</th>
+                    <th className="px-3 py-2 text-right font-medium text-[var(--text-muted)]">When</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
-                  {recent.map((r: RecentActivity) => (
-                    <RecentRow key={r.id} row={r} />
-                  ))}
+                  {recent.map((r: RecentActivity) => <RecentRow key={r.id} row={r} />)}
                 </tbody>
               </table>
             </div>
@@ -123,48 +150,77 @@ function UsageContent({ data }: { data: any }) {
 
       {/* Activity chart */}
       <Card>
-        <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-3">
-          <h3 className="text-sm font-semibold">Activity</h3>
-          <span className="text-xs text-[var(--text-muted)]">avg {summary.avg_latency_ms}ms</span>
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
+          <h3 className="text-sm font-semibold">Activity Over Time</h3>
+          <span className="text-xs text-[var(--text-muted)]">avg latency {summary.avg_latency_ms}ms · {summary.success_rate?.toFixed(0) ?? 100}% success</span>
         </div>
-        <div className="h-32 px-2 pb-3 pt-2">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={series}>
-              <defs>
-                <linearGradient id="usageFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#4a7a6f" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#4a7a6f" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <Area type="monotone" dataKey="count" stroke="#4a7a6f" strokeWidth={2} fill="url(#usageFill)" />
-            </AreaChart>
-          </ResponsiveContainer>
+        <div className="h-52 px-2 pb-3 pt-2">
+          <ActivityChart series={series} />
         </div>
+      </Card>
+
+      {/* Model usage breakdown */}
+      <ModelUsageTable models={models} />
+
+      {/* Provider breakdown */}
+      <Card>
+        <div className="border-b border-[var(--border)] px-4 py-2.5">
+          <h3 className="text-sm font-semibold">Provider Breakdown</h3>
+        </div>
+        {providers.filter((p: ProviderUsage) => p.total_requests > 0).length === 0 ? (
+          <div className="py-8 text-center text-xs text-[var(--text-muted)]">No provider data for this period</div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-[var(--border)]">
+                <th className="px-4 py-2 text-left font-medium text-[var(--text-muted)]">Provider</th>
+                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Requests</th>
+                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">In Tok</th>
+                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Out Tok</th>
+                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Cost</th>
+                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Share</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)]">
+              {providers.filter((p: ProviderUsage) => p.total_requests > 0).map((p: ProviderUsage) => (
+                <tr key={p.provider} className="transition-colors hover:bg-[var(--bg-subtle)]">
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-2">
+                      <ProviderIcon provider={p.provider} color={p.color} />
+                      <span className="font-medium">{p.display_name}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums">{p.total_requests.toLocaleString()}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-blue-500 dark:text-blue-400">{fmtNum(p.prompt_tokens)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-green-500 dark:text-green-400">{fmtNum(p.completion_tokens)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums font-medium">${p.cost_usd.toFixed(4)}</td>
+                  <td className="px-4 py-2 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                        <div className="h-full rounded-full bg-accent-500" style={{ width: `${Math.max(2, p.share_pct)}%` }} />
+                      </div>
+                      <span className="w-10 text-right tabular-nums text-[var(--text-muted)]">{p.share_pct.toFixed(1)}%</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Card>
     </div>
   );
 }
 
-// ---- Overview Card ----------------------------------------------------------
+// ─── Stat Card ────────────────────────────────────────────────────────────────
 
-function OverviewCard({
-  label,
-  value,
-  icon: Icon,
-  color,
-}: {
-  label: string;
-  value: string;
-  icon: typeof Activity;
-  color: string;
-}) {
+function StatCard({ label, value, icon: Icon, color }: { label: string; value: string; icon: typeof Activity; color: string }) {
   const colorMap: Record<string, string> = {
     accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
-    blue: "bg-blue-100 text-blue-700 dark:bg-blue-800/40 dark:text-blue-200",
-    green: "bg-green-100 text-green-700 dark:bg-green-800/40 dark:text-green-200",
-    amber: "bg-amber-100 text-amber-700 dark:bg-amber-800/40 dark:text-amber-200",
+    blue: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+    green: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
+    amber: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
   };
-
   return (
     <Card className="flex items-center gap-3 px-4 py-3">
       <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${colorMap[color] || colorMap.accent}`}>
@@ -178,9 +234,37 @@ function OverviewCard({
   );
 }
 
-// ---- React Flow Topology ----------------------------------------------------
+// ─── Activity Chart ──────────────────────────────────────────────────────────
 
-// Center router node component
+function ActivityChart({ series }: { series: SeriesPoint[] }) {
+  if (!series.length) {
+    return <div className="flex h-full items-center justify-center text-sm text-[var(--text-muted)]">No data for this period</div>;
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={series}>
+        <defs>
+          <linearGradient id="usageFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--color-chart-1)" stopOpacity={0.25} />
+            <stop offset="100%" stopColor="var(--color-chart-1)" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
+        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "var(--text-muted)" }} tickLine={false} axisLine={false} />
+        <YAxis tick={{ fontSize: 10, fill: "var(--text-muted)" }} tickLine={false} axisLine={false} tickFormatter={(v: number) => fmtNum(v)} width={50} />
+        <Tooltip
+          contentStyle={{ fontSize: 12, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8 }}
+          formatter={(value: number) => [fmtNum(value), "Requests"]}
+        />
+        <Area type="monotone" dataKey="count" stroke="var(--color-chart-1)" strokeWidth={2} fill="url(#usageFill)" />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── React Flow Topology ─────────────────────────────────────────────────────
+
 function RouterNode({ data }: { data: any }) {
   return (
     <div className="flex flex-col items-center">
@@ -188,31 +272,28 @@ function RouterNode({ data }: { data: any }) {
       <Handle type="source" position={Position.Bottom} id="bottom" className="!bg-transparent !border-0 !w-0 !h-0" />
       <Handle type="source" position={Position.Left} id="left" className="!bg-transparent !border-0 !w-0 !h-0" />
       <Handle type="source" position={Position.Right} id="right" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <div className="flex items-center justify-center rounded-xl border-2 border-accent-500 bg-accent-50 px-5 py-3 shadow-md dark:bg-accent-900/30">
+      <div className="flex items-center justify-center rounded-xl border-2 border-accent-500 bg-accent-50 px-5 py-3 shadow-[var(--shadow-pop)] dark:bg-accent-900/30">
         <img src="/keirouter-logo.png" alt="KeiRouter" className="mr-2 h-6 w-6 object-contain" />
         <span className="text-sm font-bold text-accent-700 dark:text-accent-300">KeiRouter</span>
         {data.activeCount > 0 && (
-          <span className="ml-2 rounded-full bg-accent-600 px-1.5 py-0.5 text-xs font-bold text-white">
-            {data.activeCount}
-          </span>
+          <span className="ml-2 rounded-full bg-accent-600 px-1.5 py-0.5 text-xs font-bold text-white">{data.activeCount}</span>
         )}
       </div>
     </div>
   );
 }
 
-// Provider node component
 function ProviderNode({ data }: { data: any }) {
   const { label, color, imageUrl, textIcon, sharePct } = data;
   const [imgError, setImgError] = useState(false);
-  const isActive = sharePct > 20;
+  const isHigh = sharePct > 20;
 
   return (
     <div
-      className="flex items-center gap-2.5 rounded-lg border-2 bg-[var(--bg-elevated)] px-4 py-2.5 transition-all duration-300"
+      className="flex items-center gap-2.5 rounded-lg border-2 bg-[var(--bg-elevated)] px-4 py-2.5 transition-colors"
       style={{
-        borderColor: isActive ? color : "var(--border)",
-        boxShadow: isActive ? `0 0 16px ${color}40` : "none",
+        borderColor: color,
+        boxShadow: isHigh ? `0 0 16px ${color}40` : "none",
         minWidth: "150px",
       }}
     >
@@ -221,11 +302,7 @@ function ProviderNode({ data }: { data: any }) {
       <Handle type="target" position={Position.Left} id="left" className="!bg-transparent !border-0 !w-0 !h-0" />
       <Handle type="target" position={Position.Right} id="right" className="!bg-transparent !border-0 !w-0 !h-0" />
 
-      {/* Provider icon */}
-      <div
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
-        style={{ backgroundColor: `${color}15` }}
-      >
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${color}15` }}>
         {!imgError && imageUrl ? (
           <img src={imageUrl} alt={label} className="h-6 w-6 rounded-sm object-contain" onError={() => setImgError(true)} />
         ) : (
@@ -233,19 +310,12 @@ function ProviderNode({ data }: { data: any }) {
         )}
       </div>
 
-      {/* Provider name + stats */}
       <div className="min-w-0">
-        <span
-          className="block truncate text-sm font-medium"
-          style={{ color: isActive ? color : "var(--text)" }}
-        >
-          {label}
-        </span>
+        <span className="block truncate text-sm font-medium" style={{ color }}>{label}</span>
         <span className="text-[10px] text-[var(--text-muted)]">{sharePct.toFixed(1)}% traffic</span>
       </div>
 
-      {/* Active indicator */}
-      {isActive && (
+      {isHigh && (
         <span className="relative flex h-2 w-2 shrink-0">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: color }} />
           <span className="relative inline-flex h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
@@ -258,7 +328,9 @@ function ProviderNode({ data }: { data: any }) {
 const nodeTypes = { router: RouterNode, provider: ProviderNode };
 
 function buildLayout(providers: ProviderUsage[]) {
-  const count = providers.length;
+  // ONLY include providers with actual traffic
+  const activeProviders = providers.filter((p) => p.share_pct > 0);
+  const count = activeProviders.length;
 
   if (count === 0) {
     return {
@@ -276,25 +348,21 @@ function buildLayout(providers: ProviderUsage[]) {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
-  // Center router node
   nodes.push({
     id: "router",
     type: "router",
     position: { x: -60, y: -22 },
-    data: { activeCount: providers.filter((p) => p.share_pct > 20).length },
+    data: { activeCount: count },
     draggable: false,
   });
 
-  // Provider nodes arranged in an ellipse
-  providers.forEach((p, i) => {
+  activeProviders.forEach((p, i) => {
     const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
     const cx = rx * Math.cos(angle);
     const cy = ry * Math.sin(angle);
-
     const nodeId = `provider-${p.provider}`;
-    const color = p.color || "#6b7280";
-    const isActive = p.share_pct > 20;
-    const isLast = !isActive && i === 0;
+    const color = p.color || "var(--color-ink-400)";
+    const isHigh = p.share_pct > 20;
 
     nodes.push({
       id: nodeId,
@@ -310,19 +378,13 @@ function buildLayout(providers: ProviderUsage[]) {
       draggable: false,
     });
 
-    // Pick source handle based on angle
+    // Handle selection based on angle
     let sourceHandle = "right";
     if (Math.abs(angle + Math.PI / 2) < Math.PI / 4) sourceHandle = "top";
     else if (Math.abs(angle - Math.PI / 2) < Math.PI / 4) sourceHandle = "bottom";
     else if (cx > 0) sourceHandle = "right";
     else sourceHandle = "left";
-
     const targetHandle = sourceHandle === "top" ? "bottom" : sourceHandle === "bottom" ? "top" : sourceHandle === "left" ? "right" : "left";
-
-    // Edge style based on state
-    let edgeStyle = { stroke: "var(--border)", strokeWidth: 1, opacity: 0.3 };
-    if (isActive) edgeStyle = { stroke: color, strokeWidth: 2.5, opacity: 0.9 };
-    else if (isLast) edgeStyle = { stroke: color, strokeWidth: 2, opacity: 0.6 };
 
     edges.push({
       id: `e-${nodeId}`,
@@ -330,8 +392,12 @@ function buildLayout(providers: ProviderUsage[]) {
       sourceHandle,
       target: nodeId,
       targetHandle,
-      animated: isActive,
-      style: edgeStyle,
+      animated: isHigh,
+      style: {
+        stroke: color,
+        strokeWidth: isHigh ? 2.5 : 1.5,
+        opacity: isHigh ? 0.9 : 0.5,
+      },
     });
   });
 
@@ -345,7 +411,6 @@ function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
   const rfInstance = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Re-fit when nodes change
   useEffect(() => {
     if (rfInstance.current) {
       const id = setTimeout(() => rfInstance.current?.fitView({ padding: 0.2, duration: 200 }), 50);
@@ -358,7 +423,6 @@ function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
     setTimeout(() => instance.fitView({ padding: 0.2, duration: 200 }), 50);
   }, []);
 
-  // Re-fit on resize
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -367,10 +431,14 @@ function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
     return () => ro.disconnect();
   }, []);
 
-  if (!providers.length) {
+  const activeCount = providers.filter((p) => p.share_pct > 0).length;
+
+  if (activeCount === 0) {
     return (
-      <div className="flex h-64 items-center justify-center text-sm text-[var(--text-muted)]">
-        No routing activity yet
+      <div className="flex h-64 flex-col items-center justify-center gap-2">
+        <TrendingUp className="h-8 w-8 text-[var(--text-muted)] opacity-20" />
+        <p className="text-sm text-[var(--text-muted)]">No routing activity yet</p>
+        <p className="text-xs text-[var(--text-muted)]">Connections appear when models receive traffic</p>
       </div>
     );
   }
@@ -402,25 +470,154 @@ function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
   );
 }
 
-// ---- Recent Row -------------------------------------------------------------
+// ─── Recent Row ──────────────────────────────────────────────────────────────
 
 function RecentRow({ row }: { row: RecentActivity }) {
+  const success = row.latency_ms > 0;
   return (
-    <tr className="hover:bg-[var(--bg-subtle)] transition-colors">
-      <td className="px-4 py-2">
-        <span className={`block h-1.5 w-1.5 rounded-full ${row.latency_ms > 0 ? "bg-green-500" : "bg-red-500"}`} />
+    <tr className="transition-colors hover:bg-[var(--bg-subtle)]">
+      <td className="w-6 px-3 py-1.5">
+        <span className={`block h-1.5 w-1.5 rounded-full ${success ? "bg-emerald-500" : "bg-red-500"}`} />
       </td>
-      <td className="px-4 py-2 font-mono text-[var(--text)]">{row.model || "—"}</td>
-      <td className="px-4 py-2 text-right tabular-nums text-[var(--text-muted)]">
-        <span className="text-blue-500">{fmtNum(Math.round(row.tokens * 0.6))}↑</span>{" "}
-        <span className="text-green-500">{fmtNum(Math.round(row.tokens * 0.4))}↓</span>
+      <td className="px-3 py-1.5">
+        <span className="font-mono text-[var(--text)]">{row.model || "—"}</span>
+        {row.provider && (
+          <span className="ml-1.5 text-[10px] text-[var(--text-muted)]">{row.provider}</span>
+        )}
       </td>
-      <td className="px-4 py-2 text-right text-[var(--text-muted)]">{relTime(row.created_at)}</td>
+      <td className="px-3 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
+        <span className="text-blue-500 dark:text-blue-400">{fmtNum(Math.round(row.tokens * 0.6))}↑</span>{" "}
+        <span className="text-green-500 dark:text-green-400">{fmtNum(Math.round(row.tokens * 0.4))}↓</span>
+      </td>
+      <td className="px-3 py-1.5 text-right text-[var(--text-muted)]">{relTime(row.created_at)}</td>
     </tr>
   );
 }
 
-// ---- Helpers ----------------------------------------------------------------
+function ProviderIcon({ provider, color }: { provider: string; color: string }) {
+  const [errored, setErrored] = useState(false);
+  if (errored) {
+    return (
+      <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[8px] font-bold text-white" style={{ backgroundColor: color || "var(--text-muted)" }}>
+        {provider.slice(0, 2).toUpperCase()}
+      </div>
+    );
+  }
+  return <img src={`/providers/${provider}.png`} alt={provider} onError={() => setErrored(true)} className="h-5 w-5 shrink-0 rounded object-contain" />;
+}
+
+// ─── Model Usage Table ──────────────────────────────────────────────────────
+
+type SortKey = "provider" | "model" | "requests" | "prompt" | "completion" | "cost";
+
+function ModelUsageTable({ models }: { models: ModelUsage[] }) {
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("requests");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  };
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    let rows = models;
+    if (q) {
+      rows = rows.filter(
+        (m) => m.model.toLowerCase().includes(q) || m.provider_name.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q),
+      );
+    }
+    const sorted = [...rows].sort((a, b) => {
+      const dir = sortDir === "asc" ? 1 : -1;
+      switch (sortKey) {
+        case "provider": return dir * a.provider_name.localeCompare(b.provider_name);
+        case "model": return dir * a.model.localeCompare(b.model);
+        case "requests": return dir * (a.total_requests - b.total_requests);
+        case "prompt": return dir * (a.prompt_tokens - b.prompt_tokens);
+        case "completion": return dir * (a.completion_tokens - b.completion_tokens);
+        case "cost": return dir * (a.cost_usd - b.cost_usd);
+        default: return 0;
+      }
+    });
+    return sorted;
+  }, [models, search, sortKey, sortDir]);
+
+  const SortIcon = ({ col }: { col: SortKey }) => {
+    if (sortKey !== col) return <ArrowUpDown className="ml-1 inline h-3 w-3 opacity-30" />;
+    return sortDir === "asc" ? <ArrowUp className="ml-1 inline h-3 w-3" /> : <ArrowDown className="ml-1 inline h-3 w-3" />;
+  };
+
+  const th = (col: SortKey, label: string, align: "left" | "right" = "left") => (
+    <th
+      className={`cursor-pointer select-none px-4 py-2 font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)] ${align === "right" ? "text-right" : "text-left"}`}
+      onClick={() => toggleSort(col)}
+    >
+      {label}
+      <SortIcon col={col} />
+    </th>
+  );
+
+  return (
+    <Card>
+      <div className="flex flex-col gap-3 border-b border-[var(--border)] px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+        <h3 className="text-sm font-semibold">Model Usage</h3>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search models…"
+            className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] py-1.5 pl-8 pr-3 text-xs placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+          />
+        </div>
+      </div>
+      {filtered.length === 0 ? (
+        <div className="py-8 text-center text-xs text-[var(--text-muted)]">
+          {models.length === 0 ? "No model data for this period" : "No models match your search"}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-[var(--border)]">
+                {th("provider", "Provider")}
+                {th("model", "Model")}
+                {th("requests", "Requests", "right")}
+                {th("prompt", "In Tok", "right")}
+                {th("completion", "Out Tok", "right")}
+                {th("cost", "Cost", "right")}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)]">
+              {filtered.map((m) => (
+                <tr key={`${m.provider}/${m.model}`} className="transition-colors hover:bg-[var(--bg-subtle)]">
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-2">
+                      <ProviderIcon provider={m.provider} color="" />
+                      <span className="font-medium">{m.provider_name}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 font-mono">{m.model}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">{m.total_requests.toLocaleString()}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-blue-500">{fmtNum(m.prompt_tokens)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-green-500">{fmtNum(m.completion_tokens)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums font-medium">${m.cost_usd.toFixed(4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

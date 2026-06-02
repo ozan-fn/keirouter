@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/vault"
@@ -73,9 +75,19 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF Protection: Validate redirect_uri to prevent open redirect attacks.
+	// OAuth callbacks legitimately target localhost/loopback, so we use a
+	// dedicated validator that permits those while still blocking private
+	// networks, cloud metadata, and other dangerous destinations.
+	if err := httputil.ValidateOAuthRedirectURI(body.RedirectURI); err != nil {
+		s.log.Warn("blocked suspicious redirect_uri", "uri", body.RedirectURI, "error", err)
+		writeError(w, http.StatusBadRequest, "invalid redirect_uri: URL blocked by security policy")
+		return
+	}
+
 	pkce, err := oauth.GeneratePKCE(cfg.PKCEVerifierBytes)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "PKCE generation failed"))
 		return
 	}
 
@@ -141,6 +153,66 @@ func (s *Server) oauthExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "provider": provider, "email": tokens.Email})
+}
+
+// oauthCallback handles the GET redirect from OAuth providers after the user
+// authorizes. It exchanges the code for tokens and redirects the browser to a
+// frontend callback page that notifies the opener tab via postMessage.
+func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	provider := r.URL.Query().Get("provider")
+
+	frontendRedirect := func(status, msg string) {
+		u := fmt.Sprintf("/#/oauth/callback?status=%s&provider=%s", status, provider)
+		if msg != "" {
+			u += "&message=" + url.QueryEscape(msg)
+		}
+		http.Redirect(w, r, u, http.StatusFound)
+	}
+
+	if code == "" || state == "" {
+		frontendRedirect("error", "missing code or state parameter")
+		return
+	}
+
+	sess, ok := s.oauthSessions.Get(state)
+	if !ok {
+		frontendRedirect("error", "session expired or invalid; please restart the sign-in flow")
+		return
+	}
+
+	// If provider was not in the query string, infer it from the session.
+	if provider == "" {
+		provider = sess.Provider
+	} else if sess.Provider != provider {
+		frontendRedirect("error", "provider mismatch")
+		return
+	}
+
+	cfg, ok := oauth.ConfigFor(provider)
+	if !ok {
+		frontendRedirect("error", "unknown provider: "+provider)
+		return
+	}
+
+	tokens, err := cfg.ExchangeCode(r.Context(), code, sess.RedirectURI, sess.Verifier)
+	if err != nil {
+		s.log.Warn("oauth callback exchange failed", "provider", provider, "error", err)
+		frontendRedirect("error", "token exchange failed: "+err.Error())
+		return
+	}
+	s.oauthSessions.Delete(state)
+
+	id, perr := s.persistOAuthAccount(r, provider, "", tokens)
+	if perr != nil {
+		s.log.Warn("oauth callback persist failed", "provider", provider, "error", perr)
+		frontendRedirect("error", "failed to save account: "+perr.Error())
+		return
+	}
+
+	s.log.Info("oauth callback success", "provider", provider, "account_id", id)
+	frontendRedirect("success", "")
 }
 
 // oauthDeviceCode starts a device-authorization flow and returns the user code

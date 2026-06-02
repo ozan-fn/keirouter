@@ -12,9 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/core"
+	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
@@ -32,6 +34,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/accounts", s.adminListAccounts)
 	r.Post("/accounts", s.adminCreateAccount)
+	r.Post("/validate-key", s.adminValidateKey)
 	r.Patch("/accounts/{id}", s.adminUpdateAccount)
 	r.Delete("/accounts/{id}", s.adminDeleteAccount)
 	r.Post("/accounts/{id}/test", s.adminTestAccount)
@@ -43,11 +46,14 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Delete("/chains/{id}", s.adminDeleteChain)
 
 	r.Get("/budgets", s.adminListBudgets)
+	r.Get("/budgets/status", s.adminBudgetStatus)
 	r.Post("/budgets", s.adminCreateBudget)
+	r.Patch("/budgets/{id}", s.adminUpdateBudget)
 	r.Delete("/budgets/{id}", s.adminDeleteBudget)
 
 	r.Get("/usage", s.adminUsageSummary)
 	r.Get("/usage/insights", s.adminUsageInsights)
+	r.Get("/usage/models", s.adminModelUsage)
 	r.Get("/quota", s.adminQuotaUsage)
 	r.Get("/console", s.adminConsoleLog)
 	r.Delete("/console", s.adminConsoleClear)
@@ -55,6 +61,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 
 	r.Get("/proxy-pools", s.adminListProxyPools)
 	r.Post("/proxy-pools", s.adminCreateProxyPool)
+	r.Patch("/proxy-pools/{id}", s.adminUpdateProxyPool)
 	r.Delete("/proxy-pools/{id}", s.adminDeleteProxyPool)
 	r.Post("/proxy-pools/{id}/test", s.adminTestProxyPool)
 
@@ -78,6 +85,15 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/settings/database", s.adminExportDatabase)
 	r.Post("/settings/database", s.adminImportDatabase)
 	r.Post("/settings/proxy-test", s.adminTestProxy)
+
+	// Tunnel management endpoints.
+	r.Get("/tunnel/status", s.adminTunnelStatus)
+	r.Post("/tunnel/enable", s.adminTunnelEnable)
+	r.Post("/tunnel/disable", s.adminTunnelDisable)
+	r.Get("/tunnel/tailscale-check", s.adminTailscaleCheck)
+	r.Post("/tunnel/tailscale-enable", s.adminTailscaleEnable)
+	r.Post("/tunnel/tailscale-disable", s.adminTailscaleDisable)
+	r.Post("/tunnel/tailscale-install", s.adminTailscaleInstall)
 
 	s.mountOAuth(r)
 	s.mountKiro(r)
@@ -324,6 +340,15 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF Protection: Validate base_url before use
+	if body.BaseURL != "" {
+		if err := httputil.ValidateBaseURL(body.BaseURL); err != nil {
+			s.log.Warn("blocked suspicious base_url", "url", body.BaseURL, "error", err)
+			writeError(w, http.StatusBadRequest, "invalid base_url: URL blocked by security policy")
+			return
+		}
+	}
+
 	now := time.Now()
 	acc := store.Account{
 		ID:        uuid.NewString(),
@@ -347,18 +372,18 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		meta["base_url"] = body.BaseURL
 	}
 	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta}); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
 		return
 	}
 
 	// Validate credentials against the upstream before persisting.
 	if verr := s.validateAccountCredentials(r.Context(), acc); verr != nil {
-		writeError(w, http.StatusBadRequest, "credential validation failed: "+verr.Error())
+		writeError(w, http.StatusBadRequest, sanitizeError(s.log, verr, "credential validation failed"))
 		return
 	}
 
 	if err := s.accounts.Create(r.Context(), acc); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "account creation failed"))
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": acc.ID, "provider": acc.Provider, "label": acc.Label})
@@ -370,6 +395,62 @@ func (s *Server) adminDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Provider string `json:"provider"`
+		APIKey   string `json:"api_key"`
+		BaseURL  string `json:"base_url"`
+		Region   string `json:"region"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Provider == "" || body.APIKey == "" {
+		writeError(w, http.StatusBadRequest, "provider and api_key are required")
+		return
+	}
+	if s.vault == nil || s.conns == nil {
+		writeError(w, http.StatusInternalServerError, "vault or connectors not configured")
+		return
+	}
+
+	// SSRF Protection: Validate base_url before use
+	if body.BaseURL != "" {
+		if err := httputil.ValidateBaseURL(body.BaseURL); err != nil {
+			s.log.Warn("blocked suspicious base_url", "url", body.BaseURL, "error", err)
+			writeError(w, http.StatusBadRequest, "invalid base_url: URL blocked by security policy")
+			return
+		}
+	}
+
+	// Build a temporary in-memory account without persisting.
+	acc := store.Account{
+		ID:       "validate-temp",
+		Provider: body.Provider,
+		AuthKind: store.AuthAPIKey,
+	}
+	meta := map[string]string{}
+	if body.Region != "" {
+		meta["region"] = body.Region
+		if resolved := connectors.ResolveRegionBaseURL(body.Provider, body.Region); resolved != "" {
+			meta["base_url"] = resolved
+		}
+	}
+	if body.BaseURL != "" {
+		meta["base_url"] = body.BaseURL
+	}
+	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta}); err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
+		return
+	}
+
+	if verr := s.validateAccountCredentials(r.Context(), acc); verr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "message": verr.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
@@ -674,6 +755,100 @@ func (s *Server) adminDeleteBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) adminUpdateBudget(w http.ResponseWriter, r *http.Request) {
+	existing, err := s.budgets.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "budget not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var body struct {
+		LimitUSD   *float64 `json:"limit_usd"`
+		Period     *string  `json:"period"`
+		AlertPct   *int     `json:"alert_pct"`
+		HardCutoff *bool    `json:"hard_cutoff"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	if body.LimitUSD != nil {
+		if *body.LimitUSD <= 0 {
+			writeError(w, http.StatusBadRequest, "limit_usd must be positive")
+			return
+		}
+		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
+	}
+	if body.Period != nil {
+		existing.Period = *body.Period
+	}
+	if body.AlertPct != nil {
+		existing.AlertPct = *body.AlertPct
+	}
+	if body.HardCutoff != nil {
+		existing.HardCutoff = *body.HardCutoff
+	}
+	existing.UpdatedAt = time.Now()
+
+	if err := s.budgets.Update(r.Context(), existing); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminBudgetStatus returns all budgets enriched with current-period spend data.
+func (s *Server) adminBudgetStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	budgets, err := s.budgets.ListByTenant(ctx, adminTenant)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	out := make([]map[string]any, 0, len(budgets))
+	for _, b := range budgets {
+		since := budget.PeriodStart(b.Period, time.Now())
+		spent, err := s.usage.SpendSince(ctx, b.ScopeKind, b.ScopeID, since)
+		if err != nil {
+			s.log.Error("budget status: spend lookup failed", "budget_id", b.ID, "err", err)
+			spent = 0
+		}
+
+		pctUsed := 0.0
+		if b.LimitMicros > 0 {
+			pctUsed = float64(spent) / float64(b.LimitMicros) * 100
+		}
+
+		// Resolve scope display name.
+		scopeName := string(b.ScopeKind)
+		if b.ScopeKind == store.ScopeAPIKey {
+			if key, kerr := s.identity.Get(ctx, b.ScopeID); kerr == nil && key.Name != "" {
+				scopeName = key.Name
+			}
+		}
+
+		out = append(out, map[string]any{
+			"id":           b.ID,
+			"scope_kind":   b.ScopeKind,
+			"scope_id":     b.ScopeID,
+			"scope_name":   scopeName,
+			"limit_micros": b.LimitMicros,
+			"period":       b.Period,
+			"alert_pct":    b.AlertPct,
+			"hard_cutoff":  b.HardCutoff,
+			"spent_micros": spent,
+			"pct_used":     pctUsed,
+			"period_start": since,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"budgets": out})
 }
 
 // ---- usage ------------------------------------------------------------------

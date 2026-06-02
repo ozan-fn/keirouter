@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Plug, KeyRound, X, Zap, ArrowUp, ArrowDown, CheckCircle, XCircle, ToggleLeft, ToggleRight } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type UpstreamQuota } from "../lib/api";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { useToast } from "../components/Toast";
 import {
@@ -18,8 +18,9 @@ import {
   ErrorBanner,
 } from "../components/ui";
 
-// redirectURI is the OAuth callback the provider returns to (out-of-band flow
-// suited to a local dashboard).
+// redirectURI is the OAuth callback the provider redirects to after sign-in.
+// The backend intercepts this path, exchanges the code, and redirects to a
+// frontend callback page that notifies this tab via postMessage.
 const redirectURI = "http://localhost:20180/oauth/callback";
 
 export function ProviderDetailPage() {
@@ -54,6 +55,7 @@ export function ProviderDetailPage() {
   const [error, setError] = useState("");
   const [oauthOpen, setOauthOpen] = useState(false);
   const [kiroOpen, setKiroOpen] = useState(false);
+  const [addKeyOpen, setAddKeyOpen] = useState(false);
 
   // Set default region when provider loads.
   useEffect(() => {
@@ -79,11 +81,12 @@ export function ProviderDetailPage() {
       setApiKey("");
       setBaseURL("");
       setError("");
-      toast.success("Account added", "Provider account connected.");
+      setAddKeyOpen(false);
+      toast.success("Account connected", `Upstream credentials saved and encrypted. The account is ready for routing.`);
     },
     onError: (e: Error) => {
       setError(e.message);
-      toast.error("Couldn't add account", e.message);
+      toast.error("Account connection failed", e.message);
     },
   });
 
@@ -91,44 +94,44 @@ export function ProviderDetailPage() {
     mutationFn: (accountId: string) => api.deleteAccount(accountId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
-      toast.success("Account removed");
+      toast.success("Account removed", "The upstream credential has been deleted and encrypted secrets purged.");
     },
-    onError: (e: Error) => toast.error("Couldn't remove account", e.message),
+    onError: (e: Error) => toast.error("Account removal failed", e.message),
   });
 
   const updateAccount = useMutation({
     mutationFn: ({ id: accId, patch }: { id: string; patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string } }) =>
       api.updateAccount(accId, patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
-    onError: (e: Error) => toast.error("Couldn't update account", e.message),
+    onError: (e: Error) => toast.error("Account update failed", e.message),
   });
 
   const testAccount = useMutation({
     mutationFn: (accountId: string) => api.testAccount(accountId),
     onSuccess: (data) => {
       if (data.status === "ok") {
-        toast.success("Account test passed", "Account credentials are valid.");
+        toast.success("Credentials verified", "The upstream API key is valid and the provider is reachable.");
       } else {
-        toast.error("Account test failed", data.message);
+        toast.error("Credential check failed", data.message);
       }
     },
-    onError: (e: Error) => toast.error("Test failed", e.message),
+    onError: (e: Error) => toast.error("Credential check failed", e.message),
   });
 
   const disableModelsMut = useMutation({
     mutationFn: (ids: string[]) => api.disableModels(id!, ids),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["disabled-models", id] });
-      toast.success("Models disabled");
+      toast.success("Models disabled", "Selected models will be excluded from routing until re-enabled.");
     },
-    onError: (e: Error) => toast.error("Couldn't disable models", e.message),
+    onError: (e: Error) => toast.error("Model disable failed", e.message),
   });
 
   const enableModelsMut = useMutation({
     mutationFn: (ids: string[]) => api.enableModels(id!, ids),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["disabled-models", id] });
-      toast.success("Models enabled");
+      toast.success("Models re-enabled", "Selected models are available for routing again.");
     },
     onError: (e: Error) => toast.error("Couldn't enable models", e.message),
   });
@@ -179,7 +182,7 @@ export function ProviderDetailPage() {
             {myAccounts.length} connected {myAccounts.length === 1 ? "account" : "accounts"}
           </p>
           <div className="mt-2 flex flex-wrap gap-1">
-            {provider.service_kinds.map((k) => (
+            {(provider.service_kinds ?? []).map((k) => (
               <Badge key={k} tone="accent">
                 {k}
               </Badge>
@@ -212,7 +215,7 @@ export function ProviderDetailPage() {
                   onMoveUp={() => moveAccount(a.id, "up")}
                   onMoveDown={() => moveAccount(a.id, "down")}
                   onTest={() => testAccount.mutate(a.id)}
-                  onUpdateProxy={(poolId) => updateAccount.mutate({ id: a.id, patch: { proxy_pool_id: poolId } })}
+                  onUpdateProxy={(patch) => updateAccount.mutate({ id: a.id, patch })}
                   testing={testAccount.isPending}
                 />
               ))}
@@ -259,65 +262,17 @@ export function ProviderDetailPage() {
               description="API keys are encrypted at rest and never shown again."
               icon={KeyRound}
             />
-            <form
-              className="grid grid-cols-1 gap-4 border-t border-[var(--border)] px-6 py-5 sm:grid-cols-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (apiKey) create.mutate();
-              }}
-            >
-              <Field label="Label">
-                <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="personal" />
-              </Field>
-              <Field label="API key">
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  required
-                />
-              </Field>
-              {hasRegions ? (
-                <Field label="Region">
-                  <select
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
-                    className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm transition-colors focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500/30"
-                  >
-                    {provider!.regions!.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              ) : (
-                <Field label="Base URL (optional)">
-                  <Input
-                    value={baseURL}
-                    onChange={(e) => setBaseURL(e.target.value)}
-                    placeholder="for custom endpoints"
-                  />
-                </Field>
-              )}
-              {error && (
-                <div className="sm:col-span-2">
-                  <ErrorBanner message={error} />
-                </div>
-              )}
-              <div className="flex items-end justify-end gap-3 sm:col-span-2">
-                <Button type="submit" disabled={create.isPending || !apiKey}>
-                  <Plus className="h-4 w-4" />
-                  {create.isPending ? "Adding…" : "Add account"}
-                </Button>
-              </div>
-            </form>
+            <div className="border-t border-[var(--border)] px-6 py-5">
+              <Button onClick={() => setAddKeyOpen(true)}>
+                <KeyRound className="h-4 w-4" />
+                Add API key
+              </Button>
+            </div>
           </Card>
         )}
 
         {/* Available Models */}
-        {models.data && models.data.models.length > 0 && (
+        {models.data?.models && models.data.models.length > 0 && (
           <Card>
             <CardHeader
               title="Available Models"
@@ -326,7 +281,7 @@ export function ProviderDetailPage() {
             <div className="flex items-center gap-2 border-t border-[var(--border)] px-6 py-3">
               <Button
                 variant="ghost"
-                onClick={() => enableModelsMut.mutate(models.data!.models.map((m) => m.id))}
+                onClick={() => enableModelsMut.mutate(models.data!.models!.map((m) => m.id))}
                 disabled={enableModelsMut.isPending}
               >
                 <ToggleRight className="h-4 w-4" />
@@ -334,7 +289,7 @@ export function ProviderDetailPage() {
               </Button>
               <Button
                 variant="ghost"
-                onClick={() => disableModelsMut.mutate(models.data!.models.map((m) => m.id))}
+                onClick={() => disableModelsMut.mutate(models.data!.models!.map((m) => m.id))}
                 disabled={disableModelsMut.isPending}
               >
                 <ToggleLeft className="h-4 w-4" />
@@ -366,6 +321,24 @@ export function ProviderDetailPage() {
         <ConnectModal provider={oauthProvider} onClose={() => setOauthOpen(false)} />
       )}
       {kiroOpen && <KiroConnectModal onClose={() => setKiroOpen(false)} />}
+      {addKeyOpen && (
+        <AddApiKeyModal
+          provider={provider}
+          hasRegions={hasRegions}
+          label={label}
+          apiKey={apiKey}
+          baseURL={baseURL}
+          region={region}
+          error={error}
+          pending={create.isPending}
+          onLabel={setLabel}
+          onApiKey={setApiKey}
+          onBaseURL={setBaseURL}
+          onRegion={setRegion}
+          onSubmit={() => { if (apiKey) create.mutate(); }}
+          onClose={() => { setAddKeyOpen(false); setError(""); }}
+        />
+      )}
     </>
   );
 }
@@ -385,14 +358,17 @@ function AccountRow({
   account: Account;
   index: number;
   total: number;
-  pools: { id: string; name: string }[];
+  pools: ProxyPool[];
   onDelete: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onTest: () => void;
-  onUpdateProxy: (poolId: string) => void;
+  onUpdateProxy: (patch: { priority?: number; proxy_pool_id?: string; disabled?: boolean }) => void;
   testing: boolean;
 }) {
+  const [editPriority, setEditPriority] = useState(false);
+  const [priorityVal, setPriorityVal] = useState(String(a.priority));
+
   const quota = useQuery({
     queryKey: ["account-quota", a.id],
     queryFn: () => api.accountQuota(a.id),
@@ -401,64 +377,121 @@ function AccountRow({
   });
 
   const hasQuota = quota.data?.supported && quota.data?.quotas && quota.data.quotas.length > 0;
+  const boundPool = pools.find((p) => p.id === a.proxy_pool_id);
+
+  const savePriority = () => {
+    const val = parseInt(priorityVal, 10);
+    if (!isNaN(val) && val !== a.priority) {
+      onUpdateProxy({ priority: val });
+    }
+    setEditPriority(false);
+  };
 
   return (
-    <div className="px-6 py-4">
-      <div className="flex items-center justify-between">
+    <div className={`px-4 py-3 ${a.disabled ? "opacity-60" : ""}`}>
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-medium">{a.label || a.provider}</span>
-            <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
+            <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API Key"}</Badge>
             {a.disabled && <Badge tone="danger">disabled</Badge>}
           </div>
-          <p className="mt-0.5 text-xs text-[var(--text-muted)]">priority {a.priority}</p>
         </div>
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" onClick={onMoveUp} disabled={index === 0} className="px-2">
-            <ArrowUp className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" onClick={onMoveDown} disabled={index === total - 1} className="px-2">
-            <ArrowDown className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" onClick={onTest} disabled={testing} className="px-2">
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button onClick={onTest} disabled={testing}
+            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]" title="Test credentials">
             <CheckCircle className={`h-4 w-4 ${testing ? "animate-pulse" : ""}`} />
-          </Button>
-          <Button variant="danger" onClick={onDelete}>
+          </button>
+          <button onClick={() => onUpdateProxy({ disabled: !a.disabled })}
+            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+            title={a.disabled ? "Enable" : "Disable"}>
+            {a.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-emerald-500 dark:text-emerald-400" />}
+          </button>
+          <button onClick={onDelete}
+            className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500" title="Delete">
             <Trash2 className="h-4 w-4" />
-          </Button>
+          </button>
         </div>
       </div>
-      {pools.length > 0 && (
-        <div className="mt-2 flex items-center gap-2">
-          <span className="text-xs text-[var(--text-muted)]">Proxy pool:</span>
+
+      {/* Settings row: Priority + Proxy Pool */}
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        {/* Priority */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-[var(--text-muted)]">Priority:</span>
+          {editPriority ? (
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                value={priorityVal}
+                onChange={(e) => setPriorityVal(e.target.value)}
+                onBlur={savePriority}
+                onKeyDown={(e) => e.key === "Enter" && savePriority()}
+                className="h-6 w-14 rounded border border-accent-500 bg-[var(--bg)] px-1.5 text-xs text-center focus:outline-none"
+                autoFocus
+                min={0}
+                max={999}
+              />
+            </div>
+          ) : (
+            <button onClick={() => { setEditPriority(true); setPriorityVal(String(a.priority)); }}
+              className="flex h-6 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-subtle)] px-2 text-xs font-medium hover:border-accent-500/40 hover:bg-[var(--bg-elevated)]">
+              {a.priority}
+              <ArrowUp className="h-3 w-3 text-[var(--text-muted)]" />
+            </button>
+          )}
+          <div className="flex items-center gap-0.5">
+            <button onClick={onMoveUp} disabled={index === 0}
+              className="rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] disabled:opacity-20">
+              <ArrowUp className="h-3 w-3" />
+            </button>
+            <button onClick={onMoveDown} disabled={index === total - 1}
+              className="rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] disabled:opacity-20">
+              <ArrowDown className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+
+        {/* Proxy Pool */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-[var(--text-muted)]">Proxy:</span>
           <select
             value={a.proxy_pool_id || ""}
-            onChange={(e) => onUpdateProxy(e.target.value || "")}
-            className="rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs"
+            onChange={(e) => onUpdateProxy({ proxy_pool_id: e.target.value || "" })}
+            className="h-6 rounded-md border border-[var(--border)] bg-[var(--bg-subtle)] pl-1.5 pr-6 text-xs focus:border-accent-500 focus:outline-none"
           >
-            <option value="">None</option>
+            <option value="">Direct (no proxy)</option>
             {pools.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
+              <option key={p.id} value={p.id}>
+                {p.name}{!p.is_active ? " (inactive)" : ""}
+              </option>
             ))}
           </select>
+          {boundPool && (
+            <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+              boundPool.test_status === "active"
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                : boundPool.test_status === "error"
+                  ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                  : "bg-[var(--bg-subtle)] text-[var(--text-muted)]"
+            }`}>
+              {boundPool.test_status === "active" ? "✓" : boundPool.test_status === "error" ? "✗" : "?"}
+              {boundPool.type !== "http" && ` ${boundPool.type}`}
+            </span>
+          )}
         </div>
-      )}
+      </div>
 
-      {/* Quota / credit info integrated into account row */}
+      {/* Quota / credit info */}
       {hasQuota && quota.data && (
-        <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2.5">
+        <div className="mt-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2.5">
           <div className="mb-2 flex items-center gap-2">
             <Zap className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-            <span className="text-xs font-medium text-[var(--text)]">
+            <span className="text-xs font-medium">
               {quota.data.plan_name ? `${quota.data.plan_name} — Credits` : "Credits & Quota"}
             </span>
-            {quota.data.plan_name && (
-              <Badge tone="accent">{quota.data.plan_name}</Badge>
-            )}
           </div>
-          {quota.data.message && (
-            <p className="mb-2 text-[11px] text-[var(--text-muted)]">{quota.data.message}</p>
-          )}
           {quota.data.quotas && (
             <div className="space-y-2">
               {quota.data.quotas.map((q) => (
@@ -512,6 +545,151 @@ function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
   );
 }
 
+function AddApiKeyModal({
+  provider,
+  hasRegions,
+  label,
+  apiKey,
+  baseURL,
+  region,
+  error,
+  pending,
+  onLabel,
+  onApiKey,
+  onBaseURL,
+  onRegion,
+  onSubmit,
+  onClose,
+}: {
+  provider: Provider;
+  hasRegions: boolean;
+  label: string;
+  apiKey: string;
+  baseURL: string;
+  region: string;
+  error: string;
+  pending: boolean;
+  onLabel: (v: string) => void;
+  onApiKey: (v: string) => void;
+  onBaseURL: (v: string) => void;
+  onRegion: (v: string) => void;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
+  const [checkStatus, setCheckStatus] = useState<"idle" | "ok" | "error">("idle");
+  const [checkMsg, setCheckMsg] = useState("");
+  const [checking, setChecking] = useState(false);
+
+  const handleCheck = async () => {
+    if (!apiKey) return;
+    setChecking(true);
+    setCheckStatus("idle");
+    setCheckMsg("");
+    try {
+      const res = await api.validateKey({
+        provider: provider.id,
+        api_key: apiKey,
+        base_url: baseURL || undefined,
+        region: hasRegions ? region : undefined,
+      });
+      setCheckStatus(res.status === "ok" ? "ok" : "error");
+      setCheckMsg(res.message || "");
+    } catch (e) {
+      setCheckStatus("error");
+      setCheckMsg((e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+          <h2 className="text-sm font-semibold">Add API key — {provider.display_name}</h2>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <form
+          className="space-y-4 px-6 py-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+        >
+          <Field label="Label">
+            <Input value={label} onChange={(e) => onLabel(e.target.value)} placeholder="personal" />
+          </Field>
+          <Field label="API key">
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => { onApiKey(e.target.value); setCheckStatus("idle"); }}
+              placeholder="sk-..."
+              required
+            />
+          </Field>
+          {hasRegions ? (
+            <Field label="Region">
+              <select
+                value={region}
+                onChange={(e) => onRegion(e.target.value)}
+                className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+              >
+                {provider.regions!.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <Field label="Base URL (optional)">
+              <Input
+                value={baseURL}
+                onChange={(e) => onBaseURL(e.target.value)}
+                placeholder="for custom endpoints"
+              />
+            </Field>
+          )}
+
+          {checkStatus === "ok" && (
+            <div className="flex items-center gap-2 rounded-lg border border-accent-300 bg-accent-50 px-3 py-2 text-sm text-accent-700">
+              <CheckCircle className="h-4 w-4 shrink-0" />
+              Key is valid
+            </div>
+          )}
+          {checkStatus === "error" && (
+            <ErrorBanner message={checkMsg || "Key validation failed"} />
+          )}
+          {error && <ErrorBanner message={error} />}
+
+          <div className="flex gap-3">
+            <Button type="button" variant="ghost" onClick={handleCheck} disabled={checking || !apiKey} className="flex-1">
+              <CheckCircle className={`h-4 w-4 ${checking ? "animate-pulse" : ""}`} />
+              {checking ? "Checking…" : "Check"}
+            </Button>
+            <Button type="submit" disabled={pending || !apiKey} className="flex-1">
+              <Plus className="h-4 w-4" />
+              {pending ? "Adding…" : "Add account"}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function flowLabel(flow: string): string {
   switch (flow) {
     case "device_code":
@@ -539,7 +717,7 @@ function ConnectModal({ provider, onClose }: { provider: OAuthProvider; onClose:
           <h2 className="text-sm font-semibold">Connect {provider.display_name}</h2>
           <button
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)]"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
           >
             <X className="h-4 w-4" />
           </button>
@@ -556,38 +734,37 @@ function ConnectModal({ provider, onClose }: { provider: OAuthProvider; onClose:
 
 function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose: () => void }) {
   const qc = useQueryClient();
-  const [state, setState] = useState("");
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
 
+  // Listen for the postMessage sent by the OAuth callback page.
+  useEffect(() => {
+    if (!waiting) return;
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== "oauth-callback") return;
+      if (e.data.provider && e.data.provider !== provider.provider) return;
+      if (e.data.status === "success") {
+        setDone(true);
+        qc.invalidateQueries({ queryKey: ["accounts"] });
+        setTimeout(onClose, 1500);
+      } else {
+        setError(e.data.message || "Connection failed.");
+        setWaiting(false);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [waiting, provider.provider, qc, onClose]);
+
   const start = async () => {
     setError("");
-    setBusy(true);
     try {
       const res = await api.oauthAuthorize(provider.provider, redirectURI);
-      setState(res.state);
+      setWaiting(true);
       window.open(res.authorize_url, "_blank", "noopener");
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const finish = async () => {
-    setError("");
-    setBusy(true);
-    try {
-      await api.oauthExchange(provider.provider, { code: code.trim(), state });
-      setDone(true);
-      qc.invalidateQueries({ queryKey: ["accounts"] });
-      setTimeout(onClose, 1200);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -595,24 +772,27 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
 
   return (
     <div className="space-y-4 px-6 py-5">
-      <ol className="list-decimal space-y-2 pl-5 text-sm text-[var(--text-muted)]">
-        <li>Click "Open sign-in" to authorize in your browser.</li>
-        <li>After approving, copy the code from the redirect URL.</li>
-        <li>Paste it below and finish.</li>
-      </ol>
-      {!state ? (
-        <Button onClick={start} disabled={busy} className="w-full">
-          {busy ? "Starting…" : "Open sign-in"}
-        </Button>
-      ) : (
+      {!waiting ? (
         <>
-          <Field label="Authorization code">
-            <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="paste code here" />
-          </Field>
-          <Button onClick={finish} disabled={busy || !code.trim()} className="w-full">
-            {busy ? "Connecting…" : "Finish connection"}
+          <p className="text-sm text-[var(--text-muted)]">
+            Click the button below to sign in with {provider.display_name}. A
+            new tab will open for authentication.
+          </p>
+          <Button onClick={start} className="w-full">
+            Open sign-in
           </Button>
         </>
+      ) : (
+        <div className="flex flex-col items-center gap-3 py-4">
+          <Spinner />
+          <p className="text-sm text-[var(--text-muted)]">
+            Waiting for sign-in to complete…
+          </p>
+          <p className="text-xs text-[var(--text-muted)]">
+            Complete the sign-in in the other tab. This will close
+            automatically.
+          </p>
+        </div>
       )}
       {error && <p className="text-xs text-[color:var(--color-danger)]">{error}</p>}
     </div>
@@ -726,7 +906,7 @@ function ModelChip({
   };
 
   return (
-    <div className={`group flex min-w-0 max-w-full items-start gap-2 rounded-lg border px-3 py-2 transition-colors hover:bg-ink-50 ${disabled ? "border-[color:var(--color-danger)]/30 opacity-60" : "border-[var(--border)]"}`}>
+    <div className={`group flex min-w-0 max-w-full items-start gap-2 rounded-lg border px-3 py-2 transition-colors hover:bg-ink-50 dark:hover:bg-ink-800/40 ${disabled ? "border-[color:var(--color-danger)]/30 opacity-60" : "border-[var(--border)]"}`}>
       <span className="mt-0.5 text-[var(--text-muted)]">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" />
@@ -742,7 +922,7 @@ function ModelChip({
         {onToggleDisable && (
           <button
             onClick={onToggleDisable}
-            className="shrink-0 rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)]"
+            className="shrink-0 rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
             title={disabled ? "Enable model" : "Disable model"}
           >
             {disabled ? <XCircle className="h-3.5 w-3.5 text-[color:var(--color-danger)]" /> : <CheckCircle className="h-3.5 w-3.5 text-accent-500" />}
@@ -750,7 +930,7 @@ function ModelChip({
         )}
         <button
           onClick={handleCopy}
-          className="shrink-0 rounded p-0.5 text-[var(--text-muted)] opacity-100 transition-opacity hover:bg-ink-100 hover:text-[var(--text)] sm:opacity-0 sm:group-hover:opacity-100"
+          className="shrink-0 rounded p-0.5 text-[var(--text-muted)] opacity-100 transition-opacity hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 sm:opacity-0 sm:group-hover:opacity-100"
           title="Copy model path"
         >
           {copied ? (
@@ -772,7 +952,7 @@ function ProviderIcon({ provider: p, size = 40 }: { provider: Provider; size?: n
     return (
       <div
         className="flex shrink-0 items-center justify-center rounded-2xl text-lg font-bold text-white"
-        style={{ ...dim, backgroundColor: p.color || "#64748b" }}
+        style={{ ...dim, backgroundColor: p.color || "var(--text-muted)" }}
       >
         {p.display_name.slice(0, 1).toUpperCase()}
       </div>

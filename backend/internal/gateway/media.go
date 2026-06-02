@@ -7,6 +7,7 @@ import (
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
+	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
 )
 
@@ -276,6 +277,14 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "url is required")
 		return
 	}
+
+	// SSRF Protection: Validate URL before passing to upstream services
+	if err := httputil.ValidateOutboundURL(req.URL); err != nil {
+		s.log.Warn("blocked suspicious web fetch URL", "url", req.URL, "error", err)
+		writeError(w, http.StatusBadRequest, "invalid url: URL blocked by security policy")
+		return
+	}
+
 	model := req.Model
 	if model == "" {
 		writeError(w, http.StatusBadRequest, "model is required (provider/model, e.g. firecrawl/firecrawl-scrape)")

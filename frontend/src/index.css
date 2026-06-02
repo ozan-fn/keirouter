@@ -9,12 +9,46 @@
   Inspired by Notion and Raycast's inviting feel, tuned for a developer
   infrastructure dashboard.
 
-  Light-mode only. The `dark:` variant is class-based and never triggered.
+  Supports light and dark modes. Toggle via ThemeProvider (class-based).
+  The `.dark` class on <html> activates the dark palette.
+
+  ── Radius scale ──────────────────────────────────────────────────
+    rounded-lg   (8px)  — small: badges, dropdown items, tooltips
+    rounded-xl   (12px) — medium: buttons, inputs, selects, tabs
+    rounded-2xl  (16px) — large: cards, modals, sidebars, containers
+    rounded-full        — circles, pills, toggle switches
+
+  ── Typography scale ──────────────────────────────────────────────
+    text-xs   (12px) — captions, meta labels, timestamps
+    text-sm   (14px) — body text, descriptions, secondary content
+    text-base (16px) — primary content, card titles
+    text-lg   (18px) — section headings
+    text-xl   (20px) — page subheadings
+    text-2xl  (24px) — stat values, hero metrics
+    text-3xl  (30px) — page titles (rare)
+
+  ── Spacing rhythm ────────────────────────────────────────────────
+    1.5 / p-1.5 — tight: icon + label pairs
+    2   / p-2   — compact: inline elements
+    3   / p-3   — default: form fields, list items
+    4   / p-4   — comfortable: card content
+    6   / p-6   — generous: section separation
+    8   / p-8   — spacious: page-level sections
+
+  ── Shadow elevation ──────────────────────────────────────────────
+    shadow-card  — resting cards, subtle lift
+    shadow-pop   — dropdowns, popovers, elevated panels
+    shadow-float — modals, toasts, floating overlays
+
+  ── Z-index layers ────────────────────────────────────────────────
+    z-10  — sticky headers, below content
+    z-50  — dropdowns, modals, sidebars
+    z-60  — toasts (above everything)
 */
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  /* Accent: warm olive-green — earthy, grounded, clearly green but not cold. */
+  /* ── Accent: warm olive-green — earthy, grounded, clearly green but not cold. */
   --color-accent-50: #f4f5f0;
   --color-accent-100: #e2e5d8;
   --color-accent-200: #c5cab2;
@@ -26,7 +60,7 @@
   --color-accent-800: #3a412d;
   --color-accent-900: #2c3224;
 
-  /* Neutrals: warm stone — never pure black/white, always inviting. */
+  /* ── Neutrals: warm stone — never pure black/white, always inviting. */
   --color-ink-50: #faf9f7;
   --color-ink-100: #f3f2ee;
   --color-ink-200: #e8e7e1;
@@ -39,14 +73,37 @@
   --color-ink-900: #1c1b18;
   --color-ink-950: #121110;
 
-  /* Semantic — warm, grounded. */
+  /* ── Semantic — warm, grounded. */
   --color-success: #5a7a5e;
   --color-warning: #b08a3e;
   --color-danger: #a84844;
+  --color-info: #5b8fa8;
 
+  /* ── Chart / data visualization palette. */
+  --color-chart-1: #4a7a6f;
+  --color-chart-2: #8fb5a8;
+  --color-chart-3: #b08a3e;
+  --color-chart-4: #a84844;
+  --color-chart-5: #6a7450;
+
+  /* ── Brand colors for CLI tools / providers. */
+  --color-brand-claude: #d97706;
+  --color-brand-codex: #10b981;
+  --color-brand-cline: #3b82f6;
+  --color-brand-copilot: #6366f1;
+  --color-brand-droid: #f59e0b;
+  --color-brand-openclaw: #ec4899;
+  --color-brand-opencode: #14b8a6;
+  --color-brand-kilo: #8b5cf6;
+  --color-brand-hermes: #06b6d4;
+  --color-brand-deepseek: #0ea5e9;
+  --color-brand-jcode: #f97316;
+
+  /* ── Typography. */
   --font-sans: "DM Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
+  /* ── Radius. */
   --radius-card: 0.75rem;
 }
 
@@ -66,6 +123,36 @@
   --shadow-card: 0 1px 2px rgba(30, 28, 22, 0.05), 0 1px 3px rgba(30, 28, 22, 0.07);
   --shadow-pop: 0 4px 12px rgba(30, 28, 22, 0.09), 0 2px 4px rgba(30, 28, 22, 0.05);
   --shadow-float: 0 12px 32px rgba(30, 28, 22, 0.13), 0 4px 8px rgba(30, 28, 22, 0.06);
+
+  /* Transition durations. */
+  --duration-fast: 100ms;
+  --duration-normal: 150ms;
+  --duration-slow: 250ms;
+}
+
+/*
+  Dark mode — deep warm charcoal, not pure black. Keeps the earthy,
+  grounded identity while being easy on the eyes in low light.
+*/
+.dark {
+  color-scheme: dark;
+
+  --bg: #161514;
+  --bg-elevated: #1e1d1b;
+  --bg-subtle: #252422;
+  --border: #302e2b;
+  --border-strong: #3d3b37;
+  --text: #e8e6e1;
+  --text-muted: #8a867e;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
+  --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.4), 0 4px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* Dark scrollbar. */
+.dark * {
+  scrollbar-color: #3d3b37 transparent;
 }
 
 html,
@@ -89,6 +176,11 @@ body {
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-ink-300) transparent;
+}
+
+/* Clickable elements get pointer cursor. */
+a, button, select, summary, [role="button"], [role="switch"], [role="radio"], [role="tab"], [type="checkbox"], [type="radio"], [type="submit"] {
+  cursor: pointer;
 }
 
 /* Visually hidden but accessible to screen readers. */
@@ -119,11 +211,21 @@ body {
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(8px) scale(0.97);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Toast auto-dismiss progress bar. */
+@keyframes toast-progress {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
   }
 }
 

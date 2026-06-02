@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   LayoutGrid,
   Boxes,
-  GitBranch,
+  Layers,
   Wallet,
   Sparkles,
   Search,
@@ -26,6 +26,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { ThemeToggle } from "./ThemeToggle";
+import { CommandPalette } from "./CommandPalette";
 
 interface NavItem {
   to: string;
@@ -46,7 +48,7 @@ const navGroups: NavGroup[] = [
       { to: "/", label: "Overview", icon: LayoutGrid, end: true },
       { to: "/providers", label: "Providers", icon: Boxes },
       { to: "/endpoints", label: "Endpoints", icon: Network },
-      { to: "/chains", label: "Combos", icon: GitBranch },
+      { to: "/chains", label: "Combos", icon: Layers },
       { to: "/usage", label: "Usage", icon: BarChart3 },
       { to: "/quota", label: "Quota Tracker", icon: Clock },
     ],
@@ -70,6 +72,7 @@ const navGroups: NavGroup[] = [
 
 export function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   // Close sidebar on navigation (mobile).
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
@@ -83,6 +86,18 @@ export function Layout() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [sidebarOpen, closeSidebar]);
+
+  // Cmd+K / Ctrl+K to open command palette.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   // Lock body scroll when mobile sidebar is open.
   useEffect(() => {
@@ -103,7 +118,7 @@ export function Layout() {
 
       {/* Mobile sidebar overlay + drawer. */}
       {sidebarOpen && (
-        <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
           <div
             className="fixed inset-0 bg-black/30"
             style={{ animation: "overlay-in 0.15s ease-out" }}
@@ -119,13 +134,15 @@ export function Layout() {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar onMenuToggle={() => setSidebarOpen((v) => !v)} />
+        <TopBar onMenuToggle={() => setSidebarOpen((v) => !v)} onSearchOpen={() => setPaletteOpen(true)} />
         <main className="flex-1 overflow-y-auto">
           <div className="mx-auto max-w-6xl px-4 py-5 sm:px-8 sm:py-8">
             <Outlet />
           </div>
         </main>
       </div>
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   );
 }
@@ -134,12 +151,12 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-elevated)]">
       <div className="flex items-center justify-between px-5 py-5">
-        <img src="/keirouter-logo.png" alt="KeiRouter" className="h-10 w-full object-contain object-left" />
+        <img src="/keirouter-logo.png" alt="KeiRouter" className="h-14 w-full object-contain object-left" />
         {/* Close button — only visible on mobile when rendered inside the drawer. */}
         <button
           onClick={onNavigate}
           aria-label="Close navigation"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 lg:hidden"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800 lg:hidden"
         >
           <X className="h-5 w-5" />
         </button>
@@ -161,9 +178,9 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
                     end={item.end}
                     onClick={onNavigate}
                     className={({ isActive }) =>
-                      `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
+                      `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
                         isActive
-                          ? "bg-accent-100 font-medium text-accent-700 shadow-[inset_3px_0_0_0_var(--color-accent-600)] dark:bg-accent-800/30 dark:text-accent-200"
+                          ? "bg-accent-100 font-medium text-accent-700 shadow-[inset_3px_0_0_0_var(--color-accent-600)] dark:bg-accent-900/40 dark:text-accent-200"
                           : "text-[var(--text-muted)] hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
                       }`
                     }
@@ -178,39 +195,43 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
         ))}
       </nav>
 
-      <div className="border-t border-[var(--border)] p-3">
+      <div className="border-t border-[var(--border)] p-3 space-y-2">
+        <div className="flex items-center justify-between px-1">
+          <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">Theme</span>
+          <ThemeToggle />
+        </div>
         <LogoutButton />
       </div>
     </aside>
   );
 }
 
-function TopBar({ onMenuToggle }: { onMenuToggle: () => void }) {
+function TopBar({ onMenuToggle, onSearchOpen }: { onMenuToggle: () => void; onSearchOpen: () => void }) {
   return (
     <header className="flex h-16 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 sm:px-6">
       {/* Hamburger — visible on mobile only. */}
       <button
         onClick={onMenuToggle}
         aria-label="Open navigation"
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 lg:hidden"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800 lg:hidden"
       >
         <Menu className="h-5 w-5" />
       </button>
 
-      <div className="relative max-w-md flex-1">
-        <label htmlFor="topbar-search" className="sr-only">Search KeiRouter</label>
+      <button
+        type="button"
+        onClick={onSearchOpen}
+        className="relative max-w-md flex-1 text-left"
+        aria-label="Open search (⌘K)"
+      >
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-        <input
-          id="topbar-search"
-          type="text"
-          placeholder="Search KeiRouter…"
-          aria-label="Search KeiRouter"
-          className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] py-2 pl-9 pr-12 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
-        />
+        <span className="block w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] py-2 pl-9 pr-12 text-sm text-[var(--text-muted)]">
+          Search KeiRouter…
+        </span>
         <kbd className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-[var(--border)] bg-[var(--bg-elevated)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
           ⌘K
         </kbd>
-      </div>
+      </button>
 
       <div className="ml-auto flex items-center gap-1">
         <button

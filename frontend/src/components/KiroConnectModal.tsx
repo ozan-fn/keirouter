@@ -40,7 +40,7 @@ export function KiroConnectModal({ onClose }: { onClose: () => void }) {
               <button
                 onClick={() => setMethod(null)}
                 aria-label="Go back"
-                className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
+                className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
               >
                 <ArrowLeft className="h-4 w-4" />
               </button>
@@ -50,7 +50,7 @@ export function KiroConnectModal({ onClose }: { onClose: () => void }) {
           <button
             onClick={onClose}
             aria-label="Close"
-            className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
+            className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
           >
             <X className="h-4 w-4" />
           </button>
@@ -106,7 +106,7 @@ function MethodCard({
   return (
     <button
       onClick={onClick}
-      className="flex w-full items-start gap-3 rounded-xl border border-[var(--border)] p-4 text-left transition-colors hover:bg-ink-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
+      className="flex w-full items-start gap-3 rounded-xl border border-[var(--border)] p-4 text-left transition-colors hover:bg-ink-50 dark:hover:bg-ink-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
     >
       <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-accent-700">
         <Icon className="h-[18px] w-[18px]" />

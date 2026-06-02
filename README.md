@@ -1,5 +1,9 @@
 # KeiRouter
 
+[![CI](https://github.com/mydisha/keirouter/actions/workflows/ci.yml/badge.svg)](https://github.com/mydisha/keirouter/actions/workflows/ci.yml)
+[![Go 1.24+](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A fast, self-hostable AI gateway. Point your coding tools (Claude Code, Cursor,
 Codex, Cline, OpenClaw, and any OpenAI/Anthropic-compatible client) at one local
 endpoint, and KeiRouter routes requests across many providers with automatic
@@ -9,17 +13,8 @@ controls.
 Written in Go for a small footprint (single static binary, ~20–30MB RAM idle,
 instant startup) with a React + Tailwind dashboard.
 
-> Status: active development. Implemented and tested: the core proxy; OpenAI /
-> Anthropic / Gemini format translation (unary + streaming); a 50+ provider
-> catalog with brand icons; multi-capability routing (chat, embeddings, image,
-> speech-to-text, text-to-speech, web search, web fetch) with per-kind model
-> discovery; RTK input compression + Caveman/terse output compression; OAuth
-> provider connections (authorization-code + PKCE and device-code flows) with
-> automatic token refresh; capability-aware routing/fallback; routing chains
-> exposed as callable "combo" models; metering; budgets; a semantic response
-> cache; Prometheus metrics; dashboard auth with first-run onboarding; CLI tool
-> auto-config; and the React dashboard. The MCP bridge and tunneling are in
-> progress.
+> **Status:** Active development. See the [Architecture](#architecture) section
+> for what's implemented.
 
 ## Why KeiRouter
 
@@ -42,37 +37,40 @@ instant startup) with a React + Tailwind dashboard.
 
 ## Quick start
 
-Build and run locally (Go 1.24+):
+Install with curl (requires Go 1.22+, Node.js 20+):
 
 ```bash
-cd backend
-go build -o ../keirouter ./cmd/keirouter
-cd ..
+curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash
+```
 
-# Start the server (defaults to 127.0.0.1:20180).
+Or build manually:
+
+```bash
+git clone https://github.com/mydisha/keirouter.git
+cd keirouter
+make build
 ./keirouter
-```
-
-Then open the dashboard (run `cd frontend && npm install && npm run dev`, or
-build and let the backend serve it). On first run, sign in with the default
-password `keirouter`; the onboarding flow prompts you to set a new one.
-
-You can also mint an API key from the CLI without the dashboard:
-
-```bash
-./keirouter -bootstrap   # prints a kr_ key once
-```
-
-Run both backend and dashboard together in development:
-
-```bash
-make dev   # backend on :20180, dashboard on :5180
 ```
 
 Or with Docker:
 
 ```bash
 docker compose -f deploy/compose.yaml up -d --build
+```
+
+On first run, sign in at **http://localhost:20180** with the default password
+`keirouter` — the onboarding flow prompts you to set a new one.
+
+Create an API key without the dashboard:
+
+```bash
+keirouter -bootstrap   # prints a kr_ key once
+```
+
+For development with hot reload:
+
+```bash
+make dev   # backend on :20180, dashboard on :5180
 ```
 
 Then add a provider account and a routing chain via the admin API (loopback
@@ -218,6 +216,14 @@ go test ./...        # run the test suite
 go vet ./...         # static checks
 ```
 
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, coding guidelines, and how to submit pull requests.
+
+## Security
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md). Please do not open a public issue for security concerns.
+
 ## License
 
-TBD.
+[MIT](LICENSE)

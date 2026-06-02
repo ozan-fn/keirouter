@@ -85,7 +85,7 @@ export function Button({ variant = "primary", className = "", ...props }: Button
   const base =
     "inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60";
   const variants = {
-    primary: "bg-accent-600 text-white hover:bg-accent-700 shadow-sm",
+    primary: "bg-accent-600 text-white hover:bg-accent-700 dark:bg-accent-500 dark:hover:bg-accent-400 shadow-sm",
     ghost:
       "border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text)] hover:bg-ink-100 dark:hover:bg-ink-800",
     danger:
@@ -138,7 +138,7 @@ export function Badge({
   };
   return (
     <span
-      className={`inline-flex items-center rounded-lg px-2 py-0.5 text-xs font-medium ${tones[tone]}`}
+      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${tones[tone]}`}
     >
       {children}
     </span>
@@ -192,7 +192,7 @@ export function ErrorCard({ message }: { message: string }) {
 export function Spinner() {
   return (
     <div className="flex items-center justify-center py-10" role="status" aria-label="Loading">
-      <div className="h-5 w-5 animate-spin rounded-full border-2 border-ink-300 border-t-accent-500" />
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-ink-300 border-t-accent-500 dark:border-ink-600 dark:border-t-accent-400" />
     </div>
   );
 }
@@ -219,7 +219,7 @@ export function StatCard({
   };
   const deltaColor =
     delta?.direction === "up"
-      ? "text-accent-600 dark:text-accent-300"
+      ? "text-accent-600 dark:text-accent-400"
       : delta?.direction === "down"
         ? "text-[color:var(--color-danger)]"
         : "text-[var(--text-muted)]";

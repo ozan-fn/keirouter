@@ -92,6 +92,11 @@ func (s *Service) List(ctx context.Context, tenantID string) ([]store.APIKey, er
 	return s.keys.List(ctx, tenantID)
 }
 
+// Get returns a single key by id.
+func (s *Service) Get(ctx context.Context, id string) (store.APIKey, error) {
+	return s.keys.Get(ctx, id)
+}
+
 // SetDisabled toggles a key's disabled state.
 func (s *Service) SetDisabled(ctx context.Context, id string, disabled bool) error {
 	return s.keys.SetDisabled(ctx, id, disabled)

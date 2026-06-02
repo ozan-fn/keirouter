@@ -88,6 +88,7 @@ type Result struct {
 	CostMicros int64
 	Latency    time.Duration
 	SlimStats  *slimmer.Stats
+	CacheHit   bool
 }
 
 // Chat runs a non-streaming request through the full pipeline with fallback.
@@ -104,7 +105,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		if p.metrics != nil {
 			p.metrics.RecordCache(true)
 		}
-		return &Result{Response: hit, Provider: "cache", Model: hit.Model}, nil
+		return &Result{Response: hit, Provider: "cache", Model: hit.Model, CacheHit: true}, nil
 	}
 	if p.metrics != nil && p.cache != nil && p.cache.Enabled() {
 		p.metrics.RecordCache(false)

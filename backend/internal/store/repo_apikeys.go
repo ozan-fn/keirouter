@@ -41,6 +41,14 @@ func (r *APIKeyRepo) FindByLookup(ctx context.Context, lookup string) (APIKey, e
 	return r.scanOne(r.db.sql.QueryRowContext(ctx, q, lookup))
 }
 
+// Get returns a single API key by id.
+func (r *APIKeyRepo) Get(ctx context.Context, id string) (APIKey, error) {
+	q := r.db.rebind(`
+		SELECT id, tenant_id, project_id, name, key_hash, lookup_hash, display, scopes, disabled, last_used_at, created_at
+		FROM api_keys WHERE id = ?`)
+	return r.scanOne(r.db.sql.QueryRowContext(ctx, q, id))
+}
+
 // List returns all keys for a tenant, newest first.
 func (r *APIKeyRepo) List(ctx context.Context, tenantID string) ([]APIKey, error) {
 	q := r.db.rebind(`

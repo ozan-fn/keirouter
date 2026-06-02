@@ -1,18 +1,21 @@
-// Package terse implements KeiRouter's output-token saving mode.
+// Package terse implements KeiRouter's output-token saving mode using the
+// TERSE serialization format (github.com/RudsonCarvalho/terse-go).
 //
-// When enabled, Apply injects a system instruction that steers the model
-// toward terse responses: technical substance (code, commands, concrete
-// answers) is preserved while conversational filler, restated questions, and
-// redundant prose are dropped. Compression scales with the configured Level.
+// When enabled, Apply serializes the request's messages and tool definitions
+// into the compact TERSE format and injects them into the system prompt. This
+// reduces input tokens by replacing verbose JSON-style message arrays with a
+// token-efficient representation that LLMs can still parse naturally.
 //
-// This is a request-side transform: it only modifies the system prompt, never
-// the user's messages, and runs before format translation so it applies
-// uniformly across every provider dialect.
+// This is a request-side transform: it only modifies the system prompt and
+// runs before format translation so it applies uniformly across every provider
+// dialect.
 package terse
 
 import (
+	"encoding/json"
 	"strings"
 
+	tersego "github.com/RudsonCarvalho/terse-go"
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
@@ -21,65 +24,23 @@ import (
 // ignore in their output.
 const sentinel = "<!-- keirouter:terse -->"
 
-// Level selects how aggressively responses are compressed.
-type Level string
-
-const (
-	// LevelLight trims pleasantries and asks for concise answers.
-	LevelLight Level = "light"
-	// LevelMedium favors bullets and minimal prose while keeping all detail.
-	LevelMedium Level = "medium"
-	// LevelAggressive compresses to the bare technical minimum.
-	LevelAggressive Level = "aggressive"
-)
-
 // Config controls terse-mode behavior for a request.
 type Config struct {
 	Enabled bool
-	Level   Level
 }
 
-const instructionLight = `Response style: be concise and direct.
-- Skip greetings, sign-offs, and filler ("Sure!", "Great question", "I hope this helps").
-- Do not restate the question before answering.
-- Keep all code, commands, and technical detail intact.`
+// directive is the lightweight instruction prepended to the TERSE context block.
+const directive = `The following context uses TERSE format (Token-Efficient Serialization).
+Key: T=true, F=false, ~=null, {k:v}=object, [v]=array, #[keys]\\nrows=schema table.
+Respond normally with full technical detail.`
 
-const instructionMedium = `Response style: terse and information-dense.
-- Lead with the answer; omit preamble and summaries of what you are about to do.
-- Prefer short bullet points and code blocks over paragraphs.
-- Strip filler, hedging, and motivational phrasing.
-- Preserve every code snippet, command, file path, and exact value verbatim.
-- Explain only when correctness depends on it.`
-
-const instructionAggressive = `Response style: maximum compression.
-- Output only what is required to answer. No preamble, no recap, no closing remarks.
-- Never restate the question or describe your plan.
-- Sentence fragments and note form are acceptable.
-- Code, commands, and exact values over prose; show, do not narrate.
-- Omit explanations and rationale unless explicitly requested.
-- One concrete answer beats three qualified ones.`
-
-// instructionFor returns the prompt text for the given level, defaulting to
-// medium for unknown values.
-func instructionFor(l Level) string {
-	switch l {
-	case LevelLight:
-		return instructionLight
-	case LevelAggressive:
-		return instructionAggressive
-	case LevelMedium:
-		return instructionMedium
-	default:
-		return instructionMedium
-	}
-}
-
-// Apply injects the terse-mode instruction into req.System when cfg.Enabled.
+// Apply serializes the request's messages and tools into TERSE format and
+// injects them into req.System when cfg.Enabled.
 //
 // It is a no-op when disabled or when the instruction has already been applied
 // (detected via the sentinel marker), so it is safe to call repeatedly across
 // retries and fallback attempts. The injected block is prepended so the terse
-// directive takes precedence over any pre-existing system text.
+// context takes precedence over any pre-existing system text.
 func Apply(req *core.ChatRequest, cfg Config) {
 	if req == nil || !cfg.Enabled {
 		return
@@ -88,10 +49,109 @@ func Apply(req *core.ChatRequest, cfg Config) {
 		return
 	}
 
-	block := sentinel + "\n" + instructionFor(cfg.Level)
+	parts := []string{sentinel, directive}
+
+	if len(req.Messages) > 0 {
+		msgs := messagesToMaps(req.Messages)
+		if serialized, err := tersego.Serialize(toAnySlice(msgs)); err == nil {
+			parts = append(parts, "\n## Conversation\n"+serialized)
+		}
+	}
+
+	if len(req.Tools) > 0 {
+		tools := toolsToMaps(req.Tools)
+		if serialized, err := tersego.Serialize(toAnySlice(tools)); err == nil {
+			parts = append(parts, "\n## Tools\n"+serialized)
+		}
+	}
+
+	block := strings.Join(parts, "\n")
 	if strings.TrimSpace(req.System) == "" {
 		req.System = block
 		return
 	}
 	req.System = block + "\n\n" + req.System
+}
+
+// messagesToMaps converts core.Message slices into a generic map structure
+// suitable for TERSE serialization.
+func messagesToMaps(msgs []core.Message) []map[string]any {
+	out := make([]map[string]any, 0, len(msgs))
+	for _, m := range msgs {
+		entry := map[string]any{
+			"role": string(m.Role),
+		}
+		if m.Name != "" {
+			entry["name"] = m.Name
+		}
+		// Flatten content parts to text or structured maps.
+		parts := make([]any, 0, len(m.Content))
+		for _, p := range m.Content {
+			switch p.Type {
+			case core.PartText:
+				parts = append(parts, p.Text)
+			case core.PartToolCall:
+				tc := map[string]any{
+					"type": "tool_call",
+					"id":   p.ToolCall.ID,
+					"name": p.ToolCall.Name,
+				}
+				var args any
+				if err := json.Unmarshal(p.ToolCall.Arguments, &args); err == nil {
+					tc["arguments"] = args
+				}
+				parts = append(parts, tc)
+			case core.PartToolResult:
+				tr := map[string]any{
+					"type":    "tool_result",
+					"call_id": p.ToolResult.CallID,
+					"content": p.ToolResult.Content,
+				}
+				if p.ToolResult.IsError {
+					tr["is_error"] = true
+				}
+				parts = append(parts, tr)
+			case core.PartThinking:
+				parts = append(parts, "[thinking]"+p.Text)
+			}
+		}
+		if len(parts) == 1 {
+			entry["content"] = parts[0]
+		} else if len(parts) > 1 {
+			entry["content"] = parts
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// toolsToMaps converts core.Tool slices into a generic map structure suitable
+// for TERSE serialization.
+func toolsToMaps(tools []core.Tool) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		entry := map[string]any{
+			"name": t.Name,
+		}
+		if t.Description != "" {
+			entry["description"] = t.Description
+		}
+		if len(t.Parameters) > 0 {
+			var params any
+			if err := json.Unmarshal(t.Parameters, &params); err == nil {
+				entry["parameters"] = params
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// toAnySlice converts a typed slice to []any for TERSE serialization compatibility.
+func toAnySlice[T any](s []T) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = v
+	}
+	return out
 }

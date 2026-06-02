@@ -27,6 +27,8 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/transform"
+	"github.com/mydisha/keirouter/backend/internal/tunnel/cloudflare"
+	"github.com/mydisha/keirouter/backend/internal/tunnel/tailscale"
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
 
@@ -52,7 +54,10 @@ type Server struct {
 	cliTools    *clitools.Registry
 	cliToolHome string
 	frontendDir string
+	dataDir     string
 	oauthSessions *oauth.SessionStore
+	cfManager   *cloudflare.Manager
+	tsManager   *tailscale.Manager
 	router   chi.Router
 }
 
@@ -78,6 +83,9 @@ type Deps struct {
 	CLITools    *clitools.Registry
 	CLITHome    string
 	FrontendDir string
+	DataDir     string
+	CfManager   *cloudflare.Manager
+	TsManager   *tailscale.Manager
 }
 
 // New builds a gateway Server and wires its routes.
@@ -119,7 +127,10 @@ func New(d Deps) *Server {
 		cliTools:    cliTools,
 		cliToolHome: cliToolHome,
 		frontendDir: d.FrontendDir,
+		dataDir:     d.DataDir,
 		oauthSessions: oauth.NewSessionStore(),
+		cfManager:   d.CfManager,
+		tsManager:   d.TsManager,
 	}
 	s.router = s.routes()
 	return s
@@ -202,9 +213,16 @@ func (s *Server) routes() chi.Router {
 
 	// Dashboard auth endpoints (login/logout/status) are loopback-guarded but
 	// do not require a session — they are how a session is obtained.
+	// Login has rate limiting to prevent brute force attacks.
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Use(s.loopbackOnly)
-		s.mountAuth(r)
+		// Apply rate limiting to login endpoint
+		r.Group(func(r chi.Router) {
+			r.Use(s.loginRateLimiter)
+			r.Post("/login", s.handleLogin)
+		})
+		r.Post("/logout", s.handleLogout)
+		r.Get("/status", s.handleAuthStatus)
 		r.Group(func(pr chi.Router) {
 			pr.Use(s.sessionMiddleware)
 			s.mountAuthenticatedAuth(pr)
@@ -222,9 +240,16 @@ func (s *Server) routes() chi.Router {
 
 	// Serve frontend static files. The dashboard is a Vite SPA; unmatched
 	// paths fall through to index.html so client-side routing works.
+	// The OAuth callback (/oauth/callback) is intercepted here because it
+	// arrives as a GET redirect from the provider and must not require a
+	// dashboard session — the state parameter provides CSRF protection.
 	if s.frontendDir != "" {
 		fs := http.FileServer(http.Dir(s.frontendDir))
 		r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/callback" {
+				s.oauthCallback(w, r)
+				return
+			}
 			path := r.URL.Path
 			if path == "/" {
 				path = "/index.html"

@@ -38,11 +38,11 @@ export function SkillsPage() {
       setDescription("");
       setPrompt("");
       setError("");
-      toast.success("Skill created");
+      toast.success("Skill created", `System-prompt augmentation "${name}" is now available for the gateway to apply.`);
     },
     onError: (e) => {
       setError((e as Error).message);
-      toast.error("Couldn't create skill", (e as Error).message);
+      toast.error("Skill creation failed", (e as Error).message);
     },
   });
 
@@ -50,16 +50,16 @@ export function SkillsPage() {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       api.updateSkill(id, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["skills"] }),
-    onError: (e) => toast.error("Couldn't update skill", (e as Error).message),
+    onError: (e) => toast.error("Skill toggle failed", (e as Error).message),
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteSkill(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["skills"] });
-      toast.success("Skill removed");
+      toast.success("Skill removed", "The system-prompt augmentation has been deleted and will no longer be applied.");
     },
-    onError: (e) => toast.error("Couldn't remove skill", (e as Error).message),
+    onError: (e) => toast.error("Skill removal failed", (e as Error).message),
   });
 
   return (

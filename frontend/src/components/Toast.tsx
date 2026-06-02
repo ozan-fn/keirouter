@@ -92,7 +92,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-full max-w-sm flex-col gap-2">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-60 flex w-full max-w-sm flex-col gap-2.5">
       {toasts.map((t) => (
         <ToastCard key={t.id} toast={t} onDismiss={() => onDismiss(t.id)} />
       ))}
@@ -102,22 +102,28 @@ function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id:
 
 const toneMeta: Record<
   ToastTone,
-  { icon: typeof Info; iconClass: string; ring: string }
+  { icon: typeof Info; iconClass: string; bg: string; border: string; progressClass: string }
 > = {
   success: {
     icon: CheckCircle2,
-    iconClass: "text-accent-600",
-    ring: "border-accent-200",
+    iconClass: "text-emerald-600 dark:text-emerald-400",
+    bg: "bg-emerald-50/80 dark:bg-emerald-950/40",
+    border: "border-emerald-200 dark:border-emerald-800/60",
+    progressClass: "bg-emerald-500",
   },
   error: {
     icon: AlertCircle,
-    iconClass: "text-[color:var(--color-danger)]",
-    ring: "border-[color:var(--color-danger)]/30",
+    iconClass: "text-red-600 dark:text-red-400",
+    bg: "bg-red-50/80 dark:bg-red-950/40",
+    border: "border-red-200 dark:border-red-800/60",
+    progressClass: "bg-red-500",
   },
   info: {
     icon: Info,
-    iconClass: "text-[color:var(--color-warning)]",
-    ring: "border-[var(--border)]",
+    iconClass: "text-blue-600 dark:text-blue-400",
+    bg: "bg-blue-50/80 dark:bg-blue-950/40",
+    border: "border-blue-200 dark:border-blue-800/60",
+    progressClass: "bg-blue-500",
   },
 };
 
@@ -127,22 +133,30 @@ function ToastCard({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   return (
     <div
       role="status"
-      className={`pointer-events-auto flex items-start gap-3 rounded-xl border ${meta.ring} bg-[var(--bg-elevated)] px-4 py-3 shadow-[var(--shadow-float)] animate-[toast-in_0.18s_ease-out]`}
+      className={`pointer-events-auto relative overflow-hidden rounded-xl border ${meta.border} ${meta.bg} shadow-lg shadow-black/5 backdrop-blur-sm animate-[toast-in_0.2s_ease-out] dark:shadow-black/20`}
     >
-      <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${meta.iconClass}`} strokeWidth={2} />
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium leading-snug">{toast.title}</p>
-        {toast.description && (
-          <p className="mt-0.5 break-words text-xs text-[var(--text-muted)]">{toast.description}</p>
-        )}
+      <div className="flex items-start gap-3 px-4 py-3">
+        <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${meta.iconClass}`} strokeWidth={2} />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-snug text-[var(--text)]">{toast.title}</p>
+          {toast.description && (
+            <p className="mt-1 break-words text-[13px] leading-relaxed text-[var(--text-muted)]">{toast.description}</p>
+          )}
+        </div>
+        <button
+          onClick={onDismiss}
+          className="-mr-1 -mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-white/10"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
-      <button
-        onClick={onDismiss}
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
-        aria-label="Dismiss"
-      >
-        <X className="h-4 w-4" />
-      </button>
+      {/* Auto-dismiss progress bar */}
+      <div className="h-[3px] w-full bg-black/[0.04] dark:bg-white/[0.06]">
+        <div
+          className={`h-full ${meta.progressClass} animate-[toast-progress_5s_linear_forwards] rounded-full opacity-40`}
+        />
+      </div>
     </div>
   );
 }

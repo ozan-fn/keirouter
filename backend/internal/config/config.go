@@ -66,17 +66,32 @@ type SecurityConfig struct {
 	BindLoopbackOnly bool `koanf:"bind_loopback_only"`
 }
 
-// CacheConfig configures the semantic response cache (Pro feature).
+// CacheConfig configures the semantic response cache.
 type CacheConfig struct {
 	Enabled bool `koanf:"enabled"`
-	// Backend is "memory" (local HNSW) or "redis".
+	// Backend is "memory" (in-process) or "redis".
 	Backend string `koanf:"backend"`
-	// RedisURL is used when Backend == "redis".
+	// RedisURL is used when Backend == "redis". Format: redis://host:port[/db]
 	RedisURL string `koanf:"redis_url"`
 	// SimilarityThreshold in [0,1]; a candidate hit must score >= this.
 	SimilarityThreshold float64 `koanf:"similarity_threshold"`
 	// TTL bounds cached entry lifetime.
 	TTL time.Duration `koanf:"ttl"`
+
+	// EmbeddingProvider selects the embedding backend: "hash" (exact-match,
+	// zero-dependency default) or "api" (OpenAI-compatible embeddings API for
+	// true semantic near-match caching).
+	EmbeddingProvider string `koanf:"embedding_provider"`
+	// EmbeddingAPIURL is the base URL for the embedding API (e.g.
+	// "https://api.openai.com/v1"). Only used when EmbeddingProvider == "api".
+	EmbeddingAPIURL string `koanf:"embedding_api_url"`
+	// EmbeddingAPIKey is the bearer token for the embedding API.
+	EmbeddingAPIKey string `koanf:"embedding_api_key"`
+	// EmbeddingModel is the model name for the embedding API (default:
+	// "text-embedding-3-small").
+	EmbeddingModel string `koanf:"embedding_model"`
+	// EmbeddingDims is the output vector dimensions (default: 1536).
+	EmbeddingDims int `koanf:"embedding_dims"`
 }
 
 // LogConfig controls structured logging.
@@ -117,6 +132,9 @@ func Default() Config {
 			Backend:             "memory",
 			SimilarityThreshold: 0.95,
 			TTL:                 time.Hour,
+			EmbeddingProvider:   "hash",
+			EmbeddingModel:      "text-embedding-3-small",
+			EmbeddingDims:       1536,
 		},
 		Log: LogConfig{Level: "info", Format: "text"},
 	}

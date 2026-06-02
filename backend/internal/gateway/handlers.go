@@ -128,10 +128,13 @@ func (s *Server) unaryChat(w http.ResponseWriter, r *http.Request, codec transfo
 		return
 	}
 	tokens := result.Response.Usage.PromptTokens + result.Response.Usage.CompletionTokens
-	s.logRequest(result.Provider, result.Model, tokens, result.CostMicros, latency, false, nil)
+	s.logRequest(result.Provider, result.Model, tokens, result.CostMicros, latency, result.CacheHit, nil)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-KeiRouter-Provider", result.Provider)
 	w.Header().Set("X-KeiRouter-Model", result.Model)
+	if result.CacheHit {
+		w.Header().Set("X-KeiRouter-Cache", "hit")
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
 }
