@@ -35,6 +35,9 @@ type Pipeline struct {
 	cache      *cache.Cache
 	embedder   cache.Embedder
 	log        *slog.Logger
+
+	requestTimeout    time.Duration // upper bound on non-streaming upstream calls
+	streamStallTimeout time.Duration // aborts a stream with no bytes for this long
 }
 
 // Deps bundles the pipeline's collaborators.
@@ -47,6 +50,12 @@ type Deps struct {
 	Cache      *cache.Cache
 	Embedder   cache.Embedder
 	Logger     *slog.Logger
+
+	// RequestTimeout bounds non-streaming upstream calls. Zero means no limit.
+	RequestTimeout time.Duration
+	// StreamStallTimeout aborts a stream that produces no bytes for this
+	// long. Zero means no stall detection.
+	StreamStallTimeout time.Duration
 }
 
 // New builds a Pipeline.
@@ -64,6 +73,9 @@ func New(d Deps) *Pipeline {
 		cache:      d.Cache,
 		embedder:   d.Embedder,
 		log:        log,
+
+		requestTimeout:    d.RequestTimeout,
+		streamStallTimeout: d.StreamStallTimeout,
 	}
 }
 
@@ -137,6 +149,11 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		// Inject proxy config from credentials into context so the connector's
 		// HTTP client uses the right proxy/relay for this account.
 		callCtx := core.WithProxy(ctx, attempt.Creds)
+		if p.requestTimeout > 0 {
+			var cancel context.CancelFunc
+			callCtx, cancel = context.WithTimeout(callCtx, p.requestTimeout)
+			defer cancel()
+		}
 		resp, callErr := attempt.Conn.Chat(callCtx, attemptReq, attempt.Creds)
 		latency := time.Since(started)
 
@@ -216,8 +233,16 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		p.log.Debug("stream attempt start", "i", i, "provider", attempt.Target.Provider,
 			"model", attempt.Target.Model, "account", attempt.Account.ID)
 
+		// Capture TTFT from the connector's first-chunk callback.
+		var ttft time.Duration
+		streamCfg := core.StreamConfig{
+			OnFirstChunk: func(elapsed time.Duration) {
+				ttft = elapsed
+			},
+		}
+
 		callCtx := core.WithProxy(ctx, attempt.Creds)
-		upstream, callErr := attempt.Conn.Stream(callCtx, attemptReq, attempt.Creds)
+		upstream, callErr := attempt.Conn.Stream(callCtx, attemptReq, attempt.Creds, streamCfg)
 		if callErr != nil {
 			pe := core.AsProviderError(callErr)
 			lastErr = pe
@@ -245,7 +270,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		out := make(chan core.StreamChunk, 16)
 		meta := req.Metadata
 		acc := attempt
-		go p.pumpStream(ctx, upstream, out, meta, acc, started)
+		go p.pumpStream(ctx, upstream, out, meta, acc, started, ttft)
 
 		return &StreamResult{
 			Chunks:    out,
@@ -265,21 +290,92 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 // metering when the stream completes. Usage chunks are merged rather than
 // replaced: Anthropic streams input tokens in message_start and output tokens
 // in message_delta as separate events — replacing would lose the first.
+//
+// When StreamStallTimeout is configured, a timer resets on every chunk. If no
+// chunk arrives within the timeout, the stream is cancelled with ErrTimeout.
 func (p *Pipeline) pumpStream(ctx context.Context, in <-chan core.StreamChunk, out chan<- core.StreamChunk,
-	meta core.RequestMetadata, attempt dispatch.Attempt, started time.Time) {
+	meta core.RequestMetadata, attempt dispatch.Attempt, started time.Time, ttft time.Duration) {
 	defer close(out)
-	var usage core.Usage
-	for chunk := range in {
-		if chunk.Type == core.ChunkUsage && chunk.Usage != nil {
-			usage = mergeUsage(usage, *chunk.Usage)
+
+	// Set up stall detection. The timer resets every time a chunk arrives.
+	var stallCancel context.CancelFunc
+	stallCtx := ctx
+	if p.streamStallTimeout > 0 {
+		stallCtx, stallCancel = context.WithCancel(ctx)
+		defer stallCancel()
+		// Drain upstream when stall fires.
+		go func() {
+			<-stallCtx.Done()
+			if ctx.Err() == nil && stallCtx.Err() != nil {
+				// Stall detected (parent ctx still alive but stall ctx cancelled).
+				// Consume remaining upstream chunks to unblock the producer.
+				for range in {
+				}
+			}
+		}()
+	}
+
+	var stallTimer *time.Timer
+	resetStall := func() {
+		if p.streamStallTimeout <= 0 {
+			return
 		}
+		if stallTimer == nil {
+			stallTimer = time.AfterFunc(p.streamStallTimeout, stallCancel)
+		} else {
+			stallTimer.Reset(p.streamStallTimeout)
+		}
+	}
+	stopStall := func() {
+		if stallTimer != nil {
+			stallTimer.Stop()
+		}
+	}
+	defer stopStall()
+
+	resetStall() // arm the timer for the initial connection
+
+	var usage core.Usage
+	for {
 		select {
-		case out <- chunk:
-		case <-ctx.Done():
+		case chunk, ok := <-in:
+			if !ok {
+				// Upstream closed — stream complete.
+				p.recordWithTTFT(ctx, meta, attempt, usage, false, time.Since(started), ttft)
+				return
+			}
+			resetStall()
+			if chunk.Type == core.ChunkUsage && chunk.Usage != nil {
+				usage = mergeUsage(usage, *chunk.Usage)
+			}
+			select {
+			case out <- chunk:
+			case <-stallCtx.Done():
+				// Client disconnected or stall — drain upstream.
+				for range in {
+				}
+				return
+			}
+		case <-stallCtx.Done():
+			if ctx.Err() != nil {
+				// Parent context cancelled (client disconnected).
+				for range in {
+				}
+				return
+			}
+			// Stall timeout fired.
+			stopStall()
+			out <- core.StreamChunk{
+				Type: core.ChunkError,
+				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: attempt.Target.Provider, Model: attempt.Target.Model, Message: "stream stall: no data received for " + p.streamStallTimeout.String()},
+			}
+			// Drain upstream.
+			for range in {
+			}
+			p.recordWithTTFT(ctx, meta, attempt, usage, false, time.Since(started), ttft)
 			return
 		}
 	}
-	p.record(ctx, meta, attempt, usage, false, time.Since(started))
 }
 
 // mergeUsage combines two usage snapshots. Fields present in the new snapshot
@@ -351,6 +447,12 @@ func (p *Pipeline) applyTokenSaving(req *core.ChatRequest, opts Options) *slimme
 // record meters a completed attempt; failures to record are logged, not fatal.
 func (p *Pipeline) record(ctx context.Context, meta core.RequestMetadata, attempt dispatch.Attempt,
 	usage core.Usage, cacheHit bool, latency time.Duration) int64 {
+	return p.recordWithTTFT(ctx, meta, attempt, usage, cacheHit, latency, 0)
+}
+
+// recordWithTTFT is like record but also records time-to-first-token.
+func (p *Pipeline) recordWithTTFT(ctx context.Context, meta core.RequestMetadata, attempt dispatch.Attempt,
+	usage core.Usage, cacheHit bool, latency, ttft time.Duration) int64 {
 	if p.meter == nil {
 		return 0
 	}
@@ -364,6 +466,7 @@ func (p *Pipeline) record(ctx context.Context, meta core.RequestMetadata, attemp
 		Usage:     usage,
 		CacheHit:  cacheHit,
 		Latency:   latency,
+		TTFT:      ttft,
 	})
 	if err != nil {
 		p.log.Error("failed to record usage", "err", err)
@@ -374,6 +477,7 @@ func (p *Pipeline) record(ctx context.Context, meta core.RequestMetadata, attemp
 			attempt.Target.Provider, attempt.Target.Model, "success",
 			latency.Seconds(),
 			usage.PromptTokens, usage.CompletionTokens, usage.CachedTokens, cost,
+			ttft.Seconds(),
 		)
 		if cacheHit {
 			p.metrics.RecordCache(true)

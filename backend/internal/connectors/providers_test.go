@@ -181,7 +181,7 @@ func TestKiro_Stream_Sonnet(t *testing.T) {
 			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}},
 		},
 	}
-	ch, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"})
+	ch, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"}, core.StreamConfig{})
 	require.NoError(t, err)
 
 	var text string
@@ -218,7 +218,7 @@ func TestKiro_Stream_ToolUse(t *testing.T) {
 			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "read the file"}}},
 		},
 	}
-	ch, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"})
+	ch, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"}, core.StreamConfig{})
 	require.NoError(t, err)
 
 	var hasTool bool
@@ -471,7 +471,7 @@ func TestAntigravity_Stream(t *testing.T) {
 			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}},
 		},
 	}
-	ch, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"})
+	ch, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"}, core.StreamConfig{})
 	require.NoError(t, err)
 
 	var text string
@@ -638,7 +638,7 @@ func TestXiaomiMiMo_Stream(t *testing.T) {
 			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}},
 		},
 	}
-	ch, err := c.Stream(context.Background(), req, core.Credentials{APIKey: "test-api-key"})
+	ch, err := c.Stream(context.Background(), req, core.Credentials{APIKey: "test-api-key"}, core.StreamConfig{})
 	require.NoError(t, err)
 
 	var text string

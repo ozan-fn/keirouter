@@ -58,7 +58,7 @@ func TestOpenAICompatible_Stream(t *testing.T) {
 	defer srv.Close()
 
 	c := NewOpenAICompatible("openai", srv.URL)
-	ch, err := c.Stream(context.Background(), textReq("gpt-4o", true), core.Credentials{APIKey: "sk-test"})
+	ch, err := c.Stream(context.Background(), textReq("gpt-4o", true), core.Credentials{APIKey: "sk-test"}, core.StreamConfig{})
 	require.NoError(t, err)
 
 	var text string

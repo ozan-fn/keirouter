@@ -91,7 +91,7 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 	// Recent activity rows.
 	recentRows := make([]map[string]any, 0, len(recent))
 	for _, rec := range recent {
-		recentRows = append(recentRows, map[string]any{
+		entry := map[string]any{
 			"id":         rec.ID,
 			"provider":   rec.Provider,
 			"model":      rec.Model,
@@ -100,7 +100,11 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 			"cache_hit":  rec.CacheHit,
 			"latency_ms": rec.LatencyMS,
 			"created_at": rec.CreatedAt,
-		})
+		}
+		if rec.TTFTMS > 0 {
+			entry["ttft_ms"] = rec.TTFTMS
+		}
+		recentRows = append(recentRows, entry)
 	}
 
 	// Bucket the timeline into 24 even slots across the window for the sparkline.
@@ -116,22 +120,30 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 		series = append(series, map[string]any{"label": b.label, "count": b.count})
 	}
 
-	// Success rate + average latency, derived from the recent window. The meter
-	// records 0 latency when a request never reached an upstream, so those rows
-	// are treated as failures for the headline success-rate metric.
-	var withLatency, latencySum int64
+	// Success rate + average latency, derived from the recent window.
+	// Cache hits are served from the semantic cache (no upstream call);
+	// they are successful but have 0 latency and 0 TTFT.
+	var withLatency, latencySum, ttftCount, ttftSum int64
 	for _, rec := range recent {
 		if rec.LatencyMS > 0 {
 			withLatency++
 			latencySum += int64(rec.LatencyMS)
 		}
+		if rec.TTFTMS > 0 {
+			ttftCount++
+			ttftSum += int64(rec.TTFTMS)
+		}
 	}
 	successRate := 100.0
 	avgLatency := 0
+	avgTTFT := 0
 	if len(recent) > 0 {
 		successRate = float64(withLatency) / float64(len(recent)) * 100
 		if withLatency > 0 {
 			avgLatency = int(latencySum / withLatency)
+		}
+		if ttftCount > 0 {
+			avgTTFT = int(ttftSum / ttftCount)
 		}
 	}
 
@@ -151,6 +163,7 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 			"cache_hits":         sum.CacheHits,
 			"success_rate":       successRate,
 			"avg_latency_ms":     avgLatency,
+			"avg_ttft_ms":        avgTTFT,
 			"since":              since,
 		},
 		"providers": providers,

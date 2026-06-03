@@ -18,13 +18,13 @@ func (r *UsageRepo) Record(ctx context.Context, u UsageRecord) error {
 		INSERT INTO usage_records
 			(id, tenant_id, project_id, api_key_id, provider, model, account_id,
 			 prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
-			 cost_micros, cache_hit, latency_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			 cost_micros, cache_hit, latency_ms, ttft_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err := r.db.sql.ExecContext(ctx, q,
 		u.ID, u.TenantID, nullString(u.ProjectID), nullString(u.APIKeyID),
 		u.Provider, u.Model, nullString(u.AccountID),
 		u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.CacheWriteTokens,
-		u.CostMicros, boolToInt(u.CacheHit), u.LatencyMS, formatTime(u.CreatedAt))
+		u.CostMicros, boolToInt(u.CacheHit), u.LatencyMS, u.TTFTMS, formatTime(u.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("store: record usage: %w", err)
 	}
@@ -65,6 +65,7 @@ type Summary struct {
 	CacheWriteTokens int64
 	CostMicros       int64
 	CacheHits        int64
+	AvgTTFTMS        int64 // average time-to-first-token for streaming requests
 }
 
 // Summarize returns aggregate usage for a tenant since the given time.
@@ -77,13 +78,14 @@ func (r *UsageRepo) Summarize(ctx context.Context, tenantID string, since time.T
 			COALESCE(SUM(cached_tokens), 0),
 			COALESCE(SUM(cache_write_tokens), 0),
 			COALESCE(SUM(cost_micros), 0),
-			COALESCE(SUM(cache_hit), 0)
+			COALESCE(SUM(cache_hit), 0),
+			COALESCE(AVG(CASE WHEN ttft_ms > 0 THEN ttft_ms END), 0)
 		FROM usage_records
 		WHERE tenant_id = ? AND created_at >= ?`)
 	var s Summary
 	err := r.db.sql.QueryRowContext(ctx, q, tenantID, formatTime(since)).Scan(
 		&s.TotalRequests, &s.PromptTokens, &s.CompletionTokens,
-		&s.CachedTokens, &s.CacheWriteTokens, &s.CostMicros, &s.CacheHits)
+		&s.CachedTokens, &s.CacheWriteTokens, &s.CostMicros, &s.CacheHits, &s.AvgTTFTMS)
 	if err != nil {
 		return Summary{}, fmt.Errorf("store: summarize usage: %w", err)
 	}
@@ -143,6 +145,7 @@ type RecentRecord struct {
 	CostMicros       int64
 	CacheHit         bool
 	LatencyMS        int
+	TTFTMS           int // time-to-first-token in ms (0 for non-streaming)
 	CreatedAt        time.Time
 }
 
@@ -153,7 +156,7 @@ func (r *UsageRepo) Recent(ctx context.Context, tenantID string, limit int) ([]R
 	}
 	q := r.db.rebind(`
 		SELECT id, provider, model, prompt_tokens, completion_tokens, cached_tokens,
-		       cache_write_tokens, cost_micros, cache_hit, latency_ms, created_at
+		       cache_write_tokens, cost_micros, cache_hit, latency_ms, ttft_ms, created_at
 		FROM usage_records
 		WHERE tenant_id = ?
 		ORDER BY created_at DESC
@@ -173,7 +176,7 @@ func (r *UsageRepo) Recent(ctx context.Context, tenantID string, limit int) ([]R
 		)
 		if err := rows.Scan(&rec.ID, &rec.Provider, &rec.Model, &rec.PromptTokens,
 			&rec.CompletionTokens, &rec.CachedTokens, &rec.CacheWriteTokens,
-			&rec.CostMicros, &cacheHit, &rec.LatencyMS, &createdAt); err != nil {
+			&rec.CostMicros, &cacheHit, &rec.LatencyMS, &rec.TTFTMS, &createdAt); err != nil {
 			return nil, err
 		}
 		rec.CacheHit = cacheHit != 0

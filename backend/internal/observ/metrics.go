@@ -17,6 +17,7 @@ type Metrics struct {
 
 	RequestsTotal   *prometheus.CounterVec
 	RequestDuration *prometheus.HistogramVec
+	TimeToFirstToken *prometheus.HistogramVec
 	TokensTotal     *prometheus.CounterVec
 	CostMicros      *prometheus.CounterVec
 	Fallbacks       *prometheus.CounterVec
@@ -44,6 +45,11 @@ func New() *Metrics {
 			Name:    "keirouter_request_duration_seconds",
 			Help:    "Upstream request latency in seconds.",
 			Buckets: prometheus.ExponentialBuckets(0.05, 2, 12), // 50ms .. ~100s
+		}, []string{"provider", "model"}),
+		TimeToFirstToken: factory.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "keirouter_ttft_seconds",
+			Help:    "Time-to-first-token for streaming requests in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 8), // 100ms .. ~12.8s
 		}, []string{"provider", "model"}),
 		TokensTotal: factory.NewCounterVec(prometheus.CounterOpts{
 			Name: "keirouter_tokens_total",
@@ -86,11 +92,15 @@ func New() *Metrics {
 func (m *Metrics) Registry() *prometheus.Registry { return m.registry }
 
 // RecordRequest records a completed (or failed) request's outcome, latency,
-// tokens, and cost in one call.
+// tokens, and cost in one call. ttftSeconds is the time-to-first-token for
+// streaming requests; pass 0 for non-streaming or cache hits.
 func (m *Metrics) RecordRequest(provider, model, outcome string, seconds float64,
-	promptTokens, completionTokens, cachedTokens int, costMicros int64) {
+	promptTokens, completionTokens, cachedTokens int, costMicros int64, ttftSeconds float64) {
 	m.RequestsTotal.WithLabelValues(provider, model, outcome).Inc()
 	m.RequestDuration.WithLabelValues(provider, model).Observe(seconds)
+	if ttftSeconds > 0 {
+		m.TimeToFirstToken.WithLabelValues(provider, model).Observe(ttftSeconds)
+	}
 	if promptTokens > 0 {
 		m.TokensTotal.WithLabelValues(provider, model, "prompt").Add(float64(promptTokens))
 	}

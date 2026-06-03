@@ -8,8 +8,6 @@ import {
   Wallet,
   Sparkles,
   Search,
-  Bell,
-  CircleHelp,
   ChevronDown,
   Power,
   LogOut,
@@ -208,7 +206,7 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
 
 function TopBar({ onMenuToggle, onSearchOpen }: { onMenuToggle: () => void; onSearchOpen: () => void }) {
   return (
-    <header className="flex h-16 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 sm:px-6">
+    <header className="flex h-16 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 sm:px-8">
       {/* Hamburger — visible on mobile only. */}
       <button
         onClick={onMenuToggle}
@@ -233,20 +231,7 @@ function TopBar({ onMenuToggle, onSearchOpen }: { onMenuToggle: () => void; onSe
         </kbd>
       </button>
 
-      <div className="ml-auto flex items-center gap-1">
-        <button
-          aria-label="Help"
-          className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
-        >
-          <CircleHelp className="h-[18px] w-[18px]" strokeWidth={2} />
-        </button>
-        <button
-          aria-label="Notifications"
-          className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
-        >
-          <Bell className="h-[18px] w-[18px]" strokeWidth={2} />
-        </button>
-        <div className="mx-2 h-6 w-px bg-[var(--border)]" />
+      <div className="ml-auto flex items-center">
         <ProfileMenu />
       </div>
     </header>

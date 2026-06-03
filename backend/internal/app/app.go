@@ -141,14 +141,16 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 	}, cacheStore)
 
 	pipe := pipeline.New(pipeline.Deps{
-		Dispatcher: disp,
-		Meter:      mtr,
-		Budget:     bud,
-		Slimmer:    slim,
-		Metrics:    metrics,
-		Cache:      semanticCache,
-		Embedder:   embedder,
-		Logger:     log,
+		Dispatcher:         disp,
+		Meter:              mtr,
+		Budget:             bud,
+		Slimmer:            slim,
+		Metrics:            metrics,
+		Cache:              semanticCache,
+		Embedder:           embedder,
+		Logger:             log,
+		RequestTimeout:     cfg.Server.RequestTimeout,
+		StreamStallTimeout: cfg.Server.StreamStallTimeout,
 	})
 
 	// Resolve frontend dist directory. Check relative to binary, then cwd.

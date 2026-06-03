@@ -54,6 +54,7 @@ type Event struct {
 	Usage     core.Usage
 	CacheHit  bool
 	Latency   time.Duration
+	TTFT      time.Duration // time-to-first-token (0 if not measured)
 }
 
 // resolvePrice looks up the price for a provider/model pair. It tries
@@ -131,6 +132,7 @@ func (m *Meter) Record(ctx context.Context, ev Event) (int64, error) {
 		CostMicros:       cost,
 		CacheHit:         ev.CacheHit,
 		LatencyMS:        int(ev.Latency.Milliseconds()),
+		TTFTMS:           int(ev.TTFT.Milliseconds()),
 		CreatedAt:        time.Now(),
 	}
 	if err := m.usage.Record(ctx, rec); err != nil {

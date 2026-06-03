@@ -111,6 +111,7 @@ type UsageRecord struct {
 	CostMicros       int64
 	CacheHit         bool
 	LatencyMS        int
+	TTFTMS           int // time-to-first-token in ms (0 for non-streaming or cache hits)
 	CreatedAt        time.Time
 }
 
