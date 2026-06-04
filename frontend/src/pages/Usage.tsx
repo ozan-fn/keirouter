@@ -1,19 +1,14 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ReactFlow, Handle, Position, Controls,
-  type Node, type Edge,
-} from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
-import {
-  Activity, DollarSign, Zap, RefreshCw, TrendingUp, Clock, Search, ArrowUpDown, ArrowUp, ArrowDown, ShieldCheck, Scissors
+  Activity, DollarSign, Zap, RefreshCw, TrendingUp, Clock, Search, ArrowUpDown, ArrowUp, ArrowDown, ShieldCheck, Scissors, Box, TerminalSquare
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell,
 } from "recharts";
 import { api, connectUsageStream, type ProviderUsage, type RecentActivity, type SeriesPoint, type ModelUsage, type TokenSavings, type UsageInsights } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, Spinner, ErrorCard } from "../components/ui";
+import { Card, Spinner, ErrorCard, StatCard } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { SavingsCardShareButton } from "../components/SavingsCard";
 
@@ -32,18 +27,15 @@ export function UsagePage() {
   const insights = useQuery({
     queryKey: ["usage-insights", period],
     queryFn: () => api.usageInsights(period),
-    refetchInterval: 10_000, // 10s for fresher recent requests
+    refetchInterval: 10_000,
   });
 
   const modelUsage = useQuery({
     queryKey: ["usage-models", period],
     queryFn: () => api.modelUsage(period),
-    refetchInterval: 10_000, // 10s auto-refresh matching insights
+    refetchInterval: 10_000,
   });
 
-  // Subscribe to SSE usage stream for instant cache invalidation when new
-  // requests complete. This makes the Usage page react within ~100ms of a
-  // request completing instead of waiting for the 10s polling interval.
   useEffect(() => {
     return connectUsageStream(() => {
       qc.invalidateQueries({ queryKey: ["usage-insights"] });
@@ -90,117 +82,100 @@ export function UsagePage() {
 
 function UsageContent({ data, models, period }: { data: any; models: ModelUsage[]; period: string }) {
   const { summary, savings, providers, recent, series } = data;
-  const activeProviders = providers.filter((p: ProviderUsage) => p.share_pct > 0);
 
   return (
-    <div className="space-y-5">
-      {/* Overview cards */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <StatCard label="Total requests" title="REQUESTS" value={fmtNum(summary.total_requests)} icon={Activity} color="accent" />
-        <StatCard label="Total input tokens" title="INPUT TOKENS" value={fmtNum(summary.prompt_tokens)} icon={Zap} color="blue" />
-        <StatCard label="Total output tokens" title="OUTPUT TOKENS" value={fmtNum(summary.completion_tokens)} icon={TrendingUp} color="green" />
-        <StatCard label="Total estimated cost" title="EST. COST" value={`$${summary.cost_usd.toFixed(2)}`} icon={DollarSign} color="amber" />
+    <div className="space-y-8 pb-12">
+      {/* Precision Minimalist Stat Grid */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <StatCard label="REQUESTS" value={fmtNum(summary.total_requests)} icon={Activity} />
+        <StatCard label="INPUT TOKENS" value={fmtNum(summary.prompt_tokens)} icon={Zap} />
+        <StatCard label="OUTPUT TOKENS" value={fmtNum(summary.completion_tokens)} icon={TrendingUp} />
+        <StatCard label="EST. COST" value={`$${summary.cost_usd.toFixed(2)}`} icon={DollarSign} />
         
-        <Card className="flex flex-col justify-center px-4 py-3 gap-2">
-          <div className="flex items-center justify-between">
+        <div className="flex flex-col justify-between p-5 rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm transition-colors hover:bg-[var(--bg-subtle)] relative overflow-hidden group col-span-2 lg:col-span-1">
+          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100 dark:from-emerald-500/10" />
+          <div className="relative flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Clock className="h-4 w-4 text-[var(--text-muted)]" />
-              <div>
-                <p className="text-[10px] font-bold tracking-wider text-[var(--text-muted)]">ROUTING EFFICIENCY</p>
-                <p className="text-sm font-semibold">{summary.avg_latency_ms > 0 ? `${summary.avg_latency_ms}ms` : summary.total_requests > 0 ? "<1ms" : "—"}</p>
-              </div>
+              <span className="text-xs font-medium tracking-wide uppercase text-[var(--text-muted)]">EFFICIENCY</span>
             </div>
-            <TrendingUp className="h-4 w-4 text-emerald-500 opacity-60" />
           </div>
-          <div className="h-px w-full bg-[var(--border)]" />
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-[var(--text-muted)]" />
-              <div>
-                <p className="text-[10px] font-bold tracking-wider text-[var(--text-muted)]">SUCCESS RATE</p>
-                <p className="text-sm font-semibold">{summary.success_rate != null ? (summary.success_rate * 100).toFixed(1) : summary.total_requests > 0 ? "—" : "100"}%</p>
+          <div className="relative space-y-2">
+            <div className="flex items-baseline justify-between">
+              <div className="text-lg font-light tracking-tight tabular-nums text-[var(--text)]">
+                {summary.avg_latency_ms > 0 ? `${summary.avg_latency_ms}ms` : summary.total_requests > 0 ? "<1ms" : "—"}
               </div>
+              <div className="text-[11px] text-[var(--text-muted)]">latency</div>
             </div>
-            <TrendingUp className="h-4 w-4 text-emerald-500 opacity-60" />
+            <div className="flex items-baseline justify-between">
+              <div className="text-lg font-light tracking-tight tabular-nums text-[var(--text)]">
+                {summary.success_rate != null ? (summary.success_rate * 100).toFixed(1) : summary.total_requests > 0 ? "—" : "100"}%
+              </div>
+              <div className="text-[11px] text-[var(--text-muted)]">success</div>
+            </div>
           </div>
-        </Card>
+        </div>
       </div>
 
       {/* Main Layout Grid */}
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-        {/* Left Column */}
-        <div className="flex min-w-0 flex-col space-y-5">
-          {/* Topology */}
-          <Card className="overflow-hidden">
-            <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <TrendingUp className="h-4 w-4 text-[var(--text-muted)]" />
-                <h3 className="text-sm font-semibold">Routing Topology</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                {activeProviders.length > 0 && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-                    <span className="relative flex h-2 w-2">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                      <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                    </span>
-                    {activeProviders.length} active
-                  </span>
-                )}
-              </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] items-stretch">
+        {/* Custom SVG Topology */}
+        <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden h-full">
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-3">
+            <div className="flex items-center gap-2">
+              <Box className="h-4 w-4 text-[var(--text-muted)]" />
+              <h3 className="text-sm font-semibold tracking-tight">Routing Topology</h3>
             </div>
+          </div>
+          <div className="p-4 flex-1 flex flex-col justify-center relative bg-gradient-to-br from-blue-50/30 via-transparent to-accent-50/30 dark:from-blue-950/20 dark:to-accent-950/20">
             <ProviderTopology providers={providers} />
-          </Card>
-
-          {/* Activity chart */}
-          <Card>
-            <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-              <h3 className="text-sm font-semibold">Usage Trends</h3>
-              <span className="text-xs text-[var(--text-muted)]">Input and output tokens over time</span>
-            </div>
-            <div className="h-52 px-2 pb-3 pt-2">
-              <ActivityChart series={series} />
-            </div>
-          </Card>
+          </div>
         </div>
 
-        {/* Right Column */}
-        <div className="flex min-w-0 flex-col space-y-5">
-          {/* Insights */}
-          <UsageInsightsCard data={data} />
-          
-          {/* Recent Requests */}
-          <Card className="flex max-h-[440px] flex-1 flex-col overflow-hidden">
-            <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-[var(--text-muted)]" />
-                <h3 className="text-sm font-semibold">Recent Requests</h3>
-              </div>
-              <span className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text)] cursor-pointer">View all</span>
+        {/* Insights */}
+        <UsageInsightsCard data={data} />
+        
+        {/* Activity chart */}
+        <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden h-full">
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-3">
+            <h3 className="text-sm font-semibold tracking-tight">Usage Trends</h3>
+            <span className="text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Tokens over time</span>
+          </div>
+          <div className="flex-1 px-2 pb-4 pt-4 min-h-[260px]">
+            <ActivityChart series={series} />
+          </div>
+        </div>
+
+        {/* Recent Requests */}
+        <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden h-full min-h-[300px]">
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-3 bg-[var(--bg-subtle)] shrink-0">
+            <div className="flex items-center gap-2">
+              <TerminalSquare className="h-4 w-4 text-[var(--text-muted)]" />
+              <h3 className="text-sm font-semibold tracking-tight">Recent Requests</h3>
             </div>
-            {!recent.length ? (
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10">
-                <Activity className="h-8 w-8 text-[var(--text-muted)] opacity-20" />
-                <p className="text-xs text-[var(--text-muted)]">No requests yet</p>
-              </div>
-            ) : (
-              <div className="flex-1 overflow-y-auto">
-                <table className="w-full border-collapse text-xs">
-                  <thead className="sticky top-0 z-10 bg-[var(--bg-elevated)]">
-                    <tr className="border-b border-[var(--border)]">
-                      <th className="w-6 px-3 py-2" />
-                      <th className="px-3 py-2 text-left font-medium text-[var(--text-muted)]">Model</th>
-                      <th className="px-3 py-2 text-right font-medium text-[var(--text-muted)]">Tokens</th>
-                      <th className="px-3 py-2 text-right font-medium text-[var(--text-muted)]">When</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[var(--border)]">
-                    {recent.map((r: RecentActivity) => <RecentRow key={r.id} row={r} />)}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
+          </div>
+          {!recent.length ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-[var(--bg)]">
+              <Activity className="h-6 w-6 text-[var(--text-muted)] opacity-30" />
+              <p className="text-xs font-medium text-[var(--text-muted)]">No active requests</p>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead className="sticky top-0 z-10 bg-[var(--bg-elevated)] backdrop-blur-sm bg-opacity-90">
+                  <tr className="border-b border-[var(--border)]">
+                    <th className="w-6 px-3 py-2.5" />
+                    <th className="px-3 py-2.5 text-left font-medium text-[var(--text-muted)] uppercase tracking-wider text-[10px]">Model</th>
+                    <th className="px-3 py-2.5 text-right font-medium text-[var(--text-muted)] uppercase tracking-wider text-[10px]">Tokens</th>
+                    <th className="px-3 py-2.5 text-right font-medium text-[var(--text-muted)] uppercase tracking-wider text-[10px]">Time</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border)]">
+                  {recent.map((r: RecentActivity) => <RecentRow key={r.id} row={r} />)}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
@@ -209,84 +184,109 @@ function UsageContent({ data, models, period }: { data: any; models: ModelUsage[
         <TokenSavingsBreakdown savings={savings} totalRequests={summary.total_requests} insights={data} period={period} />
       )}
 
-      {/* Model usage breakdown */}
-      <ModelUsageTable models={models} />
-
-      {/* Provider breakdown */}
-      <Card>
-        <div className="border-b border-[var(--border)] px-4 py-2.5">
-          <h3 className="text-sm font-semibold">Provider Breakdown</h3>
-        </div>
-        {providers.filter((p: ProviderUsage) => p.total_requests > 0).length === 0 ? (
-          <div className="py-8 text-center text-xs text-[var(--text-muted)]">No provider data for this period</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-[var(--border)]">
-                <th className="px-4 py-2 text-left font-medium text-[var(--text-muted)]">Provider</th>
-                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Requests</th>
-                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">In Tok</th>
-                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Out Tok</th>
-                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Cost</th>
-                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Share</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border)]">
-              {providers.filter((p: ProviderUsage) => p.total_requests > 0).map((p: ProviderUsage) => (
-                <tr key={p.provider} className="transition-colors hover:bg-[var(--bg-subtle)]">
-                  <td className="px-4 py-2">
-                    <div className="flex items-center gap-2">
-                      <ProviderIcon provider={p.provider} color={p.color} />
-                      <span className="font-medium">{p.display_name}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2 text-right tabular-nums">{p.total_requests.toLocaleString()}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-blue-500 dark:text-blue-400">{fmtNum(p.prompt_tokens)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-green-500 dark:text-green-400">{fmtNum(p.completion_tokens)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums font-medium">${p.cost_usd.toFixed(4)}</td>
-                  <td className="px-4 py-2 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-[var(--bg-subtle)]">
-                        <div className="h-full rounded-full bg-accent-500" style={{ width: `${Math.max(2, p.share_pct)}%` }} />
-                      </div>
-                      <span className="w-10 text-right tabular-nums text-[var(--text-muted)]">{p.share_pct.toFixed(1)}%</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
-        )}
-      </Card>
+      {/* Breakdowns container to keep grid alignment */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <ModelUsageTable models={models} />
+        <ProviderBreakdown providers={providers} />
+      </div>
     </div>
   );
 }
 
-// ─── Stat Card ────────────────────────────────────────────────────────────────
+// ─── Custom SVG Topology ─────────────────────────────────────────────────────
 
-function StatCard({ label, title, value, icon: Icon, color }: { label: string; title: string; value: string; icon: typeof Activity; color: string }) {
-  const colorMap: Record<string, string> = {
-    accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
-    blue: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-    green: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
-    amber: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-    teal: "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300",
-    purple: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300",
-    indigo: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300",
-  };
+function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
+  const activeProviders = providers.filter((p) => p.share_pct > 0).sort((a,b) => b.share_pct - a.share_pct);
+  
+  if (activeProviders.length === 0) {
+    return (
+      <div className="flex h-[240px] flex-col items-center justify-center gap-3 bg-[var(--bg)] rounded-lg border border-dashed border-[var(--border)]">
+        <TrendingUp className="h-6 w-6 text-[var(--text-muted)] opacity-30" />
+        <p className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">No routing activity</p>
+      </div>
+    );
+  }
+
+  // Dynamic SVG sizing
+  const width = 600;
+  const rowHeight = 60;
+  const height = Math.max(260, activeProviders.length * rowHeight + 80);
+  const routerX = width - 140;
+  const routerY = height / 2;
+
   return (
-    <Card className="flex items-center gap-4 px-4 py-4">
-      <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${colorMap[color] || colorMap.accent}`}>
-        <Icon className="h-5 w-5" />
-      </div>
-      <div className="min-w-0 flex flex-col justify-center">
-        <p className="text-[10px] font-bold tracking-wider text-[var(--text-muted)]">{title}</p>
-        <p className="truncate text-2xl font-bold tabular-nums leading-none mt-1 mb-0.5">{value}</p>
-        <p className="text-[11px] text-[var(--text-muted)]">{label}</p>
-      </div>
-    </Card>
+    <div className="relative w-full overflow-hidden flex justify-center items-center py-4 bg-[var(--bg-subtle)]">
+      <style>{`
+        @keyframes flowDash {
+          from { stroke-dashoffset: 24; }
+          to { stroke-dashoffset: 0; }
+        }
+        .animate-flow {
+          animation: flowDash 1s linear infinite;
+        }
+      `}</style>
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" className="w-full h-auto max-w-full drop-shadow-sm">
+        
+        {/* Connection Paths */}
+        {activeProviders.map((p, i) => {
+          const providerX = 160;
+          const providerY = (height / (activeProviders.length + 1)) * (i + 1);
+          const color = p.color || "var(--color-ink-400)";
+          const isHigh = p.share_pct > 20;
+          
+          return (
+            <g key={`path-${p.provider}`}>
+              {/* Background faint path */}
+              <path
+                d={`M ${providerX} ${providerY} C ${(providerX + routerX) / 2} ${providerY}, ${(providerX + routerX) / 2} ${routerY}, ${routerX - 60} ${routerY}`}
+                fill="none"
+                stroke={color}
+                strokeWidth={isHigh ? 3 : 1.5}
+                strokeOpacity={isHigh ? 0.3 : 0.15}
+                strokeLinecap="round"
+              />
+              {/* Animated dashed path overlay */}
+              <path
+                d={`M ${providerX} ${providerY} C ${(providerX + routerX) / 2} ${providerY}, ${(providerX + routerX) / 2} ${routerY}, ${routerX - 60} ${routerY}`}
+                fill="none"
+                stroke={color}
+                strokeWidth={isHigh ? 3 : 1.5}
+                className="animate-flow"
+                strokeDasharray="4 8"
+                strokeLinecap="round"
+                strokeOpacity={isHigh ? 0.9 : 0.6}
+              />
+            </g>
+          );
+        })}
+
+        {/* Provider Nodes */}
+        {activeProviders.map((p, i) => {
+          const providerX = 20;
+          const providerY = (height / (activeProviders.length + 1)) * (i + 1);
+          const color = p.color || "var(--color-ink-400)";
+          
+          return (
+            <g key={`node-${p.provider}`} transform={`translate(${providerX}, ${providerY - 20})`}>
+              <rect width="140" height="40" rx="6" fill="var(--bg-elevated)" stroke="var(--border)" strokeWidth="1" className="drop-shadow-sm" />
+              {/* Color indicator bar */}
+              <rect x="0" y="0" width="4" height="40" rx="2" fill={color} />
+              
+              <text x="14" y="18" className="text-xs font-semibold fill-[var(--text)]">{p.display_name.slice(0,16)}</text>
+              <text x="14" y="32" className="text-[9px] font-medium uppercase tracking-wider fill-[var(--text-muted)]">{p.share_pct.toFixed(1)}% traffic</text>
+            </g>
+          );
+        })}
+
+        {/* Router Node (Destination) */}
+        <g transform={`translate(${routerX - 60}, ${routerY - 24})`}>
+          <rect width="120" height="48" rx="24" fill="var(--bg-elevated)" stroke="var(--border)" strokeWidth="1.5" className="drop-shadow-md" />
+          <circle cx="24" cy="24" r="14" fill="var(--bg-subtle)" stroke="var(--border)" strokeWidth="1" />
+          <image href="/keirouter-logo.png" x="16" y="16" width="16" height="16" />
+          <text x="46" y="28" className="text-sm font-bold fill-[var(--text)] tracking-tight">Router</text>
+        </g>
+      </svg>
+    </div>
   );
 }
 
@@ -296,81 +296,65 @@ function UsageInsightsCard({ data }: { data: any }) {
   const { providers, summary } = data;
   const activeProviders = providers.filter((p: any) => p.share_pct > 0);
   
-  // For Token Efficiency (Output / Input ratio)
   const tokenRatio = summary.prompt_tokens > 0 
     ? summary.completion_tokens / summary.prompt_tokens
     : 0;
 
   return (
-    <Card className="flex flex-col">
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-        <h3 className="text-sm font-semibold">Insights</h3>
-        <button className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">View all</button>
+    <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-3 bg-[var(--bg-subtle)]">
+        <h3 className="text-sm font-semibold tracking-tight">Insights</h3>
       </div>
-      <div className="p-4 flex flex-col gap-6">
-        {/* Provider Distribution */}
-        <div>
-          <div className="flex justify-between items-center mb-3">
-            <h4 className="text-xs font-medium text-[var(--text-muted)]">Provider Distribution</h4>
-          </div>
-          <div className="flex items-center gap-5">
-            <div className="h-24 w-24 shrink-0">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={activeProviders}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={25}
-                    outerRadius={45}
-                    paddingAngle={2}
-                    dataKey="share_pct"
-                    stroke="none"
-                  >
-                    {activeProviders.map((p: any, index: number) => (
-                      <Cell key={`cell-${index}`} fill={p.color || "var(--color-chart-1)"} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="flex-1 space-y-2">
-              {activeProviders.slice(0, 4).map((p: any) => (
-                <div key={p.provider} className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color || "var(--color-chart-1)" }} />
-                    <span className="text-[var(--text-muted)]">{p.provider_name || p.provider}</span>
-                  </div>
-                  <span className="font-medium">{p.share_pct.toFixed(1)}%</span>
-                </div>
-              ))}
+      <div className="p-5 flex flex-col gap-6">
+        
+        {/* Token Efficiency - Elevated design */}
+        <div className="flex flex-col">
+          <h4 className="text-[10px] font-semibold tracking-widest text-[var(--text-muted)] uppercase mb-3">Efficiency Multiplier</h4>
+          <div className="flex items-end gap-3">
+            <span className="text-4xl font-light tabular-nums leading-none text-[var(--text)] tracking-tighter">
+              {tokenRatio.toFixed(2)}<span className="text-2xl text-[var(--text-muted)]">x</span>
+            </span>
+            <div className="pb-1">
+              {summary.prompt_tokens > 0 && (
+                <p className="text-[11px] text-[var(--text-muted)] font-medium">
+                  {fmtNum(summary.completion_tokens)} out / {fmtNum(summary.prompt_tokens)} in
+                </p>
+              )}
             </div>
           </div>
         </div>
 
         <div className="h-px w-full bg-[var(--border)]" />
 
-        {/* Token Efficiency */}
-        <div className="flex gap-4">
-          <div className="flex-1">
-            <h4 className="text-xs font-medium text-[var(--text-muted)] mb-3">Token Efficiency</h4>
-            <div className="flex justify-between items-end">
-              <div>
-                <p className="text-[10px] text-[var(--text-muted)] mb-1">Output / Input</p>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tabular-nums leading-none">{tokenRatio.toFixed(2)}x</span>
+        {/* Provider Distribution - Sleek Stacked Bar */}
+        <div>
+          <h4 className="text-[10px] font-semibold tracking-widest text-[var(--text-muted)] uppercase mb-4">Traffic Distribution</h4>
+          
+          <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] mb-4">
+            {activeProviders.map((p: any) => (
+              <div 
+                key={p.provider} 
+                className="h-full transition-all"
+                style={{ width: `${p.share_pct}%`, backgroundColor: p.color || "var(--color-chart-1)" }} 
+                title={`${p.provider_name}: ${p.share_pct.toFixed(1)}%`}
+              />
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-y-3 gap-x-2">
+            {activeProviders.slice(0, 4).map((p: any) => (
+              <div key={p.provider} className="flex items-center justify-between text-xs pr-2 border-r border-[var(--border)] last:border-r-0 even:border-r-0">
+                <div className="flex items-center gap-2 truncate">
+                  <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: p.color || "var(--color-chart-1)" }} />
+                  <span className="text-[var(--text-muted)] truncate font-medium">{p.provider_name || p.provider}</span>
                 </div>
-                {summary.prompt_tokens > 0 && (
-                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                    {fmtNum(summary.completion_tokens)} out / {fmtNum(summary.prompt_tokens)} in
-                  </p>
-                )}
+                <span className="font-semibold tabular-nums ml-2">{p.share_pct.toFixed(0)}%</span>
               </div>
-            </div>
+            ))}
           </div>
         </div>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -378,231 +362,50 @@ function UsageInsightsCard({ data }: { data: any }) {
 
 function ActivityChart({ series }: { series: SeriesPoint[] }) {
   if (!series.length) {
-    return <div className="flex h-full items-center justify-center text-sm text-[var(--text-muted)]">No data for this period</div>;
+    return <div className="flex h-full items-center justify-center text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">No data</div>;
   }
 
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={series}>
+      <AreaChart data={series} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
         <defs>
           <linearGradient id="usageFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--color-chart-1)" stopOpacity={0.25} />
-            <stop offset="100%" stopColor="var(--color-chart-1)" stopOpacity={0} />
+            <stop offset="5%" stopColor="var(--color-chart-1)" stopOpacity={0.15} />
+            <stop offset="95%" stopColor="var(--color-chart-1)" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-        <XAxis dataKey="label" tick={{ fontSize: 10, fill: "var(--text-muted)" }} tickLine={false} axisLine={false} />
-        <YAxis tick={{ fontSize: 10, fill: "var(--text-muted)" }} tickLine={false} axisLine={false} tickFormatter={(v: number) => fmtNum(v)} width={50} />
-        <Tooltip
-          contentStyle={{ fontSize: 12, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8 }}
-          formatter={(value: number) => [fmtNum(value), "Requests"]}
+        {/* Removed harsh grid, kept only subtle horizontal lines */}
+        <CartesianGrid vertical={false} stroke="var(--border)" opacity={0.3} />
+        <XAxis 
+          dataKey="label" 
+          tick={{ fontSize: 10, fill: "var(--text-muted)", fontWeight: 500 }} 
+          tickLine={false} 
+          axisLine={false} 
+          dy={10}
         />
-        <Area type="monotone" dataKey="count" stroke="var(--color-chart-1)" strokeWidth={2} fill="url(#usageFill)" />
+        <YAxis 
+          tick={{ fontSize: 10, fill: "var(--text-muted)", fontWeight: 500 }} 
+          tickLine={false} 
+          axisLine={false} 
+          tickFormatter={(v: number) => fmtNum(v)} 
+          width={60} 
+        />
+        <Tooltip
+          contentStyle={{ fontSize: 12, background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 6, boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)" }}
+          itemStyle={{ color: "var(--text)", fontWeight: 600 }}
+          formatter={(value: number) => [fmtNum(value), "Requests"]}
+          labelStyle={{ color: "var(--text-muted)", marginBottom: 4 }}
+        />
+        <Area 
+          type="monotone" 
+          dataKey="count" 
+          stroke="var(--color-chart-1)" 
+          strokeWidth={2} 
+          fill="url(#usageFill)" 
+          activeDot={{ r: 4, strokeWidth: 0, fill: "var(--color-chart-1)" }}
+        />
       </AreaChart>
     </ResponsiveContainer>
-  );
-}
-
-// ─── React Flow Topology ─────────────────────────────────────────────────────
-
-function RouterNode({ data }: { data: any }) {
-  return (
-    <div className="flex flex-col items-center">
-      <Handle type="source" position={Position.Top} id="top" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <Handle type="source" position={Position.Bottom} id="bottom" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <Handle type="source" position={Position.Left} id="left" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <Handle type="source" position={Position.Right} id="right" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <div className="flex items-center justify-center rounded-xl border-2 border-accent-500 bg-accent-50 px-5 py-3 shadow-[var(--shadow-pop)] dark:bg-accent-900/30">
-        <img src="/keirouter-logo.png" alt="KeiRouter" className="mr-2 h-6 w-6 object-contain" />
-        <span className="text-sm font-bold text-accent-700 dark:text-accent-300">KeiRouter</span>
-        {data.activeCount > 0 && (
-          <span className="ml-2 rounded-full bg-accent-600 px-1.5 py-0.5 text-xs font-bold text-white">{data.activeCount}</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ProviderNode({ data }: { data: any }) {
-  const { label, color, imageUrl, textIcon, sharePct } = data;
-  const [imgError, setImgError] = useState(false);
-  const isHigh = sharePct > 20;
-
-  return (
-    <div
-      className="flex items-center gap-2.5 rounded-lg border-2 bg-[var(--bg-elevated)] px-4 py-2.5 transition-colors"
-      style={{
-        borderColor: color,
-        boxShadow: isHigh ? `0 0 16px ${color}40` : "none",
-        minWidth: "150px",
-      }}
-    >
-      <Handle type="target" position={Position.Top} id="top" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <Handle type="target" position={Position.Bottom} id="bottom" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <Handle type="target" position={Position.Left} id="left" className="!bg-transparent !border-0 !w-0 !h-0" />
-      <Handle type="target" position={Position.Right} id="right" className="!bg-transparent !border-0 !w-0 !h-0" />
-
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${color}15` }}>
-        {!imgError && imageUrl ? (
-          <img src={imageUrl} alt={label} className="h-6 w-6 rounded-sm object-contain" onError={() => setImgError(true)} />
-        ) : (
-          <span className="text-sm font-bold" style={{ color }}>{textIcon}</span>
-        )}
-      </div>
-
-      <div className="min-w-0">
-        <span className="block truncate text-sm font-medium" style={{ color }}>{label}</span>
-        <span className="text-[10px] text-[var(--text-muted)]">{sharePct.toFixed(1)}% traffic</span>
-      </div>
-
-      {isHigh && (
-        <span className="relative flex h-2 w-2 shrink-0">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" style={{ backgroundColor: color }} />
-          <span className="relative inline-flex h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-        </span>
-      )}
-    </div>
-  );
-}
-
-const nodeTypes = { router: RouterNode, provider: ProviderNode };
-
-function buildLayout(providers: ProviderUsage[]) {
-  // ONLY include providers with actual traffic
-  const activeProviders = providers.filter((p) => p.share_pct > 0);
-  const count = activeProviders.length;
-
-  if (count === 0) {
-    return {
-      nodes: [{ id: "router", type: "router", position: { x: 0, y: 0 }, data: { activeCount: 0 } }],
-      edges: [],
-    };
-  }
-
-  const nodeW = 180;
-  const nodeGap = 24;
-  const minRx = ((nodeW + nodeGap) * count) / (2 * Math.PI);
-  const rx = Math.max(280, minRx);
-  const ry = Math.max(160, rx * 0.55);
-
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-
-  nodes.push({
-    id: "router",
-    type: "router",
-    position: { x: -60, y: -22 },
-    data: { activeCount: count },
-    draggable: false,
-  });
-
-  activeProviders.forEach((p, i) => {
-    const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
-    const cx = rx * Math.cos(angle);
-    const cy = ry * Math.sin(angle);
-    const nodeId = `provider-${p.provider}`;
-    const color = p.color || "var(--color-ink-400)";
-    const isHigh = p.share_pct > 20;
-
-    nodes.push({
-      id: nodeId,
-      type: "provider",
-      position: { x: cx - nodeW / 2, y: cy - 18 },
-      data: {
-        label: p.display_name,
-        color,
-        imageUrl: `/providers/${p.provider}.png`,
-        textIcon: p.display_name.slice(0, 2).toUpperCase(),
-        sharePct: p.share_pct,
-      },
-      draggable: false,
-    });
-
-    // Handle selection based on angle
-    let sourceHandle = "right";
-    if (Math.abs(angle + Math.PI / 2) < Math.PI / 4) sourceHandle = "top";
-    else if (Math.abs(angle - Math.PI / 2) < Math.PI / 4) sourceHandle = "bottom";
-    else if (cx > 0) sourceHandle = "right";
-    else sourceHandle = "left";
-    const targetHandle = sourceHandle === "top" ? "bottom" : sourceHandle === "bottom" ? "top" : sourceHandle === "left" ? "right" : "left";
-
-    edges.push({
-      id: `e-${nodeId}`,
-      source: "router",
-      sourceHandle,
-      target: nodeId,
-      targetHandle,
-      animated: isHigh,
-      style: {
-        stroke: color,
-        strokeWidth: isHigh ? 2.5 : 1.5,
-        opacity: isHigh ? 0.9 : 0.5,
-      },
-    });
-  });
-
-  return { nodes, edges };
-}
-
-function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
-  const { nodes, edges } = useMemo(() => buildLayout(providers), [providers]);
-  const rfInstance = useRef<any>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (rfInstance.current) {
-      const id = setTimeout(() => rfInstance.current?.fitView({ padding: 0.2, duration: 200 }), 50);
-      return () => clearTimeout(id);
-    }
-  }, [nodes.length]);
-
-  const onInit = useCallback((instance: any) => {
-    rfInstance.current = instance;
-    setTimeout(() => instance.fitView({ padding: 0.2, duration: 200 }), 50);
-  }, []);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => rfInstance.current?.fitView({ padding: 0.2 }));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const activeCount = providers.filter((p) => p.share_pct > 0).length;
-
-  if (activeCount === 0) {
-    return (
-      <div className="flex h-64 flex-col items-center justify-center gap-2">
-        <TrendingUp className="h-8 w-8 text-[var(--text-muted)] opacity-20" />
-        <p className="text-sm text-[var(--text-muted)]">No routing activity yet</p>
-        <p className="text-xs text-[var(--text-muted)]">Connections appear when models receive traffic</p>
-      </div>
-    );
-  }
-
-  return (
-    <div ref={containerRef} className="h-[400px] w-full min-w-0">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onInit={onInit}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.3}
-        maxZoom={2}
-        proOptions={{ hideAttribution: true }}
-        panOnDrag
-        zoomOnScroll={false}
-        zoomOnPinch
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable={false}
-      >
-        <Controls showInteractive={false} />
-      </ReactFlow>
-    </div>
   );
 }
 
@@ -612,56 +415,65 @@ function RecentRow({ row }: { row: RecentActivity }) {
   const success = row.latency_ms > 0;
   const hasSavings = (row.slim_bytes_saved ?? 0) > 0 || row.caveman_active || row.terse_active;
   return (
-    <tr className="transition-colors hover:bg-[var(--bg-subtle)]">
-      <td className="w-6 px-3 py-1.5">
+    <tr className="transition-colors hover:bg-[var(--bg-subtle)] group">
+      <td className="w-6 px-3 py-2.5">
         <span className={`block h-1.5 w-1.5 rounded-full ${success ? "bg-emerald-500" : "bg-red-500"}`} />
       </td>
-      <td className="px-3 py-1.5">
-        <div className="flex items-center gap-1.5">
-          <span className="font-mono text-[var(--text)]">{row.model || "—"}</span>
-          {row.provider && (
-            <span className="text-[10px] text-[var(--text-muted)]">{row.provider}</span>
-          )}
-          {hasSavings && (
-            <span className="flex items-center gap-0.5">
-              {(row.slim_bytes_saved ?? 0) > 0 && (
-                <span className="rounded bg-teal-100 px-1 py-0.5 text-[9px] font-bold text-teal-700 dark:bg-teal-900/30 dark:text-teal-300" title={`RTK saved ${fmtBytes(row.slim_bytes_saved ?? 0)} (${row.slim_rules ?? ""})`}>
-                  RTK -{fmtBytes(row.slim_bytes_saved ?? 0)}
-                </span>
-              )}
-              {row.caveman_active && (
-                <span className="rounded bg-purple-100 px-1 py-0.5 text-[9px] font-bold text-purple-700 dark:bg-purple-900/30 dark:text-purple-300" title="Caveman output compression active">
-                  🦍
-                </span>
-              )}
-              {row.terse_active && (
-                <span className="rounded bg-indigo-100 px-1 py-0.5 text-[9px] font-bold text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300" title="Terse output compression active">
-                  ✂️
-                </span>
-              )}
-            </span>
-          )}
+      <td className="px-3 py-2.5">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono text-[11px] font-semibold text-[var(--text)]">{row.model || "—"}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {row.provider && (
+              <>
+                <ProviderIcon provider={row.provider} className="h-3 w-3" />
+                <span className="text-[9px] uppercase tracking-wider font-medium text-[var(--text-muted)]">{row.provider}</span>
+              </>
+            )}
+            {hasSavings && (
+              <span className="flex items-center gap-1">
+                {(row.slim_bytes_saved ?? 0) > 0 && (
+                  <span className="text-[9px] font-bold text-teal-600 dark:text-teal-400 uppercase tracking-widest" title={`RTK saved ${fmtBytes(row.slim_bytes_saved ?? 0)}`}>
+                    [RTK]
+                  </span>
+                )}
+                {row.caveman_active && (
+                  <span className="text-[9px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-widest" title="Caveman compression">
+                    [CVMN]
+                  </span>
+                )}
+                {row.terse_active && (
+                  <span className="text-[9px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest" title="Terse compression">
+                    [TRSE]
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
         </div>
       </td>
-      <td className="px-3 py-1.5 text-right tabular-nums text-[var(--text-muted)]">
-        <span className="text-blue-500 dark:text-blue-400">{fmtNum(Math.round(row.tokens * 0.6))}↑</span>{" "}
-        <span className="text-green-500 dark:text-green-400">{fmtNum(Math.round(row.tokens * 0.4))}↓</span>
+      <td className="px-3 py-2.5 text-right tabular-nums text-[11px] font-medium text-[var(--text-muted)]">
+        <span className="text-[var(--text)]">{fmtNum(Math.round(row.tokens * 0.6))}</span> <span className="opacity-40">in</span><br/>
+        <span className="text-[var(--text)]">{fmtNum(Math.round(row.tokens * 0.4))}</span> <span className="opacity-40">out</span>
       </td>
-      <td className="px-3 py-1.5 text-right text-[var(--text-muted)]">{relTime(row.created_at)}</td>
+      <td className="px-3 py-2.5 text-right text-[10px] font-medium text-[var(--text-muted)] whitespace-nowrap">
+        {relTime(row.created_at)}
+      </td>
     </tr>
   );
 }
 
-function ProviderIcon({ provider, color }: { provider: string; color: string }) {
+function ProviderIcon({ provider, className = "h-5 w-5" }: { provider: string, className?: string }) {
   const [errored, setErrored] = useState(false);
   if (errored) {
     return (
-      <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[8px] font-bold text-white" style={{ backgroundColor: color || "var(--text-muted)" }}>
-        {provider.slice(0, 2).toUpperCase()}
+      <div className={`flex shrink-0 items-center justify-center rounded bg-[var(--bg-subtle)] border border-[var(--border)] text-[8px] font-bold text-[var(--text-muted)] uppercase ${className}`}>
+        {provider.slice(0, 2)}
       </div>
     );
   }
-  return <img src={`/providers/${provider}.png`} alt={provider} onError={() => setErrored(true)} className="h-5 w-5 shrink-0 rounded object-contain" />;
+  return <img src={`/providers/${provider}.png`} alt={provider} onError={() => setErrored(true)} className={`shrink-0 rounded object-contain grayscale opacity-80 mix-blend-multiply dark:mix-blend-screen ${className}`} />;
 }
 
 // ─── Token Savings Breakdown ────────────────────────────────────────────────
@@ -672,64 +484,67 @@ function TokenSavingsBreakdown({ savings, totalRequests, insights, period }: { s
   const totalTersePct = totalRequests > 0 ? ((savings.terse_requests / totalRequests) * 100).toFixed(0) : "0";
 
   return (
-    <Card>
-      <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-3 bg-[var(--bg-subtle)]">
         <div className="flex items-center gap-2">
           <Scissors className="h-4 w-4 text-[var(--text-muted)]" />
-          <h3 className="text-sm font-semibold">Token Savings Breakdown</h3>
+          <h3 className="text-sm font-semibold tracking-tight">Optimization Engine</h3>
         </div>
-        <div className="flex items-center gap-3">
-          <SavingsCardShareButton insights={insights} period={period} />
-          <div className="flex items-center gap-3 text-[11px] font-medium text-[var(--text-muted)]">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
           {savings.caveman_requests > 0 && (
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-purple-500" />
-              Caveman {totalCavemanPct}%
+              CVMN {totalCavemanPct}%
             </span>
           )}
           {savings.terse_requests > 0 && (
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
-              Terse {totalTersePct}%
+              TRSE {totalTersePct}%
             </span>
           )}
           </div>
+          <SavingsCardShareButton insights={insights} period={period} />
         </div>
       </div>
-      <div className="p-4">
-        <div className="space-y-3">
+      <div className="p-5">
+        <div className="space-y-4">
           {savings.rules.map((r) => (
             <div key={r.rule} className="flex items-center gap-4">
-              <div className="w-36 shrink-0 text-xs font-mono font-medium text-[var(--text)]">{r.rule}</div>
+              <div className="w-32 shrink-0 text-xs font-mono font-medium text-[var(--text)]">{r.rule}</div>
               <div className="flex-1">
-                <div className="h-7 overflow-hidden rounded-md bg-[#f4f4f5] dark:bg-white/5">
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
                   <div
-                    className="flex h-full items-center rounded-md bg-[#00c781] px-2 text-[10px] font-bold leading-tight text-white transition-all overflow-hidden"
-                    style={{ width: `${Math.max(6, (r.bytes_saved / maxBytes) * 100)}%`, wordBreak: "break-word" }}
-                  >
-                    {fmtBytes(r.bytes_saved).replace(" ", "\n")}
-                  </div>
+                    className="h-full rounded-full bg-[var(--text)] transition-all"
+                    style={{ width: `${Math.max(2, (r.bytes_saved / maxBytes) * 100)}%` }}
+                  />
                 </div>
               </div>
-              <div className="w-24 text-right text-xs tabular-nums text-[var(--text-muted)]">
+              <div className="w-24 text-right text-xs font-medium tabular-nums text-[var(--text)]">
+                {fmtBytes(r.bytes_saved)}
+              </div>
+              <div className="w-20 text-right text-[10px] font-medium tabular-nums text-[var(--text-muted)] uppercase">
                 {fmtNum(r.tokens_saved)} tok
               </div>
-              <div className="w-12 text-right text-xs tabular-nums text-[var(--text-muted)]">
+              <div className="w-12 text-right text-[10px] font-medium tabular-nums text-[var(--text-muted)]">
                 {r.count}×
               </div>
             </div>
           ))}
         </div>
-        <div className="mt-6 flex items-center justify-between border-t border-[var(--border)] pt-4 text-[13px]">
-          <span className="text-[var(--text-muted)] font-medium">
-            Total RTK savings: <span className="font-bold text-[#00c781]">{fmtBytes(savings.slim_bytes_saved)}</span> ({fmtNum(savings.slim_tokens_saved)} tokens)
-          </span>
-          <span className="text-[var(--text-muted)] font-medium">
-            Est. cost saved: <span className="font-bold text-[#00c781]">${((savings.slim_tokens_saved / 1_000_000) * 3).toFixed(4)}</span>
-          </span>
+        <div className="mt-6 flex items-center justify-between border-t border-[var(--border)] pt-4">
+          <div className="flex flex-col">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">Total Savings</span>
+            <span className="text-lg font-light text-[var(--text)] tabular-nums">{fmtBytes(savings.slim_bytes_saved)} <span className="text-xs text-[var(--text-muted)] font-medium ml-1">({fmtNum(savings.slim_tokens_saved)} tokens)</span></span>
+          </div>
+          <div className="flex flex-col text-right">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">Est. Value</span>
+            <span className="text-lg font-light text-[var(--text)] tabular-nums">${((savings.slim_tokens_saved / 1_000_000) * 3).toFixed(4)}</span>
+          </div>
         </div>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -759,7 +574,7 @@ function ModelUsageTable({ models }: { models: ModelUsage[] }) {
         (m) => m.model.toLowerCase().includes(q) || m.provider_name.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q),
       );
     }
-    const sorted = [...rows].sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const dir = sortDir === "asc" ? 1 : -1;
       switch (sortKey) {
         case "provider": return dir * a.provider_name.localeCompare(b.provider_name);
@@ -771,7 +586,6 @@ function ModelUsageTable({ models }: { models: ModelUsage[] }) {
         default: return 0;
       }
     });
-    return sorted;
   }, [models, search, sortKey, sortDir]);
 
   const SortIcon = ({ col }: { col: SortKey }) => {
@@ -781,7 +595,7 @@ function ModelUsageTable({ models }: { models: ModelUsage[] }) {
 
   const th = (col: SortKey, label: string, align: "left" | "right" = "left") => (
     <th
-      className={`cursor-pointer select-none px-4 py-2 font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)] ${align === "right" ? "text-right" : "text-left"}`}
+      className={`cursor-pointer select-none px-4 py-3 font-semibold uppercase tracking-wider text-[10px] text-[var(--text-muted)] transition-colors hover:text-[var(--text)] ${align === "right" ? "text-right" : "text-left"}`}
       onClick={() => toggleSort(col)}
     >
       {label}
@@ -790,59 +604,100 @@ function ModelUsageTable({ models }: { models: ModelUsage[] }) {
   );
 
   return (
-    <Card>
-      <div className="flex flex-col gap-3 border-b border-[var(--border)] px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="text-sm font-semibold">Model Usage</h3>
+    <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-[var(--border)] px-5 py-3 bg-[var(--bg-subtle)] sm:flex-row sm:items-center sm:justify-between">
+        <h3 className="text-sm font-semibold tracking-tight">Model Usage</h3>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search models…"
-            className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] py-1.5 pl-8 pr-3 text-xs placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+            className="rounded-lg border border-[var(--border)] bg-[var(--bg)] py-1.5 pl-8 pr-3 text-xs placeholder:text-[var(--text-muted)] focus:border-[var(--text)] focus:outline-none transition-colors w-48"
           />
         </div>
       </div>
       {filtered.length === 0 ? (
-        <div className="py-8 text-center text-xs text-[var(--text-muted)]">
+        <div className="py-12 text-center text-xs font-medium text-[var(--text-muted)]">
           {models.length === 0 ? "No model data for this period" : "No models match your search"}
         </div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead>
+            <thead className="bg-[var(--bg)]">
               <tr className="border-b border-[var(--border)]">
-                {th("provider", "Provider")}
                 {th("model", "Model")}
-                {th("requests", "Requests", "right")}
-                {th("prompt", "In Tok", "right")}
-                {th("completion", "Out Tok", "right")}
+                {th("requests", "Req", "right")}
+                {th("prompt", "In", "right")}
+                {th("completion", "Out", "right")}
                 {th("cost", "Cost", "right")}
-                <th className="px-4 py-2 text-right font-medium text-[var(--text-muted)]">Rate ($/M)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {filtered.map((m) => (
                 <tr key={`${m.provider}/${m.model}`} className="transition-colors hover:bg-[var(--bg-subtle)]">
-                  <td className="px-4 py-2">
-                    <div className="flex items-center gap-2">
-                      <ProviderIcon provider={m.provider} color="" />
-                      <span className="font-medium">{m.provider_name}</span>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="font-mono text-[11px] font-semibold">{m.model}</span>
+                      <div className="flex items-center gap-1.5">
+                        <ProviderIcon provider={m.provider} className="h-3 w-3" />
+                        <span className="text-[9px] uppercase tracking-wider text-[var(--text-muted)]">{m.provider_name}</span>
+                      </div>
                     </div>
                   </td>
-                  <td className="px-4 py-2 font-mono">{m.model}</td>
-                  <td className="px-4 py-2 text-right tabular-nums">{m.total_requests.toLocaleString()}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-blue-500">{fmtNum(m.prompt_tokens)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-green-500">{fmtNum(m.completion_tokens)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums font-medium">${m.cost_usd.toFixed(4)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-[var(--text-muted)]">
-                    {m.input_per_m != null ? (
-                      <span title={`In: $${m.input_per_m}/M · Out: $${m.output_per_m}/M${m.cached_input_per_m ? ` · Cached: $${m.cached_input_per_m}/M` : ""}`}>
-                        ${m.input_per_m}/{m.output_per_m}
-                      </span>
-                    ) : (
-                      <span className="opacity-40">—</span>
-                    )}
+                  <td className="px-4 py-3 text-right tabular-nums font-medium">{m.total_requests.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[var(--text-muted)]">{fmtNum(m.prompt_tokens)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[var(--text-muted)]">{fmtNum(m.completion_tokens)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums font-medium text-[var(--text)]">${m.cost_usd.toFixed(4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Provider Breakdown ─────────────────────────────────────────────────────
+
+function ProviderBreakdown({ providers }: { providers: ProviderUsage[] }) {
+  const active = providers.filter((p) => p.total_requests > 0).sort((a,b) => b.total_requests - a.total_requests);
+  
+  return (
+    <div className="flex flex-col rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden">
+      <div className="border-b border-[var(--border)] px-5 py-4 bg-[var(--bg-subtle)]">
+        <h3 className="text-sm font-semibold tracking-tight">Provider Breakdown</h3>
+      </div>
+      {active.length === 0 ? (
+        <div className="py-12 text-center text-xs font-medium text-[var(--text-muted)]">No provider data</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-[var(--bg)]">
+              <tr className="border-b border-[var(--border)]">
+                <th className="px-4 py-3 text-left font-semibold uppercase tracking-wider text-[10px] text-[var(--text-muted)]">Provider</th>
+                <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider text-[10px] text-[var(--text-muted)]">Req</th>
+                <th className="px-4 py-3 text-right font-semibold uppercase tracking-wider text-[10px] text-[var(--text-muted)]">Share</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)]">
+              {active.map((p) => (
+                <tr key={p.provider} className="transition-colors hover:bg-[var(--bg-subtle)]">
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <ProviderIcon provider={p.provider} />
+                      <span className="font-medium text-[var(--text)]">{p.display_name}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums font-medium">{p.total_requests.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex items-center justify-end gap-3">
+                      <span className="w-8 text-right tabular-nums font-medium text-[var(--text)]">{p.share_pct.toFixed(0)}%</span>
+                      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(2, p.share_pct)}%`, backgroundColor: p.color || "var(--text)" }} />
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -850,7 +705,7 @@ function ModelUsageTable({ models }: { models: ModelUsage[] }) {
           </table>
         </div>
       )}
-    </Card>
+    </div>
   );
 }
 
@@ -873,10 +728,10 @@ function relTime(iso: string): string {
   if (Number.isNaN(t)) return "—";
   const diff = Date.now() - t;
   const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }

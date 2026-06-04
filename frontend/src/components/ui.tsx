@@ -197,8 +197,6 @@ export function Spinner() {
   );
 }
 
-// StatCard is the top-line metric card: a soft icon chip, label, big value, and
-// an optional delta line (e.g. "↑ 18.6% vs yesterday").
 export function StatCard({
   icon: Icon,
   iconTone = "accent",
@@ -212,11 +210,6 @@ export function StatCard({
   value: string;
   delta?: { text: string; direction?: "up" | "down" | "flat" };
 }) {
-  const toneClasses: Record<string, string> = {
-    accent: "bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200",
-    warning: "bg-[color:var(--color-warning)]/12 text-[color:var(--color-warning)]",
-    danger: "bg-[color:var(--color-danger)]/15 text-[color:var(--color-danger)]",
-  };
   const deltaColor =
     delta?.direction === "up"
       ? "text-accent-600 dark:text-accent-400"
@@ -224,23 +217,29 @@ export function StatCard({
         ? "text-[color:var(--color-danger)]"
         : "text-[var(--text-muted)]";
   const arrow = delta?.direction === "up" ? "↑" : delta?.direction === "down" ? "↓" : "";
+  
+  const iconColor = iconTone === "accent" ? "text-accent-500" : iconTone === "warning" ? "text-amber-500" : "text-red-500";
+
   return (
-    <Card className="p-5">
-      <div className="flex items-start gap-4">
-        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${toneClasses[iconTone]}`}>
-          <Icon className="h-5 w-5" strokeWidth={2} />
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm text-[var(--text-muted)]">{label}</p>
-          <p className="mt-1 text-2xl font-semibold tracking-tight">{value}</p>
-          {delta && (
-            <p className={`mt-1 text-xs font-medium ${deltaColor}`}>
-              {arrow} {delta.text}
-            </p>
-          )}
-        </div>
+    <div className="flex flex-col justify-between p-5 rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm transition-colors hover:bg-[var(--bg-subtle)] relative overflow-hidden group">
+      {/* Subtle secondary tone gradient glow on hover */}
+      <div className="absolute inset-0 bg-gradient-to-br from-accent-500/5 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100 dark:from-accent-500/10" />
+      
+      <div className="relative flex items-center gap-2 text-[var(--text-muted)] mb-4">
+        <Icon className={`h-4 w-4 ${iconColor}`} />
+        <span className="text-xs font-medium tracking-wide uppercase">{label}</span>
       </div>
-    </Card>
+      <div className="relative">
+        <div className="text-3xl font-light tracking-tight tabular-nums text-[var(--text)]">
+          {value}
+        </div>
+        {delta && (
+          <p className={`mt-1.5 text-[11px] font-medium ${deltaColor}`}>
+            {arrow} {delta.text}
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
