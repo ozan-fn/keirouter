@@ -279,7 +279,7 @@ function ProfileMenu() {
         </div>
         <div className="hidden text-left sm:block">
           <p className="text-sm font-medium leading-tight">Kei</p>
-          <p className="text-xs leading-tight text-[var(--text-muted)]">Administrator</p>
+          <p className="text-xs leading-tight text-[var(--text-muted)]">AI Bender</p>
         </div>
         <ChevronDown className="h-4 w-4 text-[var(--text-muted)]" />
       </button>
@@ -291,7 +291,7 @@ function ProfileMenu() {
         >
           <div className="px-4 py-2.5">
             <p className="text-sm font-medium">Kei</p>
-            <p className="text-xs text-[var(--text-muted)]">Administrator</p>
+            <p className="text-xs text-[var(--text-muted)]">AI Bender</p>
           </div>
           <div className="my-1 h-px bg-[var(--border)]" />
           <button

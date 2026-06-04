@@ -278,27 +278,32 @@ export function ProviderDetailPage() {
               title="Available Models"
               description={`${models.data.models.length} model${models.data.models.length === 1 ? "" : "s"} configured for this provider.`}
             />
-            <div className="flex items-center gap-2 border-t border-[var(--border)] px-6 py-3">
-              <Button
-                variant="ghost"
-                onClick={() => enableModelsMut.mutate((models.data?.models ?? []).map((m) => m.id))}
-                disabled={enableModelsMut.isPending}
-              >
-                <ToggleRight className="h-4 w-4" />
-                Enable all
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => disableModelsMut.mutate((models.data?.models ?? []).map((m) => m.id))}
-                disabled={disableModelsMut.isPending}
-              >
-                <ToggleLeft className="h-4 w-4" />
-                Disable all
-              </Button>
+            <div className="flex items-center justify-between border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-3">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Batch Actions</span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  className="h-8 px-3 text-xs"
+                  onClick={() => enableModelsMut.mutate((models.data?.models ?? []).map((m) => m.id))}
+                  disabled={enableModelsMut.isPending}
+                >
+                  <ToggleRight className="h-3.5 w-3.5 text-accent-500" />
+                  Enable all
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 px-3 text-xs"
+                  onClick={() => disableModelsMut.mutate((models.data?.models ?? []).map((m) => m.id))}
+                  disabled={disableModelsMut.isPending}
+                >
+                  <ToggleLeft className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                  Disable all
+                </Button>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2 border-t border-[var(--border)] px-6 py-5">
+            <div className="grid grid-cols-1 gap-px overflow-hidden rounded-b-2xl border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 lg:grid-cols-3">
               {models.data.models.map((m) => (
-                <ModelChip
+                <ModelCell
                   key={m.id}
                   model={m}
                   provider={provider}
@@ -883,9 +888,8 @@ function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: (
 // ---- Account quota card -----------------------------------------------------
 
 
-// ModelChip renders a single model as a compact chip showing the model ID and
-// display name (matching 9router's ModelRow pattern).
-function ModelChip({
+// ModelCell renders a single model in a structural hairline grid.
+function ModelCell({
   model,
   provider,
   disabled,
@@ -906,39 +910,46 @@ function ModelChip({
   };
 
   return (
-    <div className={`group flex min-w-0 max-w-full items-start gap-2 rounded-lg border px-3 py-2 transition-colors hover:bg-ink-50 dark:hover:bg-ink-800/40 ${disabled ? "border-[color:var(--color-danger)]/30 opacity-60" : "border-[var(--border)]"}`}>
-      <span className="mt-0.5 text-[var(--text-muted)]">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" />
-        </svg>
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <code className="truncate font-mono text-xs text-[var(--text)]">{fullModel}</code>
-        {model.name && model.name !== model.id && (
-          <span className="truncate text-[10px] italic text-[var(--text-muted)]">{model.name}</span>
-        )}
-      </div>
-      <div className="flex items-center gap-1">
-        {onToggleDisable && (
-          <button
-            onClick={onToggleDisable}
-            className="shrink-0 rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
-            title={disabled ? "Enable model" : "Disable model"}
-          >
-            {disabled ? <XCircle className="h-3.5 w-3.5 text-[color:var(--color-danger)]" /> : <CheckCircle className="h-3.5 w-3.5 text-accent-500" />}
-          </button>
-        )}
-        <button
-          onClick={handleCopy}
-          className="shrink-0 rounded p-0.5 text-[var(--text-muted)] opacity-100 transition-opacity hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 sm:opacity-0 sm:group-hover:opacity-100"
-          title="Copy model path"
-        >
-          {copied ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+    <div className={`group relative flex flex-col justify-between bg-[var(--bg-elevated)] p-4 transition-all hover:bg-[var(--bg-subtle)] ${disabled ? "opacity-50 grayscale" : ""}`}>
+      <div className="mb-3 flex items-start justify-between">
+        <div className="flex items-center gap-2">
+          <div className={`h-1.5 w-1.5 rounded-full ${disabled ? "bg-ink-400 dark:bg-ink-600" : "bg-accent-500 shadow-[0_0_8px_var(--color-accent-500)]"}`} />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            {model.kind || "Model"}
+          </span>
+        </div>
+        <div className="flex items-center gap-0.5">
+          {onToggleDisable && (
+            <button
+              onClick={onToggleDisable}
+              className="flex h-7 w-7 items-center justify-center rounded bg-transparent text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+              title={disabled ? "Enable model" : "Disable model"}
+            >
+              {disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-accent-500" />}
+            </button>
           )}
-        </button>
+          <button
+            onClick={handleCopy}
+            className="flex h-7 w-7 items-center justify-center rounded bg-transparent text-[var(--text-muted)] opacity-100 transition-all hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 sm:opacity-0 sm:group-hover:opacity-100"
+            title="Copy model path"
+          >
+            {copied ? (
+              <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+            )}
+          </button>
+        </div>
+      </div>
+      <div>
+        <code className="block truncate font-mono text-xs text-[var(--text)] tracking-tight" title={fullModel}>
+          {fullModel}
+        </code>
+        {model.name && model.name !== model.id && (
+          <span className="mt-1 block truncate text-[10px] text-[var(--text-muted)]" title={model.name}>
+            {model.name}
+          </span>
+        )}
       </div>
     </div>
   );
