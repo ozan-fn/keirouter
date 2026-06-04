@@ -15,60 +15,64 @@ import (
 )
 
 // rule associates a model-id substring with the capabilities that family has.
+// When exact is true, the match is compared for equality (not substring).
 type rule struct {
 	match string
 	caps  []core.Capability
+	exact bool
 }
 
 // rules are evaluated in order; all matching rules union their capabilities.
 // Substrings are lowercased before matching.
 var rules = []rule{
 	// Frontier chat models: full feature set.
-	{"gpt-4", []core.Capability{core.CapToolCalling, core.CapVision, core.CapStructuredOutput, core.CapLongContext}},
-	{"gpt-5", []core.Capability{core.CapToolCalling, core.CapVision, core.CapReasoning, core.CapStructuredOutput, core.CapLongContext}},
-	{"o1", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapStructuredOutput}},
-	{"o3", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapStructuredOutput}},
-	{"o4", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapStructuredOutput}},
-	{"claude", []core.Capability{core.CapToolCalling, core.CapVision, core.CapReasoning, core.CapLongContext}},
-	{"gemini", []core.Capability{core.CapToolCalling, core.CapVision, core.CapAudioInput, core.CapLongContext}},
-	{"deepseek", []core.Capability{core.CapToolCalling, core.CapReasoning}},
-	{"glm", []core.Capability{core.CapToolCalling, core.CapLongContext}},
-	{"minimax", []core.Capability{core.CapToolCalling, core.CapLongContext}},
-	{"qwen", []core.Capability{core.CapToolCalling}},
-	{"kimi", []core.Capability{core.CapToolCalling, core.CapLongContext}},
-	{"grok", []core.Capability{core.CapToolCalling, core.CapVision}},
-	{"llama", []core.Capability{core.CapToolCalling}},
-	{"mistral", []core.Capability{core.CapToolCalling}},
-	{"mimo", []core.Capability{core.CapToolCalling}},
-	{"mixtral", []core.Capability{core.CapToolCalling}},
-	{"nemotron", []core.Capability{core.CapToolCalling}},
-	{"phi-4", []core.Capability{core.CapToolCalling}},
-	{"phi-3", []core.Capability{core.CapToolCalling}},
-	{"codestral", []core.Capability{core.CapToolCalling}},
+	{"gpt-4", []core.Capability{core.CapToolCalling, core.CapVision, core.CapStructuredOutput, core.CapLongContext}, false},
+	{"gpt-5", []core.Capability{core.CapToolCalling, core.CapVision, core.CapReasoning, core.CapStructuredOutput, core.CapLongContext}, false},
+	{"o1", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapStructuredOutput}, false},
+	{"o3", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapStructuredOutput}, false},
+	{"o4", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapStructuredOutput}, false},
+	{"claude", []core.Capability{core.CapToolCalling, core.CapVision, core.CapReasoning, core.CapLongContext}, false},
+	{"gemini", []core.Capability{core.CapToolCalling, core.CapVision, core.CapAudioInput, core.CapLongContext}, false},
+	{"deepseek", []core.Capability{core.CapToolCalling, core.CapReasoning}, false},
+	{"glm", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
+	{"minimax", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
+	{"qwen", []core.Capability{core.CapToolCalling}, false},
+	{"kimi", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
+	{"grok", []core.Capability{core.CapToolCalling, core.CapVision}, false},
+	{"llama", []core.Capability{core.CapToolCalling}, false},
+	{"mistral", []core.Capability{core.CapToolCalling}, false},
+	{"mimo-v2-omni", []core.Capability{core.CapToolCalling, core.CapVision, core.CapLongContext}, false},
+	{"mimo-v2.5", []core.Capability{core.CapToolCalling, core.CapVision, core.CapLongContext}, true},
+	{"mimo", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
+	{"mixtral", []core.Capability{core.CapToolCalling}, false},
+	{"nemotron", []core.Capability{core.CapToolCalling}, false},
+	{"phi-4", []core.Capability{core.CapToolCalling}, false},
+	{"phi-3", []core.Capability{core.CapToolCalling}, false},
+	{"codestral", []core.Capability{core.CapToolCalling}, false},
 
 	// ByteDance / Volcengine models (doubao, ep-* endpoints).
-	{"doubao", []core.Capability{core.CapToolCalling, core.CapLongContext}},
-	{"bytedance", []core.Capability{core.CapToolCalling, core.CapLongContext}},
-	{"ep-", []core.Capability{core.CapToolCalling, core.CapLongContext}},
+	{"doubao", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
+	{"bytedance", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
+	{"ep-", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
 
 	// Perplexity Sonar models.
-	{"sonar", []core.Capability{core.CapToolCalling, core.CapLongContext}},
+	{"sonar", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
 
 	// Cohere Command models.
-	{"command", []core.Capability{core.CapToolCalling}},
+	{"command", []core.Capability{core.CapToolCalling}, false},
 
 	// Cerebras (serves llama-family, fast inference).
-	{"cerebras", []core.Capability{core.CapToolCalling}},
+	{"cerebras", []core.Capability{core.CapToolCalling}, false},
 
 	// Cloudflare Workers AI models.
-	{"@cf/", []core.Capability{core.CapToolCalling}},
+	{"@cf/", []core.Capability{core.CapToolCalling}, false},
 
 	// OpenAI Responses API models (codex, gpt-4o via responses).
-	{"codex", []core.Capability{core.CapToolCalling, core.CapReasoning}},
+	{"codex", []core.Capability{core.CapToolCalling, core.CapReasoning}, false},
 
 	// Kiro / CodeWhisperer.
-	{"kiro", []core.Capability{core.CapToolCalling}},
-	{"codewhisperer", []core.Capability{core.CapToolCalling}},
+	{"kiro", []core.Capability{core.CapToolCalling}, false},
+	{"codewhisperer", []core.Capability{core.CapToolCalling}, false},
 }
 
 // baseline is granted to every model.
@@ -79,7 +83,13 @@ func Of(model string) core.CapabilitySet {
 	set := core.NewCapabilitySet(baseline...)
 	lower := strings.ToLower(model)
 	for _, r := range rules {
-		if strings.Contains(lower, r.match) {
+		matched := false
+		if r.exact {
+			matched = (lower == r.match)
+		} else {
+			matched = strings.Contains(lower, r.match)
+		}
+		if matched {
 			for _, c := range r.caps {
 				set.Add(c)
 			}

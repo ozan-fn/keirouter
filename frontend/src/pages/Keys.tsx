@@ -1,10 +1,22 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Plus, Copy, Check, ToggleLeft, ToggleRight, ChevronDown } from "lucide-react";
+import { KeyRound, Plus, Copy, Check, ToggleLeft, ToggleRight, ArrowLeft, ArrowRight } from "lucide-react";
 import { api, type CreatedKey } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
-import { Card, SectionHeader, CardHeader, Button, Input, Select, Field, Badge, Spinner, EmptyState, Toggle } from "../components/ui";
+import {
+  Card,
+  CardHeader,
+  Button,
+  Input,
+  Select,
+  Field,
+  Badge,
+  Spinner,
+  EmptyState,
+  Toggle,
+  Modal,
+} from "../components/ui";
 
 const budgetPeriods = [
   { value: "daily", label: "Daily" },
@@ -18,11 +30,13 @@ export function KeysPage() {
   const toast = useToast();
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys() });
 
-  const [name, setName] = useState("");
-  const [created, setCreated] = useState<CreatedKey | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
-  const [budgetOpen, setBudgetOpen] = useState(false);
+  // Step 1 — name
+  const [name, setName] = useState("");
+
+  // Step 2 — budget
   const [budgetLimit, setBudgetLimit] = useState("");
   const [budgetLimitTokens, setBudgetLimitTokens] = useState("");
   const [budgetPeriod, setBudgetPeriod] = useState("monthly");
@@ -30,19 +44,48 @@ export function KeysPage() {
   const [budgetHardCutoff, setBudgetHardCutoff] = useState(true);
   const [allowedModels, setAllowedModels] = useState("");
 
+  // Step 3 — result
+  const [created, setCreated] = useState<CreatedKey | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const openModal = () => {
+    setName("");
+    setBudgetLimit("");
+    setBudgetLimitTokens("");
+    setBudgetPeriod("monthly");
+    setBudgetAlertPct(80);
+    setBudgetHardCutoff(true);
+    setAllowedModels("");
+    setCreated(null);
+    setCopied(false);
+    setStep(1);
+    setModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setModalOpen(false);
+    if (created) {
+      setCreated(null);
+      setCopied(false);
+    }
+  };
+
   const create = useMutation({
     mutationFn: () => {
       const hasLimit = parseFloat(budgetLimit) > 0;
       const hasTokenLimit = parseInt(budgetLimitTokens) > 0;
-      const models = allowedModels.split(",").map(s => s.trim()).filter(Boolean);
-      const opts = (budgetOpen && (hasLimit || hasTokenLimit)) || models.length > 0
-        ? {
-            ...(hasLimit ? { budget_limit_usd: parseFloat(budgetLimit) } : {}),
-            ...(hasTokenLimit ? { budget_limit_tokens: parseInt(budgetLimitTokens) } : {}),
-            ...(budgetOpen ? { budget_period: budgetPeriod, budget_alert_pct: budgetAlertPct, budget_hard_cutoff: budgetHardCutoff } : {}),
-            ...(models.length > 0 ? { allowed_models: models } : {}),
-          }
-        : undefined;
+      const models = allowedModels.split(",").map((s) => s.trim()).filter(Boolean);
+      const opts =
+        hasLimit || hasTokenLimit || models.length > 0
+          ? {
+              ...(hasLimit ? { budget_limit_usd: parseFloat(budgetLimit) } : {}),
+              ...(hasTokenLimit ? { budget_limit_tokens: parseInt(budgetLimitTokens) } : {}),
+              ...(hasLimit || hasTokenLimit
+                ? { budget_period: budgetPeriod, budget_alert_pct: budgetAlertPct, budget_hard_cutoff: budgetHardCutoff }
+                : {}),
+              ...(models.length > 0 ? { allowed_models: models } : {}),
+            }
+          : undefined;
       return api.createKey(name, opts);
     },
     onSuccess: (data) => {
@@ -50,11 +93,7 @@ export function KeysPage() {
       qc.invalidateQueries({ queryKey: ["budgets"] });
       qc.invalidateQueries({ queryKey: ["budget-status"] });
       setCreated(data);
-      setName("");
-      setBudgetOpen(false);
-      setBudgetLimit("");
-      setBudgetLimitTokens("");
-      setAllowedModels("");
+      setStep(3);
       const parts = [];
       if (data.budget?.limit_micros > 0) parts.push(`$${(data.budget.limit_micros / 1_000_000).toFixed(2)}`);
       if (data.budget?.limit_tokens > 0) parts.push(`${(data.budget.limit_tokens / 1_000_000).toFixed(0)}M tokens`);
@@ -94,156 +133,56 @@ export function KeysPage() {
         title="API Keys"
         icon={KeyRound}
         description="Keys your tools use to authenticate. Stored hashed; shown once."
+        action={
+          <Button onClick={openModal}>
+            <Plus className="h-4 w-4" />
+            New key
+          </Button>
+        }
       />
 
-      {created && (
-        <Card className="mb-6 border-accent-300 dark:border-accent-700">
-          <div className="p-6">
-            <p className="text-sm font-medium">Copy your new key now — it won't be shown again.</p>
-            <div className="mt-3 flex items-center gap-2">
-              <code className="flex-1 overflow-x-auto rounded-lg bg-[var(--bg-subtle)] px-3 py-2.5 font-mono text-sm">
-                {created.key}
-              </code>
-              <Button
-                onClick={() => {
-                  navigator.clipboard.writeText(created.key);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
-                }}
-              >
-                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                {copied ? "Copied" : "Copy"}
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setCreated(null);
-                  setCopied(false);
-                }}
-              >
-                Done
-              </Button>
-            </div>
-            {created.budget && (
-              <p className="mt-2 text-xs text-[var(--text-muted)]">
-                Budget:
-                {created.budget.limit_micros > 0 && ` $${(created.budget.limit_micros / 1_000_000).toFixed(2)}`}
-                {created.budget.limit_tokens > 0 && ` ${created.budget.limit_tokens >= 1_000_000 ? `${(created.budget.limit_tokens / 1_000_000).toFixed(0)}M` : created.budget.limit_tokens} tokens`}
-                {` / ${created.budget.period}`}
-                {created.budget.hard_cutoff ? " (hard cutoff)" : ""}
-              </p>
-            )}
-            {created.allowed_models && created.allowed_models.length > 0 && (
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Allowed models: {created.allowed_models.join(", ")}
-              </p>
-            )}
-          </div>
-        </Card>
-      )}
-
-      <Card className="mb-6">
-        <SectionHeader title="Create key" description="Generate a new API key for a tool or device." icon={Plus} />
-        <form
-          className="space-y-4 px-6 pb-6"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (name.trim()) create.mutate();
-          }}
-        >
-          <div className="flex items-end gap-3">
-            <div className="flex-1">
-              <Field label="Key name">
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="laptop" />
-              </Field>
-            </div>
-            <Button type="submit" disabled={create.isPending || !name.trim()}>
-              <Plus className="h-4 w-4" />
-              {create.isPending ? "Creating…" : "Create key"}
-            </Button>
-          </div>
-
-          {/* Collapsible budget section */}
-          <div>
-            <button
-              type="button"
-              onClick={() => setBudgetOpen(!budgetOpen)}
-              className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
-            >
-              <ChevronDown className={`h-4 w-4 transition-transform ${budgetOpen ? "rotate-180" : ""}`} />
-              Budget limits
-            </button>
-
-            {budgetOpen && (
-              <div className="mt-3 space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
-                <div className="flex gap-3">
-                  <div className="w-40">
-                    <Field label="Limit (USD)">
-                      <Input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={budgetLimit}
-                        onChange={(e) => setBudgetLimit(e.target.value)}
-                        placeholder="50.00"
-                      />
-                    </Field>
-                  </div>
-                  <div className="w-44">
-                    <Field label="Limit (Tokens)">
-                      <Input
-                        type="number"
-                        min="0"
-                        step="1000"
-                        value={budgetLimitTokens}
-                        onChange={(e) => setBudgetLimitTokens(e.target.value)}
-                        placeholder="100000000"
-                      />
-                    </Field>
-                  </div>
-                  <div className="w-40">
-                    <Field label="Period">
-                      <Select value={budgetPeriod} onChange={(e) => setBudgetPeriod(e.target.value)}>
-                        {budgetPeriods.map((p) => (
-                          <option key={p.value} value={p.value}>{p.label}</option>
-                        ))}
-                      </Select>
-                    </Field>
-                  </div>
-                </div>
-                <div className="flex gap-3">
-                  <div className="flex-1">
-                    <Field label="Allowed models (comma-separated, supports * wildcard)">
-                      <Input
-                        value={allowedModels}
-                        onChange={(e) => setAllowedModels(e.target.value)}
-                        placeholder="claude-sonnet-4-20250514, gpt-4o, claude-*"
-                      />
-                    </Field>
-                  </div>
-                </div>
-                <div className="flex items-end gap-6">
-                  <div className="w-40">
-                    <Field label="Alert threshold (%)">
-                      <Input
-                        type="number"
-                        min="1"
-                        max="100"
-                        value={budgetAlertPct}
-                        onChange={(e) => setBudgetAlertPct(parseInt(e.target.value) || 80)}
-                      />
-                    </Field>
-                  </div>
-                  <div className="flex items-center gap-2 pb-0.5">
-                    <Toggle checked={budgetHardCutoff} onChange={setBudgetHardCutoff} />
-                    <span className="text-sm">Hard cutoff (block when exhausted)</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </form>
-      </Card>
+      <Modal
+        open={modalOpen}
+        onClose={closeModal}
+        title={step === 3 ? "Key created" : "Create API key"}
+        subtitle={
+          step === 1
+            ? "Name your key so you can identify it later."
+            : step === 2
+              ? "Optionally set budget limits and model restrictions."
+              : undefined
+        }
+      >
+        {step === 1 && <StepName name={name} setName={setName} onNext={() => setStep(2)} />}
+        {step === 2 && (
+          <StepBudget
+            budgetLimit={budgetLimit}
+            setBudgetLimit={setBudgetLimit}
+            budgetLimitTokens={budgetLimitTokens}
+            setBudgetLimitTokens={setBudgetLimitTokens}
+            budgetPeriod={budgetPeriod}
+            setBudgetPeriod={setBudgetPeriod}
+            budgetAlertPct={budgetAlertPct}
+            setBudgetAlertPct={setBudgetAlertPct}
+            budgetHardCutoff={budgetHardCutoff}
+            setBudgetHardCutoff={setBudgetHardCutoff}
+            allowedModels={allowedModels}
+            setAllowedModels={setAllowedModels}
+            onBack={() => setStep(1)}
+            onCreate={() => create.mutate()}
+            isPending={create.isPending}
+            isFirstKey={(keys.data?.keys?.length ?? 0) === 0}
+          />
+        )}
+        {step === 3 && created && (
+          <StepSuccess
+            created={created}
+            copied={copied}
+            setCopied={setCopied}
+            onClose={closeModal}
+          />
+        )}
+      </Modal>
 
       <Card>
         <CardHeader title="Keys" />
@@ -301,5 +240,237 @@ export function KeysPage() {
         )}
       </Card>
     </>
+  );
+}
+
+/* ── Step 1: Name ───────────────────────────────────────────────── */
+
+function StepName({
+  name,
+  setName,
+  onNext,
+}: {
+  name: string;
+  setName: (v: string) => void;
+  onNext: () => void;
+}) {
+  return (
+    <div className="space-y-4 px-6 py-5">
+      <Field label="Key name">
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="laptop"
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && name.trim()) {
+              e.preventDefault();
+              onNext();
+            }
+          }}
+        />
+      </Field>
+      <div className="flex gap-2 pt-1">
+        <Button className="flex-1" onClick={onNext} disabled={!name.trim()}>
+          Next
+          <ArrowRight className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Step 2: Budget (optional) ──────────────────────────────────── */
+
+function StepBudget({
+  budgetLimit,
+  setBudgetLimit,
+  budgetLimitTokens,
+  setBudgetLimitTokens,
+  budgetPeriod,
+  setBudgetPeriod,
+  budgetAlertPct,
+  setBudgetAlertPct,
+  budgetHardCutoff,
+  setBudgetHardCutoff,
+  allowedModels,
+  setAllowedModels,
+  onBack,
+  onCreate,
+  isPending,
+  isFirstKey,
+}: {
+  budgetLimit: string;
+  setBudgetLimit: (v: string) => void;
+  budgetLimitTokens: string;
+  setBudgetLimitTokens: (v: string) => void;
+  budgetPeriod: string;
+  setBudgetPeriod: (v: string) => void;
+  budgetAlertPct: number;
+  setBudgetAlertPct: (v: number) => void;
+  budgetHardCutoff: boolean;
+  setBudgetHardCutoff: (v: boolean) => void;
+  allowedModels: string;
+  setAllowedModels: (v: string) => void;
+  onBack: () => void;
+  onCreate: () => void;
+  isPending: boolean;
+  isFirstKey: boolean;
+}) {
+  const hasLimit = parseFloat(budgetLimit) > 0;
+  const hasTokenLimit = parseInt(budgetLimitTokens) > 0;
+  const models = allowedModels.split(",").map((s) => s.trim()).filter(Boolean);
+
+  return (
+    <div className="space-y-4 px-6 py-5">
+      {isFirstKey && (
+        <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 dark:border-accent-800 dark:bg-accent-950/30">
+          <p className="text-sm font-medium text-accent-800 dark:text-accent-200">
+            Set a budget to control spending
+          </p>
+          <p className="mt-0.5 text-xs text-accent-700 dark:text-accent-300">
+            This is your first key. Adding a budget now prevents surprise bills.
+          </p>
+        </div>
+      )}
+
+      <div className="flex gap-3">
+        <div className="flex-1">
+          <Field label="Limit (USD)">
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              value={budgetLimit}
+              onChange={(e) => setBudgetLimit(e.target.value)}
+              placeholder="50.00"
+            />
+          </Field>
+        </div>
+        <div className="flex-1">
+          <Field label="Limit (Tokens)">
+            <Input
+              type="number"
+              min="0"
+              step="1000"
+              value={budgetLimitTokens}
+              onChange={(e) => setBudgetLimitTokens(e.target.value)}
+              placeholder="100000000"
+            />
+          </Field>
+        </div>
+        <div className="w-36">
+          <Field label="Period">
+            <Select value={budgetPeriod} onChange={(e) => setBudgetPeriod(e.target.value)}>
+              {budgetPeriods.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      </div>
+
+      <Field label="Allowed models (comma-separated, supports * wildcard)">
+        <Input
+          value={allowedModels}
+          onChange={(e) => setAllowedModels(e.target.value)}
+          placeholder="claude-sonnet-4-20250514, gpt-4o, claude-*"
+        />
+      </Field>
+
+      <div className="flex items-end gap-6">
+        <div className="w-40">
+          <Field label="Alert threshold (%)">
+            <Input
+              type="number"
+              min="1"
+              max="100"
+              value={budgetAlertPct}
+              onChange={(e) => setBudgetAlertPct(parseInt(e.target.value) || 80)}
+            />
+          </Field>
+        </div>
+        <div className="flex items-center gap-2 pb-0.5">
+          <Toggle checked={budgetHardCutoff} onChange={setBudgetHardCutoff} />
+          <span className="text-sm">Hard cutoff (block when exhausted)</span>
+        </div>
+      </div>
+
+      <div className="flex gap-2 pt-2 border-t border-[var(--border)]">
+        <Button variant="ghost" onClick={onBack}>
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </Button>
+        <div className="flex-1" />
+        <Button variant="ghost" onClick={onCreate} disabled={isPending}>
+          {isPending ? "Creating…" : "Skip budget"}
+        </Button>
+        <Button onClick={onCreate} disabled={isPending}>
+          {isPending ? "Creating…" : "Create key"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Step 3: Success / Copy ─────────────────────────────────────── */
+
+function StepSuccess({
+  created,
+  copied,
+  setCopied,
+  onClose,
+}: {
+  created: CreatedKey;
+  copied: boolean;
+  setCopied: (v: boolean) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="space-y-4 px-6 py-5">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+        <p className="text-xs font-medium text-[var(--text-muted)]">Your new key — copy it now, it won't be shown again.</p>
+        <div className="mt-2 flex items-center gap-2">
+          <code className="flex-1 overflow-x-auto rounded-lg bg-[var(--bg-elevated)] px-3 py-2.5 font-mono text-sm">
+            {created.key}
+          </code>
+          <Button
+            onClick={() => {
+              navigator.clipboard.writeText(created.key);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        </div>
+      </div>
+
+      {created.budget && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+          <p className="text-xs font-medium text-[var(--text-muted)]">Budget attached</p>
+          <p className="mt-0.5 text-sm">
+            {created.budget.limit_micros > 0 && `$${(created.budget.limit_micros / 1_000_000).toFixed(2)}`}
+            {created.budget.limit_micros > 0 && created.budget.limit_tokens > 0 && " + "}
+            {created.budget.limit_tokens > 0 &&
+              `${created.budget.limit_tokens >= 1_000_000 ? `${(created.budget.limit_tokens / 1_000_000).toFixed(0)}M` : created.budget.limit_tokens} tokens`}
+            {` / ${created.budget.period}`}
+            {created.budget.hard_cutoff ? " (hard cutoff)" : ""}
+          </p>
+        </div>
+      )}
+
+      {created.allowed_models && created.allowed_models.length > 0 && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+          <p className="text-xs font-medium text-[var(--text-muted)]">Allowed models</p>
+          <p className="mt-0.5 text-sm">{created.allowed_models.join(", ")}</p>
+        </div>
+      )}
+
+      <Button className="w-full" onClick={onClose}>
+        Done
+      </Button>
+    </div>
   );
 }

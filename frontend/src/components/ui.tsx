@@ -1,12 +1,12 @@
 // Reusable UI primitives styled with the KeiRouter design system. Calm,
 // generously spaced, soft shadows and rounded surfaces — no gradients or neon.
+import { useEffect, type ReactNode } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
-  ReactNode,
   SelectHTMLAttributes,
 } from "react";
-import { AlertCircle, type LucideIcon } from "lucide-react";
+import { AlertCircle, X, type LucideIcon } from "lucide-react";
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
@@ -277,6 +277,64 @@ export function SegmentedControl<T extends string>({
 }
 
 // Toggle is a small accessible switch.
+// Modal is a reusable dialog overlay. Escape and backdrop click close it.
+export function Modal({
+  open,
+  onClose,
+  title,
+  subtitle,
+  children,
+  maxWidth = "max-w-lg",
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: ReactNode;
+  subtitle?: string;
+  children: ReactNode;
+  maxWidth?: string;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={typeof title === "string" ? title : undefined}
+    >
+      <div
+        className={`w-full ${maxWidth} rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+          <div>
+            <h2 className="text-base font-semibold tracking-tight">{title}</h2>
+            {subtitle && <p className="mt-0.5 text-sm text-[var(--text-muted)]">{subtitle}</p>}
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button

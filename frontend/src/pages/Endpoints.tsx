@@ -24,10 +24,13 @@ import {
   CardHeader,
   Button,
   Input,
+  Select,
   Field,
   Badge,
   Spinner,
   EmptyState,
+  Toggle,
+  Modal,
 } from "../components/ui";
 
 // Polling intervals (ms).
@@ -693,22 +696,71 @@ function TunnelBadge({ reachable }: { reachable: boolean | null }) {
 // API Keys
 // ---------------------------------------------------------------------------
 
+const budgetPeriods = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "total", label: "All time" },
+];
+
 function APIKeys() {
   const qc = useQueryClient();
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys() });
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [name, setName] = useState("");
+  const [budgetLimit, setBudgetLimit] = useState("");
+  const [budgetLimitTokens, setBudgetLimitTokens] = useState("");
+  const [budgetPeriod, setBudgetPeriod] = useState("monthly");
+  const [budgetAlertPct, setBudgetAlertPct] = useState(80);
+  const [budgetHardCutoff, setBudgetHardCutoff] = useState(true);
+  const [allowedModels, setAllowedModels] = useState("");
   const [created, setCreated] = useState<CreatedKey | null>(null);
-  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const openModal = () => {
+    setName("");
+    setBudgetLimit("");
+    setBudgetLimitTokens("");
+    setBudgetPeriod("monthly");
+    setBudgetAlertPct(80);
+    setBudgetHardCutoff(true);
+    setAllowedModels("");
+    setCreated(null);
+    setCopied(false);
+    setStep(1);
+    setModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setModalOpen(false);
+    if (created) { setCreated(null); setCopied(false); }
+  };
 
   const create = useMutation({
-    mutationFn: () => api.createKey(name),
-    onSuccess: (data) => {
-      setCreated(data);
-      setName("");
-      setError("");
-      qc.invalidateQueries({ queryKey: ["keys"] });
+    mutationFn: () => {
+      const hasLimit = parseFloat(budgetLimit) > 0;
+      const hasTokenLimit = parseInt(budgetLimitTokens) > 0;
+      const models = allowedModels.split(",").map((s) => s.trim()).filter(Boolean);
+      const opts = hasLimit || hasTokenLimit || models.length > 0
+        ? {
+            ...(hasLimit ? { budget_limit_usd: parseFloat(budgetLimit) } : {}),
+            ...(hasTokenLimit ? { budget_limit_tokens: parseInt(budgetLimitTokens) } : {}),
+            ...(hasLimit || hasTokenLimit ? { budget_period: budgetPeriod, budget_alert_pct: budgetAlertPct, budget_hard_cutoff: budgetHardCutoff } : {}),
+            ...(models.length > 0 ? { allowed_models: models } : {}),
+          }
+        : undefined;
+      return api.createKey(name, opts);
     },
-    onError: (e) => setError((e as Error).message),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["keys"] });
+      qc.invalidateQueries({ queryKey: ["budgets"] });
+      qc.invalidateQueries({ queryKey: ["budget-status"] });
+      setCreated(data);
+      setStep(3);
+    },
+    onError: () => {},
   });
 
   const remove = useMutation({
@@ -723,40 +775,105 @@ function APIKeys() {
 
   return (
     <Card>
-      {/* Mobile: header + form stack vertically. Desktop: form inline in header. */}
       <CardHeader
         title="API keys"
         description="Authenticate your applications"
-      />
-      <div className="border-b border-[var(--border)] px-4 py-3 sm:px-5">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Key name"
-            className="text-sm sm:max-w-48"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && name.trim()) create.mutate();
-            }}
-          />
-          <Button onClick={() => create.mutate()} disabled={!name.trim() || create.isPending} className="sm:w-auto">
+        action={
+          <Button onClick={openModal}>
             <Plus className="h-4 w-4" />
-            {create.isPending ? "Creating…" : "Create key"}
+            New key
           </Button>
-        </div>
-        {error && (
-          <p className="mt-2 text-xs text-[color:var(--color-danger)]">{error}</p>
-        )}
-      </div>
+        }
+      />
 
-      {created && (
-        <div className="mx-4 mt-4 rounded-lg border border-accent-200 bg-accent-50 px-3 py-3 dark:border-accent-800/50 dark:bg-accent-800/20 sm:mx-5 sm:px-4">
-          <p className="text-xs font-medium text-accent-700 dark:text-accent-200">
-            Copy this key now — it won't be shown again.
-          </p>
-          <code className="mt-1.5 block break-all font-mono text-[13px]">{created.key}</code>
-        </div>
-      )}
+      <Modal
+        open={modalOpen}
+        onClose={closeModal}
+        title={step === 3 ? "Key created" : "Create API key"}
+        subtitle={
+          step === 1 ? "Name your key so you can identify it later."
+            : step === 2 ? "Optionally set budget limits and model restrictions."
+            : undefined
+        }
+      >
+        {step === 1 && (
+          <div className="space-y-4 px-6 py-5">
+            <Field label="Key name">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="laptop"
+                autoFocus
+                onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) { e.preventDefault(); setStep(2); } }}
+              />
+            </Field>
+            <Button className="w-full" onClick={() => setStep(2)} disabled={!name.trim()}>
+              Next
+            </Button>
+          </div>
+        )}
+        {step === 2 && (
+          <div className="space-y-4 px-6 py-5">
+            {(keys.data?.keys?.length ?? 0) === 0 && (
+              <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 dark:border-accent-800 dark:bg-accent-950/30">
+                <p className="text-sm font-medium text-accent-800 dark:text-accent-200">Set a budget to control spending</p>
+                <p className="mt-0.5 text-xs text-accent-700 dark:text-accent-300">This is your first key. Adding a budget now prevents surprise bills.</p>
+              </div>
+            )}
+            <div className="flex gap-3">
+              <div className="flex-1"><Field label="Limit (USD)"><Input type="number" min="0" step="0.01" value={budgetLimit} onChange={(e) => setBudgetLimit(e.target.value)} placeholder="50.00" /></Field></div>
+              <div className="flex-1"><Field label="Limit (Tokens)"><Input type="number" min="0" step="1000" value={budgetLimitTokens} onChange={(e) => setBudgetLimitTokens(e.target.value)} placeholder="100000000" /></Field></div>
+              <div className="w-36"><Field label="Period"><Select value={budgetPeriod} onChange={(e) => setBudgetPeriod(e.target.value)}>{budgetPeriods.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}</Select></Field></div>
+            </div>
+            <Field label="Allowed models (comma-separated, supports * wildcard)">
+              <Input value={allowedModels} onChange={(e) => setAllowedModels(e.target.value)} placeholder="claude-sonnet-4-20250514, gpt-4o, claude-*" />
+            </Field>
+            <div className="flex items-end gap-6">
+              <div className="w-40"><Field label="Alert threshold (%)"><Input type="number" min="1" max="100" value={budgetAlertPct} onChange={(e) => setBudgetAlertPct(parseInt(e.target.value) || 80)} /></Field></div>
+              <div className="flex items-center gap-2 pb-0.5"><Toggle checked={budgetHardCutoff} onChange={setBudgetHardCutoff} /><span className="text-sm">Hard cutoff</span></div>
+            </div>
+            <div className="flex gap-2 pt-2 border-t border-[var(--border)]">
+              <Button variant="ghost" onClick={() => setStep(1)}>Back</Button>
+              <div className="flex-1" />
+              <Button variant="ghost" onClick={() => create.mutate()} disabled={create.isPending}>{create.isPending ? "Creating…" : "Skip budget"}</Button>
+              <Button onClick={() => create.mutate()} disabled={create.isPending}>{create.isPending ? "Creating…" : "Create key"}</Button>
+            </div>
+          </div>
+        )}
+        {step === 3 && created && (
+          <div className="space-y-4 px-6 py-5">
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+              <p className="text-xs font-medium text-[var(--text-muted)]">Copy this key now — it won't be shown again.</p>
+              <div className="mt-2 flex items-center gap-2">
+                <code className="flex-1 overflow-x-auto rounded-lg bg-[var(--bg-elevated)] px-3 py-2.5 font-mono text-sm">{created.key}</code>
+                <Button onClick={() => { navigator.clipboard.writeText(created.key); setCopied(true); setTimeout(() => setCopied(false), 1500); }}>
+                  {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                  {copied ? "Copied" : "Copy"}
+                </Button>
+              </div>
+            </div>
+            {created.budget && (
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+                <p className="text-xs font-medium text-[var(--text-muted)]">Budget attached</p>
+                <p className="mt-0.5 text-sm">
+                  {created.budget.limit_micros > 0 && `$${(created.budget.limit_micros / 1_000_000).toFixed(2)}`}
+                  {created.budget.limit_micros > 0 && created.budget.limit_tokens > 0 && " + "}
+                  {created.budget.limit_tokens > 0 && `${created.budget.limit_tokens >= 1_000_000 ? `${(created.budget.limit_tokens / 1_000_000).toFixed(0)}M` : created.budget.limit_tokens} tokens`}
+                  {` / ${created.budget.period}`}
+                  {created.budget.hard_cutoff ? " (hard cutoff)" : ""}
+                </p>
+              </div>
+            )}
+            {created.allowed_models && created.allowed_models.length > 0 && (
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+                <p className="text-xs font-medium text-[var(--text-muted)]">Allowed models</p>
+                <p className="mt-0.5 text-sm">{created.allowed_models.join(", ")}</p>
+              </div>
+            )}
+            <Button className="w-full" onClick={closeModal}>Done</Button>
+          </div>
+        )}
+      </Modal>
 
       {keys.isLoading ? (
         <Spinner />
@@ -765,51 +882,42 @@ function APIKeys() {
       ) : (
         <div className="divide-y divide-[var(--border)]">
           {keys.data.keys.map((k) => (
-            <KeyRow
-              key={k.id}
-              k={k}
-              onDelete={() => remove.mutate(k.id)}
-              onToggle={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}
-            />
+            <div key={k.id} className="flex items-center gap-3 px-4 py-3 sm:px-5 sm:py-3.5">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-ink-500 dark:bg-ink-800 dark:text-ink-400">
+                <KeyRound className="h-4 w-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <p className="truncate text-sm font-medium">{k.name}</p>
+                  {k.allowed_models && k.allowed_models.length > 0 && (
+                    <Badge tone="accent">{k.allowed_models.length} model{k.allowed_models.length > 1 ? "s" : ""}</Badge>
+                  )}
+                </div>
+                <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{k.display}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+                <Badge tone={k.disabled ? "neutral" : "success"}>
+                  {k.disabled ? "Off" : "On"}
+                </Badge>
+                <button
+                  onClick={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}
+                  className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
+                  title={k.disabled ? "Enable key" : "Disable key"}
+                >
+                  {k.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4" />}
+                </button>
+                <button
+                  onClick={() => remove.mutate(k.id)}
+                  className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                  title="Delete key"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
           ))}
         </div>
       )}
     </Card>
-  );
-}
-
-function KeyRow({ k, onDelete, onToggle }: { k: APIKey; onDelete: () => void; onToggle: () => void }) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-3 sm:px-5 sm:py-3.5">
-      {/* Key info — takes available space, truncates. */}
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-ink-100 text-ink-500 dark:bg-ink-800 dark:text-ink-400">
-        <KeyRound className="h-4 w-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium">{k.name}</p>
-        <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{k.display}</p>
-      </div>
-
-      {/* Actions — compact, no wrap. */}
-      <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-        <Badge tone={k.disabled ? "neutral" : "success"}>
-          {k.disabled ? "Off" : "On"}
-        </Badge>
-        <button
-          onClick={onToggle}
-          className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
-          title={k.disabled ? "Enable key" : "Disable key"}
-        >
-          {k.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4" />}
-        </button>
-        <button
-          onClick={onDelete}
-          className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
-          title="Delete key"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
-      </div>
-    </div>
   );
 }
