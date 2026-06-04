@@ -77,13 +77,15 @@ type Account struct {
 
 // Chain is an ordered fallback definition (routing chain).
 type Chain struct {
-	ID        string
-	TenantID  string
-	Name      string
-	Strategy  string
-	Steps     []ChainStep
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID               string
+	TenantID         string
+	Name             string
+	Strategy         string
+	FallbackProvider string
+	FallbackModel    string
+	Steps            []ChainStep
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // ChainStep is one candidate target within a chain.

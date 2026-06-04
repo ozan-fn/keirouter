@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Layers, Plus, Trash2, X, ArrowRight, Pencil, Check, Copy,
   ArrowUp, ArrowDown, Loader2, Search, ChevronDown, Network,
+  Shield, Shuffle, Zap, DollarSign, Clock, AlertTriangle, Route,
 } from "lucide-react";
 import {
   ReactFlow, Handle, Position, Controls,
@@ -69,7 +70,6 @@ function SearchableSelect({
     );
   }, [options, query]);
 
-  // Update dropdown position when open.
   const updateRect = useCallback(() => {
     if (triggerRef.current) setRect(triggerRef.current.getBoundingClientRect());
   }, []);
@@ -209,14 +209,22 @@ function ComboStartNode({ data }: { data: { name: string; strategy: string; step
   );
 }
 
-function ComboStepNode({ data }: { data: { position: number; provider: string; model: string; color: string; icon: string; isLast: boolean } }) {
+function ComboStepNode({ data }: { data: { position: number; provider: string; model: string; color: string; icon: string; isLast: boolean; isFallback: boolean } }) {
   return (
     <>
       <Handle type="target" position={Position.Left} className="!bg-accent-500 !border-0 !w-2 !h-2" />
       {!data.isLast && <Handle type="source" position={Position.Right} className="!bg-accent-500 !border-0 !w-2 !h-2" />}
-      <div className="flex items-center gap-2 rounded-lg border-2 bg-[var(--bg-elevated)] px-3 py-2 shadow-sm" style={{ borderColor: data.color || "var(--border)" }}>
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-600 text-[9px] font-bold text-white">{data.position + 1}</span>
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${data.color}15` }}>
+      <div className={`flex items-center gap-2 rounded-lg border-2 bg-[var(--bg-elevated)] px-3 py-2 shadow-sm ${
+        data.isFallback ? "border-amber-400 dark:border-amber-500" : ""
+      }`} style={{ borderColor: data.isFallback ? undefined : (data.color || "var(--border)") }}>
+        {data.isFallback ? (
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white">
+            <Shield className="h-3 w-3" />
+          </span>
+        ) : (
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-600 text-[9px] font-bold text-white">{data.position + 1}</span>
+        )}
+        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${data.isFallback ? "#f59e0b" : data.color}15` }}>
           <img src={data.icon} alt={data.provider} className="h-4 w-4 rounded-sm object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
         </div>
         <div className="min-w-0">
@@ -242,6 +250,11 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
     const es: Edge[] = [];
     const nodeW = 180;
     const gap = 60;
+    const allSteps = [...chain.steps];
+    const hasFallback = chain.fallback_provider && chain.fallback_model;
+    if (hasFallback) {
+      allSteps.push({ provider: chain.fallback_provider!, model: chain.fallback_model!, position: allSteps.length });
+    }
 
     ns.push({
       id: "start",
@@ -251,9 +264,10 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
       draggable: false,
     });
 
-    chain.steps.forEach((step, i) => {
+    allSteps.forEach((step, i) => {
       const p = providerMap.get(step.provider);
       const nodeId = `step-${i}`;
+      const isFallback = hasFallback && i === allSteps.length - 1;
       ns.push({
         id: nodeId,
         type: "comboStep",
@@ -264,7 +278,8 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
           model: step.model,
           color: p?.color || "#6b7280",
           icon: `/providers/${step.provider}.png`,
-          isLast: i === chain.steps.length - 1,
+          isLast: i === allSteps.length - 1,
+          isFallback,
         },
         draggable: false,
       });
@@ -277,8 +292,8 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
         sourceHandle: "right",
         targetHandle: "left",
         animated: i === 0,
-        label: i === chain.steps.length - 1 ? "last resort" : i > 0 ? `fallback ${i}` : undefined,
-        style: { stroke: "var(--color-accent-500)", strokeWidth: 1.5 },
+        label: isFallback ? "fallback" : i === allSteps.length - 1 ? "last resort" : i > 0 ? `fallback ${i}` : undefined,
+        style: { stroke: isFallback ? "#f59e0b" : "var(--color-accent-500)", strokeWidth: 1.5 },
         labelStyle: { fill: "var(--text-muted)", fontSize: 10, fontWeight: 500 },
         labelBgStyle: { fill: "var(--bg-elevated)", fillOpacity: 0.9 },
         labelBgPadding: [6, 3] as [number, number],
@@ -298,7 +313,7 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
     setTimeout(() => instance.fitView({ padding: 0.15, duration: 200 }), 50);
   }, []);
 
-  const totalWidth = 220 + chain.steps.length * 240;
+  const totalWidth = 220 + (chain.steps.length + (chain.fallback_provider && chain.fallback_model ? 1 : 0)) * 240;
   const height = 140;
 
   return (
@@ -325,6 +340,44 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>
+  );
+}
+
+// ─── Strategy Cards ──────────────────────────────────────────────────────────
+
+const strategies = [
+  { value: "priority", label: "Priority", desc: "Ordered fallback — try step 1 first, then 2, 3…", icon: Zap, color: "text-blue-500" },
+  { value: "round_robin", label: "Round Robin", desc: "Rotate across models for even load distribution", icon: Shuffle, color: "text-violet-500" },
+  { value: "latency", label: "Latency", desc: "Always try the fastest-responding model first", icon: Clock, color: "text-emerald-500" },
+  { value: "cost", label: "Cost", desc: "Route to the cheapest model first, fall back to pricier", icon: DollarSign, color: "text-amber-500" },
+];
+
+function StrategyCard({ value, label, desc, icon: Icon, color, selected, onClick }: {
+  value: string; label: string; desc: string; icon: any; color: string; selected: boolean; onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-start gap-3 rounded-xl border-2 p-3 text-left transition-all ${
+        selected
+          ? "border-accent-500 bg-accent-500/5 dark:bg-accent-500/10"
+          : "border-[var(--border)] bg-[var(--bg-elevated)] hover:border-[var(--border)] hover:shadow-sm"
+      }`}
+    >
+      <div className={`mt-0.5 rounded-lg p-1.5 ${selected ? "bg-accent-500/15" : "bg-[var(--bg-subtle)]"}`}>
+        <Icon className={`h-4 w-4 ${selected ? "text-accent-600 dark:text-accent-400" : color}`} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <span className={`block text-sm font-semibold ${selected ? "text-accent-700 dark:text-accent-300" : ""}`}>{label}</span>
+        <span className="block text-[11px] leading-snug text-[var(--text-muted)]">{desc}</span>
+      </div>
+      {selected && (
+        <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-500">
+          <Check className="h-3 w-3 text-white" />
+        </div>
+      )}
+    </button>
   );
 }
 
@@ -378,7 +431,6 @@ export function ChainsPage() {
       />
 
       <div className="space-y-4">
-        {/* Delete confirmation */}
         {deletingId && (
           <Card className="border-red-500/30 bg-red-500/5 dark:border-red-500/20 dark:bg-red-500/10">
             <div className="flex items-center justify-between px-4 py-3">
@@ -397,7 +449,6 @@ export function ChainsPage() {
           </Card>
         )}
 
-        {/* Combo list */}
         {chains.isLoading ? (
           <Spinner />
         ) : list.length === 0 ? (
@@ -426,7 +477,6 @@ export function ChainsPage() {
         )}
       </div>
 
-      {/* Create/Edit Modal */}
       {showModal && (
         <ComboModal
           chain={editingId ? list.find((c) => c.id === editingId) : undefined}
@@ -453,6 +503,13 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
   const models = c.steps.map((s) => `${s.provider}/${s.model}`);
   const displayModels = showAll ? models : models.slice(0, 3);
   const remaining = models.length - 3;
+  const hasFallback = c.fallback_provider && c.fallback_model;
+
+  const providerMap = useMemo(() => {
+    const m = new Map<string, { color: string }>();
+    providers.forEach((p) => m.set(p.id, { color: p.color }));
+    return m;
+  }, [providers]);
 
   const copyName = () => {
     navigator.clipboard.writeText(`chain:${c.name}`);
@@ -464,25 +521,33 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] transition-colors hover:border-[var(--border)] hover:shadow-sm">
       <div className="px-4 py-3">
         <div className="flex items-start justify-between gap-3">
-          {/* Left: name + models */}
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <Layers className="h-4 w-4 shrink-0 text-accent-500" />
               <span className="font-mono text-sm font-semibold">chain:{c.name}</span>
               <Badge tone="accent">{c.strategy === "round_robin" ? "round-robin" : c.strategy}</Badge>
               <span className="text-xs text-[var(--text-muted)]">{models.length} model{models.length !== 1 ? "s" : ""}</span>
+              {hasFallback && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                  <Shield className="h-3 w-3" /> fallback
+                </span>
+              )}
             </div>
 
-            {/* Model chips */}
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              {displayModels.map((m, i) => (
-                <span key={i} className="flex items-center">
-                  {i > 0 && <ArrowRight className="mx-0.5 h-3 w-3 text-[var(--text-muted)]" />}
-                  <span className="rounded-md bg-[var(--bg-subtle)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-muted)]">
-                    {m}
+              {displayModels.map((m, i) => {
+                const providerId = m.split("/")[0];
+                const color = providerMap.get(providerId)?.color;
+                return (
+                  <span key={i} className="flex items-center">
+                    {i > 0 && <ArrowRight className="mx-0.5 h-3 w-3 text-[var(--text-muted)]" />}
+                    <span className="flex items-center gap-1.5 rounded-md bg-[var(--bg-subtle)] px-2 py-0.5" style={color ? { borderLeft: `2px solid ${color}` } : undefined}>
+                      <img src={`/providers/${providerId}.png`} alt="" className="h-3 w-3 rounded-sm object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                      <span className="font-mono text-[11px] text-[var(--text-muted)]">{m}</span>
+                    </span>
                   </span>
-                </span>
-              ))}
+                );
+              })}
               {!showAll && remaining > 0 && (
                 <button onClick={() => setShowAll(true)}
                   className="rounded-md bg-[var(--bg-subtle)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-elevated)]">
@@ -495,12 +560,19 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
                   show less
                 </button>
               )}
+              {hasFallback && (
+                <>
+                  <ArrowRight className="mx-0.5 h-3 w-3 text-amber-400" />
+                  <span className="flex items-center gap-1.5 rounded-md border border-amber-300/40 bg-amber-500/5 px-2 py-0.5 dark:bg-amber-500/10">
+                    <Shield className="h-3 w-3 text-amber-500" />
+                    <span className="font-mono text-[11px] text-amber-600 dark:text-amber-400">{c.fallback_provider}/{c.fallback_model}</span>
+                  </span>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Right: actions */}
           <div className="flex shrink-0 items-center gap-0.5">
-            {/* Topology toggle */}
             <button onClick={() => setShowTopology(!showTopology)}
               className={`flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium transition-colors ${
                 showTopology
@@ -510,7 +582,6 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
               title="Show topology">
               <Network className="h-3 w-3" />
             </button>
-            {/* Round-robin toggle */}
             <button onClick={onToggleRR}
               className={`flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium transition-colors ${
                 c.strategy === "round_robin"
@@ -520,19 +591,16 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
               title="Toggle round-robin">
               RR
             </button>
-            {/* Copy name */}
             <button onClick={copyName}
               className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
               title="Copy combo name">
               {copied ? <Check className="h-4 w-4 text-emerald-500 dark:text-emerald-400" /> : <Copy className="h-4 w-4" />}
             </button>
-            {/* Edit */}
             <button onClick={onEdit}
               className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
               title="Edit">
               <Pencil className="h-4 w-4" />
             </button>
-            {/* Delete */}
             <button onClick={onDelete}
               className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"
               title="Delete">
@@ -542,7 +610,6 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
         </div>
       </div>
 
-      {/* Topology */}
       {showTopology && (
         <div className="border-t border-[var(--border)] px-4 py-3">
           <ComboTopology chain={c} providers={providers} />
@@ -568,9 +635,10 @@ function ComboModal({ chain, providers, onClose }: {
   const [steps, setSteps] = useState<DraftStep[]>(
     chain?.steps.map((s) => ({ provider: s.provider, model: s.model })) ?? [{ provider: "", model: "" }]
   );
+  const [fallbackProvider, setFallbackProvider] = useState(chain?.fallback_provider ?? "");
+  const [fallbackModel, setFallbackModel] = useState(chain?.fallback_model ?? "");
   const [error, setError] = useState("");
 
-  // Close on Escape.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
@@ -582,6 +650,8 @@ function ComboModal({ chain, providers, onClose }: {
       name: name.trim(),
       strategy,
       steps: steps.filter((s) => s.provider && s.model),
+      fallback_provider: fallbackProvider || undefined,
+      fallback_model: fallbackModel || undefined,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["chains"] });
@@ -599,6 +669,8 @@ function ComboModal({ chain, providers, onClose }: {
       name: name.trim(),
       strategy,
       steps: steps.filter((s) => s.provider && s.model),
+      fallback_provider: fallbackProvider || undefined,
+      fallback_model: fallbackModel || undefined,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["chains"] });
@@ -627,6 +699,27 @@ function ComboModal({ chain, providers, onClose }: {
 
   const valid = name.trim() && steps.some((s) => s.provider && s.model);
 
+  // Fallback model options
+  const fallbackProviderOptions: SelectOption[] = providers.map((p) => ({
+    value: p.id,
+    label: p.display_name,
+    sublabel: p.id,
+    icon: `/providers/${p.id}.png`,
+  }));
+
+  const fallbackModelsQuery = useQuery({
+    queryKey: ["providerModels", fallbackProvider],
+    queryFn: () => api.providerModels(fallbackProvider),
+    enabled: !!fallbackProvider,
+    staleTime: 60_000,
+  });
+
+  const fallbackModelOptions: SelectOption[] = (fallbackModelsQuery.data?.models ?? []).map((m) => ({
+    value: m.id,
+    label: m.name || m.id,
+    sublabel: m.id !== m.name ? m.id : undefined,
+  }));
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
@@ -647,34 +740,37 @@ function ComboModal({ chain, providers, onClose }: {
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto space-y-5 px-6 py-5">
-          {/* Name + Strategy */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Combo name">
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-combo"
-                className="font-mono" />
-              <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-                Use as <span className="font-mono">chain:{name || "name"}</span> or bare <span className="font-mono">{name || "name"}</span> as model
-              </p>
-            </Field>
-            <Field label="Strategy">
-              <select
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value)}
-                className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
-              >
-                <option value="priority">Priority (ordered fallback)</option>
-                <option value="round_robin">Round Robin (rotate)</option>
-                <option value="latency">Latency (fastest first)</option>
-                <option value="cost">Cost (cheapest first)</option>
-              </select>
-            </Field>
+        <div className="flex-1 overflow-y-auto space-y-6 px-6 py-5">
+          {/* Name */}
+          <Field label="Combo name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-combo"
+              className="font-mono" />
+            <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+              Use as <span className="font-mono">chain:{name || "name"}</span> or bare <span className="font-mono">{name || "name"}</span> as model.
+              Letters, digits, hyphens, underscores only.
+            </p>
+          </Field>
+
+          {/* Strategy Cards */}
+          <div>
+            <span className="text-xs font-medium text-[var(--text-muted)]">Strategy</span>
+            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {strategies.map((s) => (
+                <StrategyCard
+                  key={s.value}
+                  {...s}
+                  selected={strategy === s.value}
+                  onClick={() => setStrategy(s.value)}
+                />
+              ))}
+            </div>
           </div>
 
           {/* Steps */}
           <div>
             <span className="text-xs font-medium text-[var(--text-muted)]">Model chain</span>
-            <div className="mt-2 space-y-2">
+            <p className="mb-2 text-[10px] text-[var(--text-muted)]">Models are tried in order from top to bottom based on the selected strategy.</p>
+            <div className="space-y-1">
               {steps.map((step, i) => (
                 <StepRow
                   key={i}
@@ -690,12 +786,48 @@ function ComboModal({ chain, providers, onClose }: {
               ))}
             </div>
             <button onClick={addStep}
-              className="mt-2 flex items-center gap-1 text-xs font-medium text-accent-500 hover:text-accent-600">
-              <Plus className="h-3.5 w-3.5" /> Add model
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--border)] py-2.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:border-accent-400 hover:text-accent-600 dark:hover:text-accent-400">
+              <Plus className="h-4 w-4" /> Add model
             </button>
           </div>
 
-          {error && <p className="text-xs text-[color:var(--color-danger)]">{error}</p>}
+          {/* Fallback Model Section */}
+          <div className="rounded-xl border border-amber-300/40 bg-amber-50/50 p-4 dark:bg-amber-500/5">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="rounded-lg bg-amber-500/15 p-1.5">
+                <Shield className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <span className="block text-sm font-semibold text-amber-800 dark:text-amber-300">Fallback model</span>
+                <span className="block text-[11px] text-amber-600/80 dark:text-amber-400/70">Last resort when all chain steps fail. Optional.</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <SearchableSelect
+                options={fallbackProviderOptions}
+                value={fallbackProvider}
+                onChange={(v) => { setFallbackProvider(v); setFallbackModel(""); }}
+                placeholder="Provider…"
+                searchPlaceholder="Search providers…"
+              />
+              <SearchableSelect
+                options={fallbackModelOptions}
+                value={fallbackModel}
+                onChange={(v) => setFallbackModel(v)}
+                placeholder={fallbackProvider ? "Model…" : "Select provider first"}
+                searchPlaceholder="Search models…"
+                disabled={!fallbackProvider}
+                loading={fallbackModelsQuery.isLoading}
+              />
+            </div>
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              {error}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -733,7 +865,6 @@ function StepRow({
   onMoveUp?: () => void;
   onMoveDown?: () => void;
 }) {
-  // Fetch models when provider is selected
   const modelsQuery = useQuery({
     queryKey: ["providerModels", step.provider],
     queryFn: () => api.providerModels(step.provider),
@@ -754,21 +885,30 @@ function StepRow({
     sublabel: m.id !== m.name ? m.id : undefined,
   }));
 
+  const providerColor = step.provider ? providers.find((p) => p.id === step.provider)?.color : undefined;
+
   return (
     <div>
       {index > 0 && (
-        <div className="flex items-center py-0.5 pl-3">
-          <ArrowRight className="h-3 w-3 text-[var(--text-muted)]" />
+        <div className="flex items-center py-1 pl-8">
+          <div className="h-4 w-px bg-[var(--border)]" />
+          <ArrowRight className="h-3 w-3 -ml-1.5 text-[var(--text-muted)]" />
           <span className="ml-1 text-[10px] text-[var(--text-muted)]">
             {index === total - 1 ? "last resort" : `fallback ${index}`}
           </span>
         </div>
       )}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="flex flex-1 items-center gap-2">
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-600 text-[10px] font-bold text-white">
-            {index + 1}
-          </span>
+      <div className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-3 transition-colors hover:shadow-sm"
+        style={providerColor ? { borderLeft: `3px solid ${providerColor}` } : undefined}
+      >
+        {/* Step number */}
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+          style={{ backgroundColor: providerColor || "var(--color-accent-600, #6366f1)" }}>
+          {index + 1}
+        </span>
+
+        {/* Provider + model selects */}
+        <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
           <SearchableSelect
             options={providerOptions}
             value={step.provider}
@@ -777,8 +917,6 @@ function StepRow({
             searchPlaceholder="Search providers…"
             className="w-full sm:w-48"
           />
-        </div>
-        <div className="flex flex-1 items-center gap-2 pl-8 sm:pl-0">
           <SearchableSelect
             options={modelOptions}
             value={step.model}
@@ -789,26 +927,28 @@ function StepRow({
             loading={modelsQuery.isLoading}
             className="flex-1 min-w-0"
           />
-          <div className="flex items-center gap-0.5">
-            {onMoveUp && (
-              <button onClick={onMoveUp}
-                className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]">
-                <ArrowUp className="h-3.5 w-3.5" />
-              </button>
-            )}
-            {onMoveDown && (
-              <button onClick={onMoveDown}
-                className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]">
-                <ArrowDown className="h-3.5 w-3.5" />
-              </button>
-            )}
-            {total > 1 && (
-              <button onClick={onRemove}
-                className="rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500">
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex shrink-0 items-center gap-0.5">
+          {onMoveUp && (
+            <button onClick={onMoveUp}
+              className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]">
+              <ArrowUp className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {onMoveDown && (
+            <button onClick={onMoveDown}
+              className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]">
+              <ArrowDown className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {total > 1 && (
+            <button onClick={onRemove}
+              className="rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </div>

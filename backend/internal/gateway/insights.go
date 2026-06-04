@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -57,7 +58,7 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	timeline, err := s.usage.Timeline(ctx, adminTenant, since)
+	timeline, err := s.usage.Timeline(ctx, adminTenant, since, time.Now(), 24)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -236,9 +237,8 @@ type timeBucket struct {
 	count int64
 }
 
-// bucketTimeline distributes time points into n even buckets between from and
-// to, labelling each bucket with its start time (HH:MM).
-func bucketTimeline(points []store.TimePoint, from, to time.Time, n int) []timeBucket {
+// bucketTimeline applies time labels to the pre-bucketed SQL timeline points.
+func bucketTimeline(points []store.TimeBucket, from, to time.Time, n int) []timeBucket {
 	if n <= 0 {
 		n = 24
 	}
@@ -255,14 +255,9 @@ func bucketTimeline(points []store.TimePoint, from, to time.Time, n int) []timeB
 		buckets[i].label = from.Add(time.Duration(i) * slot).Format("15:04")
 	}
 	for _, p := range points {
-		idx := int(p.CreatedAt.Sub(from) / slot)
-		if idx < 0 {
-			idx = 0
+		if p.Bucket >= 0 && p.Bucket < n {
+			buckets[p.Bucket].count = p.Count
 		}
-		if idx >= n {
-			idx = n - 1
-		}
-		buckets[idx].count++
 	}
 	return buckets
 }
@@ -291,8 +286,11 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 		usageByID[u.AccountID] = u
 	}
 
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	out := make([]map[string]any, 0, len(accs))
-	for _, a := range accs {
+	
+	for i, a := range accs {
 		u := usageByID[a.ID]
 		status := "active"
 		if a.Disabled {
@@ -314,55 +312,63 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 			usageType = "credit"
 		}
 		entry := map[string]any{
-			"id":                a.ID,
-			"provider":          a.Provider,
-			"provider_name":     display,
-			"label":             a.Label,
-			"auth_kind":         a.AuthKind,
-			"priority":          a.Priority,
-			"status":            status,
-			"usage_type":        usageType,
+			"id":                 a.ID,
+			"provider":           a.Provider,
+			"provider_name":      display,
+			"label":              a.Label,
+			"auth_kind":          a.AuthKind,
+			"priority":           a.Priority,
+			"status":             status,
+			"usage_type":         usageType,
 			"total_requests":     u.TotalRequests,
 			"prompt_tokens":      u.PromptTokens,
 			"completion_tokens":  u.CompletionTokens,
 			"cached_tokens":      u.CachedTokens,
 			"cache_write_tokens": u.CacheWriteTokens,
 			"cost_usd":           float64(u.CostMicros) / 1_000_000,
-			"input_per_m":       inputPerM,
-			"output_per_m":      outputPerM,
-			"updated_at":        a.UpdatedAt,
+			"input_per_m":        inputPerM,
+			"output_per_m":       outputPerM,
+			"updated_at":         a.UpdatedAt,
 		}
 		if providerNotice != "" {
 			entry["notice"] = providerNotice
 		}
+		out = append(out, entry)
 
-		// Fetch upstream quota for providers that support it (e.g. Kiro).
+		// Fetch upstream quota for providers that support it (e.g. Kiro) concurrently.
 		if qs := connectors.GetQuotaSource(a.Provider); qs != nil && !a.Disabled {
 			if creds, err := s.vault.Open(a); err == nil {
-				quotaCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				quota, qerr := qs.FetchQuota(quotaCtx, creds)
-				cancel()
-				if qerr == nil && quota != nil {
-					entry["plan_name"] = quota.PlanName
-					entry["message"] = quota.Message
-					var quotas []map[string]any
-					for _, q := range quota.Quotas {
-						quotas = append(quotas, map[string]any{
-							"resource_type": q.ResourceType,
-							"used":          q.Used,
-							"limit":         q.Limit,
-							"remaining":     q.Remaining,
-							"reset_at":      q.ResetAt,
-						})
+				wg.Add(1)
+				go func(idx int, qs connectors.QuotaSource, creds map[string]string) {
+					defer wg.Done()
+					quotaCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					quota, qerr := qs.FetchQuota(quotaCtx, creds)
+					cancel()
+					if qerr == nil && quota != nil {
+						var quotas []map[string]any
+						for _, q := range quota.Quotas {
+							quotas = append(quotas, map[string]any{
+								"resource_type": q.ResourceType,
+								"used":          q.Used,
+								"limit":         q.Limit,
+								"remaining":     q.Remaining,
+								"reset_at":      q.ResetAt,
+							})
+						}
+						
+						mu.Lock()
+						out[idx]["plan_name"] = quota.PlanName
+						out[idx]["message"] = quota.Message
+						if len(quotas) > 0 {
+							out[idx]["upstream_quotas"] = quotas
+						}
+						mu.Unlock()
 					}
-					if len(quotas) > 0 {
-						entry["upstream_quotas"] = quotas
-					}
-				}
+				}(i, qs, creds)
 			}
 		}
-		out = append(out, entry)
 	}
+	wg.Wait()
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out, "since": since})
 }
 
@@ -394,14 +400,8 @@ func (s *Server) adminUsageStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
 
-	// Subscribe to usage events.
-	listener := &usagehub.Listener{
-		OnEvent: func(ev usagehub.Event) {
-			data, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		},
-	}
+	// Subscribe to usage events via buffered channel.
+	listener := usagehub.NewListener(64)
 	s.usageHub.Subscribe(listener)
 	defer s.usageHub.Unsubscribe(listener)
 
@@ -413,6 +413,10 @@ func (s *Server) adminUsageStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case ev := <-listener.C:
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
 		case <-keepalive.C:
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()

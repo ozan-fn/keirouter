@@ -202,7 +202,7 @@ function InsightsDashboard({ data }: { data: UsageInsights }) {
               ) : undefined
             }
           />
-          <RecentActivityTable recent={recent} />
+          <RecentActivityTable recent={recent} providers={providers} />
         </Card>
       </div>
     </div>
@@ -272,27 +272,27 @@ function ProviderBreakdown({ providers }: { providers: ProviderUsage[] }) {
   const maxRequests = Math.max(...providers.map((p) => p.total_requests));
 
   return (
-    <div className="space-y-3">
+    <div className="divide-y divide-[var(--border)]/50">
       {providers.map((p) => (
-        <div key={p.provider} className="space-y-1.5">
-          <div className="flex items-center justify-between text-sm">
-            <span className="font-medium">{p.display_name}</span>
-            <span className="tabular-nums text-[var(--text-muted)]">
+        <div key={p.provider} className="py-3 first:pt-0 last:pb-0">
+          <div className="flex items-center justify-between text-sm mb-2">
+            <div className="flex items-center gap-2">
+              <SmallProviderIcon p={p} />
+              <span className="font-medium text-[var(--text)]">{p.display_name}</span>
+            </div>
+            <span className="font-mono text-xs tabular-nums text-[var(--text)]">
               {p.total_requests.toLocaleString()} req
             </span>
           </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+          <div className="h-1 bg-[var(--bg-subtle)] relative rounded-full overflow-hidden">
             <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{
-                width: `${maxRequests > 0 ? (p.total_requests / maxRequests) * 100 : 0}%`,
-                backgroundColor: p.color || "var(--color-accent-500)",
-              }}
+              className="absolute inset-y-0 left-0 bg-[var(--color-ink-400)] dark:bg-[var(--color-ink-500)] transition-all duration-500"
+              style={{ width: `${maxRequests > 0 ? (p.total_requests / maxRequests) * 100 : 0}%` }}
             />
           </div>
-          <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
-            <span>{compact(p.prompt_tokens + p.completion_tokens)} tokens</span>
-            <span>${p.cost_usd.toFixed(2)}</span>
+          <div className="flex items-center justify-between text-xs text-[var(--text-muted)] mt-2 font-mono">
+            <span>{compact(p.prompt_tokens + p.completion_tokens)} tks</span>
+            <span>${p.cost_usd.toFixed(4)}</span>
           </div>
         </div>
       ))}
@@ -328,30 +328,29 @@ function TokenStats({
   }
 
   const rows = [
-    { label: "Input", value: nonCachedInput, color: "bg-[var(--color-chart-1)]" },
-    { label: "Output", value: completion, color: "bg-[var(--color-chart-2)]" },
-    { label: "Cached", value: cached, color: "bg-[var(--color-chart-3)]" },
+    { label: "Input", value: nonCachedInput },
+    { label: "Output", value: completion },
+    { label: "Cached", value: cached },
   ];
 
   return (
-    <div className="space-y-4">
-      <div className="text-center">
-        <span className="text-2xl font-semibold tracking-tight">{compact(total)}</span>
-        <span className="ml-1.5 text-sm text-[var(--text-muted)]">total tokens</span>
+    <div className="flex flex-col h-full">
+      <div className="pb-6 mb-6 border-b border-[var(--border)]">
+        <div className="flex items-baseline gap-2">
+          <span className="font-display text-4xl font-semibold tracking-tight">{compact(total)}</span>
+          <span className="text-xs uppercase tracking-wider text-[var(--text-muted)]">tokens</span>
+        </div>
       </div>
 
-      <div className="space-y-2.5">
+      <div className="space-y-4 flex-1">
         {rows.map((row) => (
           <div key={row.label} className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-sm ${row.color}`} />
-              <span className="text-sm">{row.label}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium tabular-nums">
+            <span className="text-sm text-[var(--text-muted)]">{row.label}</span>
+            <div className="flex items-center gap-4">
+              <span className="text-sm font-mono tabular-nums text-[var(--text)]">
                 {row.value.toLocaleString()}
               </span>
-              <span className="w-12 text-right text-xs text-[var(--text-muted)]">
+              <span className="w-10 text-right text-xs font-mono text-[var(--text-muted)]">
                 {total > 0 ? `${((row.value / total) * 100).toFixed(0)}%` : "0%"}
               </span>
             </div>
@@ -359,10 +358,10 @@ function TokenStats({
         ))}
       </div>
 
-      <div className="border-t border-[var(--border)] pt-3">
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-[var(--text-muted)]">Cache hits</span>
-          <span className="font-medium tabular-nums">{cacheHits.toLocaleString()}</span>
+      <div className="pt-4 mt-6 border-t border-[var(--border)]">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-[var(--text-muted)]">Cache hits</span>
+          <span className="text-sm font-mono tabular-nums text-[var(--text)]">{cacheHits.toLocaleString()}</span>
         </div>
       </div>
     </div>
@@ -371,7 +370,7 @@ function TokenStats({
 
 /* ── Recent activity table ───────────────────────────────────────── */
 
-function RecentActivityTable({ recent }: { recent: RecentActivity[] }) {
+function RecentActivityTable({ recent, providers }: { recent: RecentActivity[], providers: ProviderUsage[] }) {
   if (recent.length === 0) {
     return (
       <div className="px-6 py-10 text-center text-sm text-[var(--text-muted)]">
@@ -384,7 +383,7 @@ function RecentActivityTable({ recent }: { recent: RecentActivity[] }) {
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--text-muted)]">
+          <tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-wider text-[var(--text-muted)]">
             <th className="px-6 py-3 font-medium">Model</th>
             <th className="px-4 py-3 font-medium">Provider</th>
             <th className="px-4 py-3 text-right font-medium">Tokens</th>
@@ -393,30 +392,36 @@ function RecentActivityTable({ recent }: { recent: RecentActivity[] }) {
             <th className="px-6 py-3 text-right font-medium">Cache</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-[var(--border)]/50">
           {recent.map((row) => (
             <tr
               key={row.id}
-              className="border-b border-[var(--border)]/50 last:border-0 hover:bg-[var(--bg-subtle)]/50 transition-colors"
+              className="group hover:bg-[var(--bg-subtle)]/50 transition-colors"
             >
               <td className="px-6 py-3">
-                <span className="font-mono text-xs">{row.model}</span>
+                <span className="font-mono text-xs text-[var(--text)]">{row.model}</span>
               </td>
-              <td className="px-4 py-3">
-                <Badge tone="neutral">{row.provider}</Badge>
+              <td className="px-4 py-3 text-xs text-[var(--text-muted)]">
+                <div className="flex items-center gap-2">
+                  <SmallProviderIcon p={providers.find((p) => p.provider === row.provider)} />
+                  {row.provider}
+                </div>
               </td>
-              <td className="px-4 py-3 text-right tabular-nums">
+              <td className="px-4 py-3 text-right font-mono text-xs text-[var(--text)]">
                 {row.tokens.toLocaleString()}
               </td>
-              <td className="px-4 py-3 text-right tabular-nums text-[var(--text-muted)]">
+              <td className="px-4 py-3 text-right font-mono text-xs text-[var(--text-muted)]">
                 ${row.cost_usd.toFixed(4)}
               </td>
-              <td className="px-4 py-3 text-right tabular-nums text-[var(--text-muted)]">
+              <td className="px-4 py-3 text-right font-mono text-xs text-[var(--text-muted)]">
                 {row.latency_ms}ms
               </td>
               <td className="px-6 py-3 text-right">
                 {row.cache_hit ? (
-                  <Badge tone="success">hit</Badge>
+                  <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    Hit
+                  </span>
                 ) : (
                   <span className="text-xs text-[var(--text-muted)]">—</span>
                 )}
@@ -439,4 +444,27 @@ function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+function SmallProviderIcon({ p }: { p?: { display_name: string; icon: string; color: string } }) {
+  const [errored, setErrored] = useState(false);
+  if (!p) return <div className="h-4 w-4 shrink-0 rounded-sm bg-[var(--border)]" />;
+  if (errored || !p.icon) {
+    return (
+      <div
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-[8px] font-bold text-white"
+        style={{ backgroundColor: p.color || "var(--text-muted)" }}
+      >
+        {p.display_name.slice(0, 1).toUpperCase()}
+      </div>
+    );
+  }
+  return (
+    <img
+      src={p.icon}
+      alt={p.display_name}
+      onError={() => setErrored(true)}
+      className="h-4 w-4 shrink-0 rounded-sm object-contain"
+    />
+  );
 }

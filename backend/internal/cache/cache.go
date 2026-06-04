@@ -59,7 +59,7 @@ type Cache struct {
 // New builds a Cache over a Store. When store is nil, an in-memory store is used.
 func New(cfg Config, store Store) *Cache {
 	if store == nil {
-		store = NewMemoryStore(cfg.MaxEntries)
+		store = NewMemoryStore(cfg.MaxEntries, cfg.TTL)
 	}
 	if cfg.SimilarityThreshold <= 0 {
 		cfg.SimilarityThreshold = 0.95
@@ -109,44 +109,52 @@ type MemoryStore struct {
 	mu      sync.RWMutex
 	entries []Entry
 	max     int
+	cursor  int           // ring buffer write position
+	count   int           // actual count (< max during warmup)
+	ttl     time.Duration // used for lazy eviction during Nearest
 }
 
 // NewMemoryStore builds an in-memory store bounded by max entries (0 = unbounded).
-func NewMemoryStore(max int) *MemoryStore {
-	return &MemoryStore{max: max}
+func NewMemoryStore(max int, ttl time.Duration) *MemoryStore {
+	return &MemoryStore{max: max, ttl: ttl}
 }
 
 // Nearest returns the highest-cosine entry to vec.
 func (m *MemoryStore) Nearest(_ context.Context, vec []float32) (Entry, float64, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if len(m.entries) == 0 {
+	if m.count == 0 && len(m.entries) == 0 {
 		return Entry{}, 0, false, nil
 	}
+	
+	now := time.Now()
 	var best Entry
 	bestScore := -1.0
 	for _, e := range m.entries {
+		if m.ttl > 0 && now.Sub(e.StoredAt) > m.ttl {
+			continue // skip expired entries
+		}
 		s := cosine(vec, e.Vector)
 		if s > bestScore {
 			bestScore = s
 			best = e
 		}
 	}
-	return best, bestScore, true, nil
+	return best, bestScore, bestScore >= 0, nil
 }
 
-// Put inserts an entry, evicting the oldest when at capacity.
+// Put inserts an entry using an O(1) ring buffer.
 func (m *MemoryStore) Put(_ context.Context, e Entry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.entries = append(m.entries, e)
-	if m.max > 0 && len(m.entries) > m.max {
-		// Evict oldest entries (entries are appended in time order, but to be
-		// safe under TTL refreshes we sort by StoredAt before trimming).
-		sort.Slice(m.entries, func(i, j int) bool {
-			return m.entries[i].StoredAt.Before(m.entries[j].StoredAt)
-		})
-		m.entries = m.entries[len(m.entries)-m.max:]
+	if m.max > 0 && m.count >= m.max {
+		m.entries[m.cursor] = e // overwrite oldest (O(1))
+	} else {
+		m.entries = append(m.entries, e)
+		m.count++
+	}
+	if m.max > 0 {
+		m.cursor = (m.cursor + 1) % m.max
 	}
 	return nil
 }
@@ -155,7 +163,7 @@ func (m *MemoryStore) Put(_ context.Context, e Entry) error {
 func (m *MemoryStore) Len() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return len(m.entries)
+	return m.count
 }
 
 // cosine returns the cosine similarity of two equal-length vectors in [-1, 1].

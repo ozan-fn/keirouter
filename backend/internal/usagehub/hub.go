@@ -18,9 +18,20 @@ type Event struct {
 	Tokens    int    `json:"tokens"`
 }
 
-// Listener receives usage events.
+// Listener receives usage events via a buffered channel. The channel-based
+// approach ensures that slow listeners (e.g. SSE clients with network hiccups)
+// never block the publisher (which runs in the hot request path).
 type Listener struct {
-	OnEvent func(Event)
+	C chan Event // Buffered channel for non-blocking delivery.
+}
+
+// NewListener creates a listener with a buffered event channel.
+// Events are dropped when the buffer is full (slow consumer).
+func NewListener(bufSize int) *Listener {
+	if bufSize <= 0 {
+		bufSize = 64
+	}
+	return &Listener{C: make(chan Event, bufSize)}
 }
 
 // Hub manages subscribers and broadcasts usage events.
@@ -50,17 +61,19 @@ func (h *Hub) Unsubscribe(l *Listener) {
 	delete(h.listeners, l)
 }
 
-// Publish broadcasts an event to all subscribers. It copies the listener
-// set under the read lock so callbacks run without holding the lock.
+// Publish broadcasts an event to all subscribers via non-blocking channel
+// sends. If a listener's channel is full (slow consumer), the event is
+// silently dropped for that listener — this prevents a single slow SSE client
+// from blocking all API request processing.
 func (h *Hub) Publish(ev Event) {
 	h.mu.RLock()
-	snapshot := make([]*Listener, 0, len(h.listeners))
-	for l := range h.listeners {
-		snapshot = append(snapshot, l)
-	}
-	h.mu.RUnlock()
+	defer h.mu.RUnlock()
 
-	for _, l := range snapshot {
-		l.OnEvent(ev)
+	for l := range h.listeners {
+		select {
+		case l.C <- ev:
+		default:
+			// Drop event for slow listener — non-blocking.
+		}
 	}
 }

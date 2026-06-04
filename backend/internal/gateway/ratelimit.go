@@ -13,6 +13,7 @@ type ipLimiter struct {
 	visitors map[string]*visitor
 	rate     int           // max requests per window
 	window   time.Duration // time window
+	stop     chan struct{} // signals cleanup to exit
 }
 
 type visitor struct {
@@ -27,10 +28,16 @@ func newIPLimiter(rate int, window time.Duration) *ipLimiter {
 		visitors: make(map[string]*visitor),
 		rate:     rate,
 		window:   window,
+		stop:     make(chan struct{}),
 	}
 	// Cleanup old entries periodically
 	go l.cleanup()
 	return l
+}
+
+// Stop gracefully shuts down the cleanup goroutine.
+func (l *ipLimiter) Stop() {
+	close(l.stop)
 }
 
 // Allow checks if the request from the given IP should be allowed.
@@ -57,15 +64,21 @@ func (l *ipLimiter) Allow(ip string) bool {
 
 // cleanup removes expired entries every minute.
 func (l *ipLimiter) cleanup() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
 	for {
-		time.Sleep(time.Minute)
-		l.mu.Lock()
-		for ip, v := range l.visitors {
-			if time.Since(v.lastSeen) > l.window*2 {
-				delete(l.visitors, ip)
+		select {
+		case <-ticker.C:
+			l.mu.Lock()
+			for ip, v := range l.visitors {
+				if time.Since(v.lastSeen) > l.window*2 {
+					delete(l.visitors, ip)
+				}
 			}
+			l.mu.Unlock()
+		case <-l.stop:
+			return
 		}
-		l.mu.Unlock()
 	}
 }
 

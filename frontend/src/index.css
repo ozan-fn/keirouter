@@ -60,6 +60,18 @@
   --color-accent-800: #3a412d;
   --color-accent-900: #2c3224;
 
+  /* ── Secondary: Terracotta — for important CTAs, notifications, active states. */
+  --color-secondary-50: #fdf5f2;
+  --color-secondary-100: #fae7df;
+  --color-secondary-200: #f3cab7;
+  --color-secondary-300: #e9aa8d;
+  --color-secondary-400: #dc8660;
+  --color-secondary-500: #c3603a;
+  --color-secondary-600: #9e4b2d;
+  --color-secondary-700: #7e3921;
+  --color-secondary-800: #622d1a;
+  --color-secondary-900: #4e2517;
+
   /* ── Neutrals: warm stone — never pure black/white, always inviting. */
   --color-ink-50: #faf9f7;
   --color-ink-100: #f3f2ee;

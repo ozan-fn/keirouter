@@ -2,7 +2,6 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ReactFlow, Handle, Position, Controls,
-  useNodesState, useEdgesState,
   type Node, type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -546,9 +545,7 @@ function buildLayout(providers: ProviderUsage[]) {
 }
 
 function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
-  const { nodes: initialNodes, edges: initialEdges } = useMemo(() => buildLayout(providers), [providers]);
-  const [nodes, , onNodesChange] = useNodesState(initialNodes);
-  const [edges, , onEdgesChange] = useEdgesState(initialEdges);
+  const { nodes, edges } = useMemo(() => buildLayout(providers), [providers]);
   const rfInstance = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -590,8 +587,6 @@ function ProviderTopology({ providers }: { providers: ProviderUsage[] }) {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
         onInit={onInit}
         fitView
         fitViewOptions={{ padding: 0.2 }}

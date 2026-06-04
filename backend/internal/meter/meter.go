@@ -84,15 +84,6 @@ func (m *Meter) resolvePrice(provider, model string) Price {
 		if p, ok := m.modelPrices[provider+"/"+model]; ok {
 			return p
 		}
-		// Also try provider/model without provider prefix (e.g. "gpt-4o" not "openai/gpt-4o").
-		for key, p := range m.modelPrices {
-			if len(key) > len(provider)+1 && key[:len(provider)+1] == provider+"/" {
-				suffix := key[len(provider)+1:]
-				if suffix == model {
-					return p
-				}
-			}
-		}
 	}
 	// Fall back to provider-level.
 	if p, ok := m.pricing[provider]; ok {

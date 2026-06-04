@@ -194,13 +194,37 @@ export function ProviderDetailPage() {
 
       <div className="space-y-6">
         <Card>
-          <CardHeader title="Connected accounts" />
+          <CardHeader
+            title="Connected accounts"
+            action={
+              <div className="flex items-center gap-2">
+                {isKiro && (
+                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setKiroOpen(true)}>
+                    <Plug className="h-3.5 w-3.5" />
+                    Connect Kiro
+                  </Button>
+                )}
+                {!isKiro && oauthProvider && (
+                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setOauthOpen(true)}>
+                    <Plug className="h-3.5 w-3.5" />
+                    Connect {provider.display_name}
+                  </Button>
+                )}
+                {supportsApiKey && (
+                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setAddKeyOpen(true)}>
+                    <Plus className="h-3.5 w-3.5" />
+                    Add API key
+                  </Button>
+                )}
+              </div>
+            }
+          />
           {accounts.isLoading ? (
             <Spinner />
           ) : !myAccounts.length ? (
             <EmptyState
               title="No accounts yet"
-              hint="Add an account below to start routing through this provider."
+              hint="Add an account to start routing through this provider."
             />
           ) : (
             <div className="divide-y divide-[var(--border)]">
@@ -222,54 +246,6 @@ export function ProviderDetailPage() {
             </div>
           )}
         </Card>
-
-        {isKiro && (
-          <Card>
-            <SectionHeader
-              title="Connect with sign-in"
-              description="Authenticate with AWS Builder ID, IAM Identity Center, or import a Kiro IDE token."
-              icon={Plug}
-            />
-            <div className="border-t border-[var(--border)] px-6 py-5">
-              <Button onClick={() => setKiroOpen(true)}>
-                <Plug className="h-4 w-4" />
-                Connect Kiro
-              </Button>
-            </div>
-          </Card>
-        )}
-
-        {!isKiro && oauthProvider && (
-          <Card>
-            <SectionHeader
-              title="Connect with sign-in"
-              description={flowLabel(oauthProvider.flow)}
-              icon={Plug}
-            />
-            <div className="border-t border-[var(--border)] px-6 py-5">
-              <Button onClick={() => setOauthOpen(true)}>
-                <Plug className="h-4 w-4" />
-                Connect {provider.display_name}
-              </Button>
-            </div>
-          </Card>
-        )}
-
-        {supportsApiKey && (
-          <Card>
-            <SectionHeader
-              title="Add account with API key"
-              description="API keys are encrypted at rest and never shown again."
-              icon={KeyRound}
-            />
-            <div className="border-t border-[var(--border)] px-6 py-5">
-              <Button onClick={() => setAddKeyOpen(true)}>
-                <KeyRound className="h-4 w-4" />
-                Add API key
-              </Button>
-            </div>
-          </Card>
-        )}
 
         {/* Available Models */}
         {models.data?.models && models.data.models.length > 0 && (

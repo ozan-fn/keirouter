@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -332,37 +333,52 @@ func (r *UsageRepo) ByModel(ctx context.Context, tenantID string, since time.Tim
 // TimePoint is the created_at + cost of a single record, used to build the
 // activity-over-time series in the handler (bucketed in Go for engine
 // portability).
-type TimePoint struct {
-	CreatedAt  time.Time
-	CostMicros int64
+// TimeBucket represents an aggregated count of events for a specific time slice.
+type TimeBucket struct {
+	Bucket int
+	Count  int64
 }
 
-// Timeline returns the (created_at, cost) of records for a tenant since the
-// given time, oldest first, capped to a sane limit for a local dashboard.
-func (r *UsageRepo) Timeline(ctx context.Context, tenantID string, since time.Time) ([]TimePoint, error) {
+// Timeline returns aggregated usage grouped into 'buckets' even time slices between
+// 'since' and 'to'. This delegates the bucketing to SQLite instead of fetching
+// thousands of rows into Go memory.
+func (r *UsageRepo) Timeline(ctx context.Context, tenantID string, since time.Time, to time.Time, buckets int) ([]TimeBucket, error) {
+	if buckets <= 0 {
+		buckets = 24
+	}
+	span := to.Sub(since)
+	if span <= 0 {
+		span = time.Hour
+	}
+	slotSecs := int64(span.Seconds()) / int64(buckets)
+	if slotSecs <= 0 {
+		slotSecs = 60
+	}
+
 	q := r.db.rebind(`
-		SELECT created_at, cost_micros
+		SELECT 
+			CAST((strftime('%s', created_at) - strftime('%s', ?)) / ? AS INTEGER) as bucket,
+			COUNT(*) as count
 		FROM usage_records
-		WHERE tenant_id = ? AND created_at >= ?
-		ORDER BY created_at ASC
-		LIMIT 20000`)
-	rows, err := r.db.sql.QueryContext(ctx, q, tenantID, formatTime(since))
+		WHERE tenant_id = ? AND created_at >= ? AND created_at <= ?
+		GROUP BY bucket
+		ORDER BY bucket ASC`)
+		
+	rows, err := r.db.sql.QueryContext(ctx, q, formatTime(since), slotSecs, tenantID, formatTime(since), formatTime(to))
 	if err != nil {
 		return nil, fmt.Errorf("store: usage timeline: %w", err)
 	}
 	defer rows.Close()
 
-	var out []TimePoint
+	var out []TimeBucket
 	for rows.Next() {
-		var (
-			tp        TimePoint
-			createdAt string
-		)
-		if err := rows.Scan(&createdAt, &tp.CostMicros); err != nil {
+		var tb TimeBucket
+		if err := rows.Scan(&tb.Bucket, &tb.Count); err != nil {
 			return nil, err
 		}
-		tp.CreatedAt = parseTime(createdAt)
-		out = append(out, tp)
+		if tb.Bucket >= 0 && tb.Bucket < buckets {
+			out = append(out, tb)
+		}
 	}
 	return out, rows.Err()
 }
@@ -417,13 +433,9 @@ func (r *UsageRepo) SavingsByRule(ctx context.Context, tenantID string, since ti
 		out = append(out, *rs)
 	}
 	// Sort by bytes saved descending.
-	for i := range out {
-		for j := i + 1; j < len(out); j++ {
-			if out[j].BytesSaved > out[i].BytesSaved {
-				out[i], out[j] = out[j], out[i]
-			}
-		}
-	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].BytesSaved > out[j].BytesSaved
+	})
 	return out, nil
 }
 

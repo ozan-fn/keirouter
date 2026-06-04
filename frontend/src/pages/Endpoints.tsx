@@ -102,7 +102,7 @@ function PrimaryEndpoint() {
 
   return (
     <Card>
-      <div className="px-4 py-4 sm:px-8 sm:py-6">
+      <div className="px-4 py-4 sm:px-6 sm:py-5">
         <p className="text-[11px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
           Primary endpoint
         </p>
@@ -139,27 +139,26 @@ function PrimaryEndpoint() {
 }
 
 // ---------------------------------------------------------------------------
-// Tunnel section — side-by-side cards
+// Tunnel section — single card with list
 // ---------------------------------------------------------------------------
 
 function TunnelSection() {
   return (
-    <div>
-      {/* Mobile: stack. Desktop: side-by-side. */}
-      <div className="mb-3 flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="text-sm font-semibold tracking-tight">Tunnels</h2>
-        <p className="text-xs text-[var(--text-muted)]">Expose KeiRouter to external networks</p>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+    <Card>
+      <CardHeader
+        title="Tunnels"
+        description="Expose KeiRouter to external networks"
+      />
+      <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
         <CloudflareTunnel />
         <TailscaleTunnel />
       </div>
-    </div>
+    </Card>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Cloudflare tunnel card
+// Cloudflare tunnel row
 // ---------------------------------------------------------------------------
 
 function CloudflareTunnel() {
@@ -256,18 +255,15 @@ function CloudflareTunnel() {
   });
 
   return (
-    <TunnelCard
+    <TunnelRow
       name="Cloudflare Tunnel"
       description="Quick tunnel — no account needed"
       logo={<CloudflareLogo className="h-5 w-5 text-[#F6821F]" />}
-      brandColor="bg-[#F6821F]/10 text-[#F6821F] dark:bg-[#F6821F]/15"
+      brandColor="bg-[#F6821F]/10 dark:bg-[#F6821F]/15"
       isRunning={isRunning}
       reachable={reachable}
       loading={loading}
       displayUrl={displayUrl}
-      statusText={
-        loading ? "Connecting…" : isRunning ? "Tunnel active" : "Tunnel inactive"
-      }
       subText={
         download?.downloading
           ? `Downloading cloudflared… ${download.progress}%`
@@ -282,7 +278,7 @@ function CloudflareTunnel() {
 }
 
 // ---------------------------------------------------------------------------
-// Tailscale tunnel card
+// Tailscale tunnel row
 // ---------------------------------------------------------------------------
 
 function TailscaleTunnel() {
@@ -424,120 +420,65 @@ function TailscaleTunnel() {
     },
   });
 
-  // Not installed — show install prompt.
-  if (!isInstalled) {
-    return (
-      <Card className="flex flex-col">
-        <div className="flex items-center gap-3 px-4 pt-4 pb-3 sm:px-5 sm:pt-5">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#2255CC]/10 text-[#2255CC] dark:bg-[#5990FF]/15 dark:text-[#5990FF]">
-            <TailscaleLogo className="h-5 w-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold tracking-tight">Tailscale</h3>
-            <p className="text-xs text-[var(--text-muted)]">Private network with HTTPS</p>
-          </div>
-        </div>
-        <div className="flex flex-1 flex-col justify-between border-t border-[var(--border)] px-4 py-4 sm:px-5">
-          <div className="flex items-center gap-2.5 text-sm text-[var(--text-muted)]">
-            <WifiOff className="h-4 w-4 shrink-0" />
-            <span>Not installed on this machine</span>
-          </div>
-          {showInstall ? (
-            <div className="mt-4 space-y-3">
-              <Field label="Sudo password (for installation)">
-                <Input
-                  type="password"
-                  value={sudoPassword}
-                  onChange={(e) => setSudoPassword(e.target.value)}
-                  placeholder="Required for system install"
-                />
-              </Field>
-              <div className="flex gap-2">
-                <Button onClick={handleInstall} disabled={installing || !sudoPassword.trim()}>
-                  {installing ? <Loader2 className="h-4 w-4 animate-spin" /> : "Install"}
-                </Button>
-                <Button variant="ghost" onClick={() => setShowInstall(false)}>
-                  Cancel
-                </Button>
-              </div>
-              {installLog.length > 0 && (
-                <div className="max-h-36 overflow-y-auto rounded-lg bg-ink-950 p-3 font-mono text-[11px] leading-relaxed text-ink-300">
-                  {installLog.map((line, i) => (
-                    <div key={i}>{line}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <Button onClick={() => setShowInstall(true)} className="mt-4 w-full">
-              Install Tailscale
-            </Button>
-          )}
-        </div>
-      </Card>
-    );
-  }
-
-  // Installed — show tunnel controls.
-  const statusText = loading
-    ? "Connecting…"
-    : isRunning
-      ? "Funnel active"
-      : isLoggedIn
-        ? "Logged in"
-        : "Not connected";
-
   return (
-    <Card className="flex flex-col">
-      <div className="flex items-center gap-3 px-4 pt-4 pb-3 sm:px-5 sm:pt-5">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#2255CC]/10 text-[#2255CC] dark:bg-[#5990FF]/15 dark:text-[#5990FF]">
-          <TailscaleLogo className="h-5 w-5" />
-        </div>
-        <div>
-          <h3 className="text-sm font-semibold tracking-tight">Tailscale</h3>
-          <p className="text-xs text-[var(--text-muted)]">Private network with HTTPS</p>
-        </div>
-      </div>
-
-      <div className="flex flex-1 flex-col gap-3 border-t border-[var(--border)] px-4 py-4 sm:px-5 sm:gap-4">
-        {/* Status */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <TunnelDot running={isRunning} reachable={reachable} />
-            <span className="text-sm font-medium truncate">{statusText}</span>
+    <TunnelRow
+      name="Tailscale"
+      description="Private network with HTTPS"
+      logo={<TailscaleLogo className="h-5 w-5 text-[#2255CC] dark:text-[#5990FF]" />}
+      brandColor="bg-[#2255CC]/10 dark:bg-[#5990FF]/15"
+      isRunning={isRunning}
+      reachable={reachable}
+      loading={loading}
+      displayUrl={tunnelUrl}
+      onEnable={() => {
+        if (!isInstalled) setShowInstall(true);
+        else enable.mutate();
+      }}
+      onDisable={() => disable.mutate()}
+      enablePending={enable.isPending}
+      disablePending={disable.isPending}
+    >
+      {!isInstalled && showInstall && (
+        <div className="space-y-3">
+          <Field label="Sudo password (for installation)">
+            <Input
+              type="password"
+              value={sudoPassword}
+              onChange={(e) => setSudoPassword(e.target.value)}
+              placeholder="Required for system install"
+            />
+          </Field>
+          <div className="flex gap-2">
+            <Button onClick={handleInstall} disabled={installing || !sudoPassword.trim()}>
+              {installing ? <Loader2 className="h-4 w-4 animate-spin" /> : "Install"}
+            </Button>
+            <Button variant="ghost" onClick={() => setShowInstall(false)}>
+              Cancel
+            </Button>
           </div>
-          {isRunning && (
-            <TunnelBadge reachable={reachable} />
+          {installLog.length > 0 && (
+            <div className="max-h-36 overflow-y-auto rounded-lg bg-ink-950 p-3 font-mono text-[11px] leading-relaxed text-ink-300">
+              {installLog.map((line, i) => (
+                <div key={i}>{line}</div>
+              ))}
+            </div>
           )}
         </div>
+      )}
 
-        {/* URL */}
-        {isRunning && tunnelUrl && (
-          <a
-            href={tunnelUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text)] min-w-0"
-          >
-            <span className="truncate">{tunnelUrl}</span>
-            <ArrowUpRight className="h-3 w-3 shrink-0" />
-          </a>
-        )}
+      {isInstalled && authUrl && (
+        <div className="rounded-lg border border-accent-200 bg-accent-50 px-3 py-2 dark:border-accent-800/50 dark:bg-accent-800/20">
+          <p className="text-xs text-accent-700 dark:text-accent-200">
+            Login required —{" "}
+            <a href={authUrl} target="_blank" rel="noopener noreferrer" className="font-medium underline">
+              authenticate here
+            </a>
+          </p>
+        </div>
+      )}
 
-        {/* Auth URL */}
-        {authUrl && (
-          <div className="rounded-lg border border-accent-200 bg-accent-50 px-3 py-2 dark:border-accent-800/50 dark:bg-accent-800/20">
-            <p className="text-xs text-accent-700 dark:text-accent-200">
-              Login required —{" "}
-              <a href={authUrl} target="_blank" rel="noopener noreferrer" className="font-medium underline">
-                authenticate here
-              </a>
-            </p>
-          </div>
-        )}
-
-        {/* Sudo password for enable */}
-        {!isRunning && isLoggedIn && (
+      {isInstalled && !isRunning && isLoggedIn && (
+        <div className="max-w-sm">
           <Field label="Sudo password (optional, for TUN mode)">
             <Input
               type="password"
@@ -546,36 +487,23 @@ function TailscaleTunnel() {
               placeholder="Leave empty for userspace"
             />
           </Field>
-        )}
-
-        {!isLoggedIn && (
-          <p className="text-xs text-[var(--text-muted)]">
-            Log in to your Tailscale account to enable the funnel.
-          </p>
-        )}
-
-        {/* Actions — pushed to bottom */}
-        <div className="mt-auto pt-1 sm:pt-2">
-          {isRunning ? (
-            <Button variant="danger" onClick={() => disable.mutate()} disabled={disable.isPending} className="w-full">
-              {disable.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Disable"}
-            </Button>
-          ) : (
-            <Button onClick={() => enable.mutate()} disabled={loading || enable.isPending} className="w-full">
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Enable"}
-            </Button>
-          )}
         </div>
-      </div>
-    </Card>
+      )}
+
+      {isInstalled && !isLoggedIn && (
+        <p className="text-xs text-[var(--text-muted)]">
+          Log in to your Tailscale account to enable the funnel.
+        </p>
+      )}
+    </TunnelRow>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Shared tunnel card (Cloudflare)
+// Shared tunnel row component
 // ---------------------------------------------------------------------------
 
-function TunnelCard({
+function TunnelRow({
   name,
   description,
   logo,
@@ -584,12 +512,12 @@ function TunnelCard({
   reachable,
   loading,
   displayUrl,
-  statusText,
   subText,
   onEnable,
   onDisable,
   enablePending,
   disablePending,
+  children,
 }: {
   name: string;
   description: string;
@@ -598,70 +526,62 @@ function TunnelCard({
   isRunning: boolean;
   reachable: boolean | null;
   loading: boolean;
-  displayUrl: string;
-  statusText: string;
+  displayUrl?: string;
   subText?: string;
   onEnable: () => void;
   onDisable: () => void;
   enablePending: boolean;
   disablePending: boolean;
+  children?: React.ReactNode;
 }) {
   return (
-    <Card className="flex flex-col">
-      <div className="flex items-center gap-3 px-4 pt-4 pb-3 sm:px-5 sm:pt-5">
-        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${brandColor}`}>
+    <div className="flex flex-col px-4 py-4 sm:px-6 sm:py-5">
+      <div className="flex items-center gap-4">
+        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${brandColor}`}>
           {logo}
         </div>
-        <div>
-          <h3 className="text-sm font-semibold tracking-tight">{name}</h3>
-          <p className="text-xs text-[var(--text-muted)]">{description}</p>
-        </div>
-      </div>
-
-      <div className="flex flex-1 flex-col gap-3 border-t border-[var(--border)] px-4 py-4 sm:px-5 sm:gap-4">
-        {/* Status */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <TunnelDot running={isRunning} reachable={reachable} />
-            <span className="text-sm font-medium truncate">{statusText}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-[var(--text)]">{name}</h3>
+            {isRunning && <TunnelBadge reachable={reachable} />}
           </div>
-          {isRunning && (
-            <TunnelBadge reachable={reachable} />
+          <p className="text-xs text-[var(--text-muted)] mt-0.5">{description}</p>
+          {isRunning && displayUrl && (
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <TunnelDot running={isRunning} reachable={reachable} />
+              <a
+                href={displayUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text)] truncate flex items-center gap-1"
+              >
+                <span>{displayUrl}</span>
+                <ArrowUpRight className="h-3 w-3 shrink-0" />
+              </a>
+            </div>
+          )}
+          {subText && (
+            <p className="mt-1.5 text-xs text-[var(--text-muted)]">{subText}</p>
           )}
         </div>
-
-        {/* URL */}
-        {isRunning && displayUrl && (
-          <a
-            href={displayUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text)] min-w-0"
-          >
-            <span className="truncate">{displayUrl}</span>
-            <ArrowUpRight className="h-3 w-3 shrink-0" />
-          </a>
-        )}
-
-        {/* Download progress */}
-        {subText && (
-          <p className="text-xs text-[var(--text-muted)]">{subText}</p>
-        )}
-
-        {/* Actions — pushed to bottom */}
-        <div className="mt-auto pt-1 sm:pt-2">
+        <div className="flex shrink-0 items-center pl-2">
           {isRunning ? (
-            <Button variant="danger" onClick={onDisable} disabled={disablePending} className="w-full">
+            <Button variant="danger" onClick={onDisable} disabled={disablePending}>
               {disablePending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Disable"}
             </Button>
           ) : (
-            <Button onClick={onEnable} disabled={loading || enablePending} className="w-full">
+            <Button onClick={onEnable} disabled={loading || enablePending}>
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Enable"}
             </Button>
           )}
         </div>
       </div>
-    </Card>
+      {children && (
+        <div className="mt-4 pt-4 border-t border-[var(--border)]">
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 

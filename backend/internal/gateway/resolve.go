@@ -83,11 +83,18 @@ func chainResult(ctx context.Context, chains ChainSource, tenantID, name string)
 	if err != nil {
 		return resolveResult{}, err
 	}
-	for _, c := range list {
+		for _, c := range list {
 		if c.Name == name {
 			targets := dispatch.TargetsFromChain(c)
 			if len(targets) == 0 {
 				return resolveResult{}, errBadModel("chain has no steps: " + name)
+			}
+			// Append fallback model as last-resort target when configured.
+			if c.FallbackProvider != "" && c.FallbackModel != "" {
+				targets = append(targets, dispatch.Target{
+					Provider: c.FallbackProvider,
+					Model:    c.FallbackModel,
+				})
 			}
 			opts := dispatch.PlanOptions{
 				ChainID: c.ID,

@@ -83,12 +83,24 @@ func (s *RedisStore) Nearest(ctx context.Context, vec []float32) (Entry, float64
 		return Entry{}, 0, false, nil
 	}
 
+	// Batch all HGetAll calls into a single pipeline round-trip
+	pipe := s.client.Pipeline()
+	cmds := make([]*redis.MapStringStringCmd, len(members))
+	for i, key := range members {
+		cmds[i] = pipe.HGetAll(ctx, key)
+	}
+	_, err = pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		// Log pipeline error but continue to process what we can
+		s.log.Warn("cache: redis pipeline exec error", "err", err)
+	}
+
 	var best Entry
 	bestScore := -1.0
 	var staleKeys []string
 
-	for _, key := range members {
-		data, err := s.client.HGetAll(ctx, key).Result()
+	for i, key := range members {
+		data, err := cmds[i].Result()
 		if err != nil {
 			continue
 		}

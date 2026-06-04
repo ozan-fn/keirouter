@@ -11,10 +11,24 @@ import (
 
 const maxLines = 500
 
-// Listener is called when a new log line is appended or logs are cleared.
+// Event represents a log update. If Clear is true, the client should clear its buffer.
+type Event struct {
+	Line  string
+	Clear bool
+}
+
+// Listener receives log events via a buffered channel. The channel-based
+// approach ensures that slow listeners never block the publisher.
 type Listener struct {
-	OnLine  func(line string)
-	OnClear func()
+	C chan Event
+}
+
+// NewListener creates a listener with a buffered event channel.
+func NewListener(bufSize int) *Listener {
+	if bufSize <= 0 {
+		bufSize = 256 // Log streams can be chatty
+	}
+	return &Listener{C: make(chan Event, bufSize)}
 }
 
 // Buffer is a ring buffer of log lines with pub/sub for SSE streaming.
@@ -46,34 +60,34 @@ func (b *Buffer) Append(line string) {
 	b.mu.Lock()
 	b.lines = append(b.lines, line)
 	if len(b.lines) > maxLines {
-		b.lines = b.lines[len(b.lines)-maxLines:]
-	}
-	listeners := make([]*Listener, 0, len(b.listeners))
-	for l := range b.listeners {
-		listeners = append(listeners, l)
+		// Use copy instead of sub-slicing to release the old backing array for GC.
+		n := copy(b.lines, b.lines[len(b.lines)-maxLines:])
+		b.lines = b.lines[:n]
 	}
 	b.mu.Unlock()
 
-	for _, l := range listeners {
-		if l.OnLine != nil {
-			l.OnLine(line)
-		}
-	}
+	ev := Event{Line: line}
+	b.publish(ev)
 }
 
 // Clear resets the buffer and notifies all listeners.
 func (b *Buffer) Clear() {
 	b.mu.Lock()
 	b.lines = b.lines[:0]
-	listeners := make([]*Listener, 0, len(b.listeners))
-	for l := range b.listeners {
-		listeners = append(listeners, l)
-	}
 	b.mu.Unlock()
 
-	for _, l := range listeners {
-		if l.OnClear != nil {
-			l.OnClear()
+	b.publish(Event{Clear: true})
+}
+
+func (b *Buffer) publish(ev Event) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for l := range b.listeners {
+		select {
+		case l.C <- ev:
+		default:
+			// Drop event for slow listener — non-blocking.
 		}
 	}
 }

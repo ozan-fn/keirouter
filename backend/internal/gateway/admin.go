@@ -701,18 +701,25 @@ func (s *Server) adminListChains(w http.ResponseWriter, r *http.Request) {
 		for _, st := range c.Steps {
 			steps = append(steps, map[string]any{"provider": st.Provider, "model": st.Model, "position": st.Position})
 		}
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"id": c.ID, "name": c.Name, "strategy": c.Strategy, "steps": steps,
-		})
+		}
+		if c.FallbackProvider != "" && c.FallbackModel != "" {
+			entry["fallback_provider"] = c.FallbackProvider
+			entry["fallback_model"] = c.FallbackModel
+		}
+		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"chains": out})
 }
 
 func (s *Server) adminCreateChain(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name     string `json:"name"`
-		Strategy string `json:"strategy"`
-		Steps    []struct {
+		Name             string `json:"name"`
+		Strategy         string `json:"strategy"`
+		FallbackProvider string `json:"fallback_provider"`
+		FallbackModel    string `json:"fallback_model"`
+		Steps            []struct {
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
 		} `json:"steps"`
@@ -724,15 +731,33 @@ func (s *Server) adminCreateChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name and at least one step are required")
 		return
 	}
+	if err := validateChainName(body.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Validate fallback provider if set.
+	if body.FallbackProvider != "" {
+		if _, ok := connectors.SpecByID(body.FallbackProvider); !ok {
+			writeError(w, http.StatusBadRequest, "unknown fallback provider: "+body.FallbackProvider)
+			return
+		}
+		if body.FallbackModel == "" {
+			writeError(w, http.StatusBadRequest, "fallback_model is required when fallback_provider is set")
+			return
+		}
+	}
 
 	now := time.Now()
 	chain := store.Chain{
-		ID:        uuid.NewString(),
-		TenantID:  adminTenant,
-		Name:      body.Name,
-		Strategy:  defaultStr(body.Strategy, "priority"),
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:               uuid.NewString(),
+		TenantID:         adminTenant,
+		Name:             body.Name,
+		Strategy:         defaultStr(body.Strategy, "priority"),
+		FallbackProvider: body.FallbackProvider,
+		FallbackModel:    body.FallbackModel,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	for i, st := range body.Steps {
 		if _, ok := connectors.SpecByID(st.Provider); !ok {
@@ -768,9 +793,11 @@ func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name     *string `json:"name"`
-		Strategy *string `json:"strategy"`
-		Steps    *[]struct {
+		Name             *string `json:"name"`
+		Strategy         *string `json:"strategy"`
+		FallbackProvider *string `json:"fallback_provider"`
+		FallbackModel    *string `json:"fallback_model"`
+		Steps            *[]struct {
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
 		} `json:"steps"`
@@ -780,10 +807,20 @@ func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.Name != nil {
+		if err := validateChainName(*body.Name); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		existing.Name = *body.Name
 	}
 	if body.Strategy != nil {
 		existing.Strategy = *body.Strategy
+	}
+	if body.FallbackProvider != nil {
+		existing.FallbackProvider = *body.FallbackProvider
+	}
+	if body.FallbackModel != nil {
+		existing.FallbackModel = *body.FallbackModel
 	}
 	if body.Steps != nil {
 		now := time.Now()
@@ -1187,19 +1224,8 @@ func (s *Server) adminConsoleStream(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "data: %s\n\n", initData)
 	flusher.Flush()
 
-	// Subscribe to new log lines.
-	listener := &consolelog.Listener{
-		OnLine: func(line string) {
-			data, _ := json.Marshal(map[string]any{"type": "line", "line": line})
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		},
-		OnClear: func() {
-			data, _ := json.Marshal(map[string]any{"type": "clear"})
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		},
-	}
+	// Subscribe to new log lines via buffered channel.
+	listener := consolelog.NewListener(256)
 	s.consoleLog.Subscribe(listener)
 	defer s.consoleLog.Unsubscribe(listener)
 
@@ -1211,6 +1237,15 @@ func (s *Server) adminConsoleStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case ev := <-listener.C:
+			var data []byte
+			if ev.Clear {
+				data, _ = json.Marshal(map[string]any{"type": "clear"})
+			} else {
+				data, _ = json.Marshal(map[string]any{"type": "line", "line": ev.Line})
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
 		case <-keepalive.C:
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
@@ -1610,4 +1645,38 @@ func defaultInt(v, def int) int {
 
 func defaultBool(v, def bool) bool {
 	return v || (!v && def)
+}
+
+// validateChainName rejects combo names that would conflict with routing resolution.
+// Names must be alphanumeric with hyphens/underscores only, no slashes, colons,
+// or leading/trailing whitespace. This prevents ambiguity with "provider/model"
+// and "chain:name" formats in resolveTargets.
+func validateChainName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("combo name is required")
+	}
+	if len(name) > 128 {
+		return fmt.Errorf("combo name too long (max 128 characters)")
+	}
+	if strings.ContainsAny(name, "/:\\@#?") {
+		return fmt.Errorf("combo name cannot contain / : \\ @ # ? characters")
+	}
+	if strings.HasPrefix(name, "chain:") {
+		return fmt.Errorf("combo name cannot start with 'chain:' prefix")
+	}
+	// Must match ^[a-zA-Z0-9][a-zA-Z0-9_-]*$
+	for i, c := range name {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			continue
+		}
+		if c == '-' || c == '_' {
+			if i == 0 {
+				return fmt.Errorf("combo name must start with a letter or digit")
+			}
+			continue
+		}
+		return fmt.Errorf("combo name can only contain letters, digits, hyphens, and underscores")
+	}
+	return nil
 }

@@ -169,12 +169,14 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		// Inject proxy config from credentials into context so the connector's
 		// HTTP client uses the right proxy/relay for this account.
 		callCtx := core.WithProxy(ctx, attempt.Creds)
+		var cancelTimeout context.CancelFunc
 		if p.requestTimeout > 0 {
-			var cancel context.CancelFunc
-			callCtx, cancel = context.WithTimeout(callCtx, p.requestTimeout)
-			defer cancel()
+			callCtx, cancelTimeout = context.WithTimeout(callCtx, p.requestTimeout)
 		}
 		resp, callErr := attempt.Conn.Chat(callCtx, attemptReq, attempt.Creds)
+		if cancelTimeout != nil {
+			cancelTimeout() // cancel immediately to avoid timer goroutine leak
+		}
 		latency := time.Since(started)
 
 		if callErr != nil {

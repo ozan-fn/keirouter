@@ -21,6 +21,10 @@ import {
   Zap,
   Menu,
   X,
+  Settings,
+  Key,
+  CreditCard,
+  User,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -41,29 +45,41 @@ interface NavGroup {
 
 const navGroups: NavGroup[] = [
   {
-    heading: "Routing",
     items: [
       { to: "/", label: "Overview", icon: LayoutGrid, end: true },
-      { to: "/providers", label: "Providers", icon: Boxes },
-      { to: "/endpoints", label: "Endpoints", icon: Network },
-      { to: "/chains", label: "Combos", icon: Layers },
-      { to: "/usage", label: "Usage", icon: BarChart3 },
-      { to: "/quota", label: "Quota Tracker", icon: Clock },
     ],
   },
   {
-    heading: "Tools",
-    items: [{ to: "/cli-tools", label: "CLI Tools", icon: TerminalSquare }],
+    heading: "Traffic & Logic",
+    items: [
+      { to: "/endpoints", label: "Endpoints", icon: Network },
+      { to: "/chains", label: "Combos", icon: Layers },
+      { to: "/skills", label: "Skills", icon: Sparkles },
+    ],
   },
   {
-    heading: "System",
+    heading: "Connections",
     items: [
-      { to: "/media", label: "Media Providers", icon: Image },
+      { to: "/providers", label: "Providers", icon: Boxes },
+      { to: "/media", label: "Media", icon: Image },
       { to: "/proxy-pools", label: "Proxy Pools", icon: Waypoints },
-      { to: "/skills", label: "Skills", icon: Sparkles },
-      { to: "/console", label: "Console Log", icon: ScrollText },
+    ],
+  },
+  {
+    heading: "Cost & Analytics",
+    items: [
+      { to: "/usage", label: "Usage", icon: BarChart3 },
       { to: "/budgets", label: "Budgets", icon: Wallet },
+      { to: "/quota", label: "Quota Tracker", icon: Clock },
       { to: "/settings", label: "Token Saving", icon: Zap },
+    ],
+  },
+  {
+    heading: "Developer",
+    items: [
+      { to: "/keys", label: "API Keys", icon: Key },
+      { to: "/console", label: "Console Log", icon: ScrollText },
+      { to: "/cli-tools", label: "CLI Tools", icon: TerminalSquare },
     ],
   },
 ];
@@ -134,7 +150,7 @@ export function Layout() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onMenuToggle={() => setSidebarOpen((v) => !v)} onSearchOpen={() => setPaletteOpen(true)} />
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-6xl px-4 py-5 sm:px-8 sm:py-8">
+          <div className="mx-auto max-w-6xl px-4 py-4 sm:px-8 sm:py-6">
             <Outlet />
           </div>
         </main>
@@ -198,7 +214,6 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
           <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">Theme</span>
           <ThemeToggle />
         </div>
-        <LogoutButton />
       </div>
     </aside>
   );
@@ -206,7 +221,8 @@ function SidebarContent({ onNavigate }: { onNavigate: () => void }) {
 
 function TopBar({ onMenuToggle, onSearchOpen }: { onMenuToggle: () => void; onSearchOpen: () => void }) {
   return (
-    <header className="flex h-16 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 sm:px-8">
+    <header className="flex h-16 shrink-0 items-center justify-center border-b border-[var(--border)] bg-[var(--bg-elevated)]">
+      <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 sm:px-8">
       {/* Hamburger — visible on mobile only. */}
       <button
         onClick={onMenuToggle}
@@ -236,8 +252,9 @@ function TopBar({ onMenuToggle, onSearchOpen }: { onMenuToggle: () => void; onSe
         </div>
       </button>
 
-      <div className="ml-auto flex items-center">
-        <ProfileMenu />
+        <div className="ml-auto flex items-center">
+          <ProfileMenu />
+        </div>
       </div>
     </header>
   );
@@ -289,43 +306,32 @@ function ProfileMenu() {
           role="menu"
           className="absolute right-0 top-full z-50 mt-2 w-48 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] py-1 shadow-[var(--shadow-float)]"
         >
-          <div className="px-4 py-2.5">
+          <div className="px-4 py-3">
             <p className="text-sm font-medium">Kei</p>
             <p className="text-xs text-[var(--text-muted)]">AI Bender</p>
           </div>
           <div className="my-1 h-px bg-[var(--border)]" />
-          <button
-            role="menuitem"
-            onClick={async () => {
-              await api.logout();
-              qc.invalidateQueries({ queryKey: ["auth-status"] });
-            }}
-            className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-[var(--text)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
-          >
-            <LogOut className="h-4 w-4" strokeWidth={2} />
-            Sign out
-          </button>
+          
+          <div className="py-1">
+            <button
+              role="menuitem"
+              onClick={async () => {
+                await api.logout();
+                qc.invalidateQueries({ queryKey: ["auth-status"] });
+              }}
+              className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm text-danger transition-colors hover:bg-danger/10 focus:outline-none focus-visible:bg-danger/10"
+            >
+              <LogOut className="h-4 w-4" strokeWidth={2} />
+              Sign out
+            </button>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function LogoutButton() {
-  const qc = useQueryClient();
-  return (
-    <button
-      onClick={async () => {
-        await api.logout();
-        qc.invalidateQueries({ queryKey: ["auth-status"] });
-      }}
-      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
-    >
-      <Power className="h-[18px] w-[18px]" strokeWidth={2} />
-      Sign out
-    </button>
-  );
-}
+
 
 export function PageHeader({
   title,
@@ -339,7 +345,7 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="mb-7 flex items-start justify-between gap-4">
+    <div className="mb-5 flex items-start justify-between gap-4">
       <div className="flex items-start gap-3">
         {Icon && (
           <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">

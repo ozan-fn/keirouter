@@ -116,6 +116,8 @@ export interface Chain {
   id: string;
   name: string;
   strategy: string;
+  fallback_provider?: string;
+  fallback_model?: string;
   steps: ChainStep[];
 }
 
@@ -454,9 +456,9 @@ export const api = {
     ),
 
   listChains: () => request<{ chains: Chain[] }>("GET", "/chains"),
-  createChain: (input: { name: string; strategy?: string; steps: { provider: string; model: string }[] }) =>
+  createChain: (input: { name: string; strategy?: string; fallback_provider?: string; fallback_model?: string; steps: { provider: string; model: string }[] }) =>
     request<{ id: string }>("POST", "/chains", input),
-  updateChain: (id: string, patch: { name?: string; strategy?: string; steps?: { provider: string; model: string }[] }) =>
+  updateChain: (id: string, patch: { name?: string; strategy?: string; fallback_provider?: string; fallback_model?: string; steps?: { provider: string; model: string }[] }) =>
     request<{ id: string }>("PATCH", `/chains/${id}`, patch),
   deleteChain: (id: string) => request<void>("DELETE", `/chains/${id}`),
 
@@ -579,17 +581,44 @@ export interface UsageEvent {
  * function that closes the connection.
  */
 export function connectUsageStream(onEvent: (ev: UsageEvent) => void): () => void {
-  const es = new EventSource("/api/usage/stream");
-  es.onmessage = (msg) => {
-    try {
-      const ev = JSON.parse(msg.data) as UsageEvent;
-      onEvent(ev);
-    } catch { /* ignore malformed events */ }
+  let es: EventSource | null = null;
+  let retryCount = 0;
+  const maxRetries = 10;
+  let closed = false;
+
+  function connect() {
+    if (closed) return;
+    es = new EventSource("/api/usage/stream");
+    
+    es.onopen = () => {
+      retryCount = 0; // reset on successful connection
+    };
+    
+    es.onmessage = (msg) => {
+      try {
+        const ev = JSON.parse(msg.data) as UsageEvent;
+        onEvent(ev);
+      } catch { /* ignore malformed events */ }
+    };
+    
+    es.onerror = () => {
+      es?.close();
+      if (closed) return;
+      
+      if (retryCount < maxRetries) {
+        const delay = Math.min(1000 * 2 ** retryCount, 30000);
+        setTimeout(connect, delay);
+        retryCount++;
+      }
+    };
+  }
+
+  connect();
+
+  return () => {
+    closed = true;
+    es?.close();
   };
-  es.onerror = () => {
-    // EventSource auto-reconnects; nothing to do here.
-  };
-  return () => es.close();
 }
 
 export { APIError };
