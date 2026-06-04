@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -46,6 +47,19 @@ func (c *OpenAICompatible) baseURL(creds core.Credentials) string {
 
 func (c *OpenAICompatible) headers(creds core.Credentials) map[string]string {
 	h := map[string]string{}
+	if c.id == "azure" {
+		switch {
+		case creds.AccessToken != "":
+			h["Authorization"] = bearer(creds.AccessToken)
+		case creds.APIKey != "":
+			h["api-key"] = creds.APIKey
+		}
+		if org := creds.Extra["organization"]; org != "" {
+			h["OpenAI-Organization"] = org
+		}
+		return mergeHeaders(h, creds.Headers)
+	}
+
 	switch {
 	case creds.AccessToken != "":
 		h["Authorization"] = bearer(creds.AccessToken)
@@ -53,6 +67,29 @@ func (c *OpenAICompatible) headers(creds core.Credentials) map[string]string {
 		h["Authorization"] = bearer(creds.APIKey)
 	}
 	return mergeHeaders(h, creds.Headers)
+}
+
+func (c *OpenAICompatible) chatCompletionsURL(creds core.Credentials, model string) string {
+	if c.id == "azure" {
+		endpoint := strings.TrimRight(creds.Extra["azure_endpoint"], "/")
+		if endpoint == "" {
+			endpoint = strings.TrimRight(creds.BaseURL, "/")
+		}
+		deployment := creds.Extra["deployment"]
+		if deployment == "" {
+			deployment = model
+		}
+		if deployment == "" {
+			deployment = "gpt-4"
+		}
+		apiVersion := creds.Extra["api_version"]
+		if apiVersion == "" {
+			apiVersion = "2024-10-01-preview"
+		}
+		return endpoint + "/openai/deployments/" + url.PathEscape(deployment) +
+			"/chat/completions?api-version=" + url.QueryEscape(apiVersion)
+	}
+	return joinURL(c.baseURL(creds), "chat/completions")
 }
 
 // Chat performs a non-streaming completion.
@@ -63,7 +100,7 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 
-	url := joinURL(c.baseURL(creds), "chat/completions")
+	url := c.chatCompletionsURL(creds, req.Model)
 
 	// Use streaming JSON decode when the codec supports it — avoids buffering
 	// the entire response body into a []byte before parsing.
@@ -96,12 +133,69 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 // Validate probes the upstream /models endpoint to confirm the credentials are
 // accepted. Returns nil on success.
 func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials) error {
+	if c.id == "azure" {
+		body := []byte(`{"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)
+		err := validateProbe(ctx, c.id, c.chatCompletionsURL(creds, "validate"), body, c.headers(creds))
+		if err != nil {
+			return fmt.Errorf("validation failed for %s: %w", c.id, err)
+		}
+		return nil
+	}
+
 	url := joinURL(c.baseURL(creds), "models")
 	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, c.headers(creds))
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+	if validationAuthError(err) || !validationReachedUpstream(err) {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+
+	// Many 9router-compatible providers either omit /models or reject unknown
+	// probe models with 400/404 while still accepting the credential. Fall back
+	// to a minimal chat request and treat any non-auth HTTP response as proof
+	// that the connection reached the provider.
+	probeModel := firstCatalogModel(c.id)
+	body, _ := json.Marshal(map[string]any{
+		"model": probeModel,
+		"messages": []map[string]string{
+			{"role": "user", "content": "ping"},
+		},
+		"max_tokens": 1,
+		"stream":     false,
+	})
+	if err := validateProbe(ctx, c.id, c.chatCompletionsURL(creds, probeModel), body, c.headers(creds)); err != nil {
 		return fmt.Errorf("validation failed for %s: %w", c.id, err)
 	}
 	return nil
+}
+
+func validateProbe(ctx context.Context, provider, endpoint string, body []byte, headers map[string]string) error {
+	_, err := doJSON(ctx, provider, "validate", endpoint, body, headers)
+	if err == nil {
+		return nil
+	}
+	if validationAuthError(err) || !validationReachedUpstream(err) {
+		return err
+	}
+	return nil
+}
+
+func validationAuthError(err error) bool {
+	return core.AsProviderError(err).Kind == core.ErrAuth
+}
+
+func validationReachedUpstream(err error) bool {
+	return core.AsProviderError(err).StatusCode > 0
+}
+
+func firstCatalogModel(provider string) string {
+	for _, m := range ModelsForProvider(provider) {
+		if m.Kind == core.ServiceLLM {
+			return m.ID
+		}
+	}
+	return "test"
 }
 
 // OpenAICompatibleModelSource implements LiveModelSource by fetching the
@@ -182,7 +276,7 @@ func (c *OpenAICompatible) StreamRaw(ctx context.Context, req *core.ChatRequest,
 		return nil, nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 
-	url := joinURL(c.baseURL(creds), "chat/completions")
+	url := c.chatCompletionsURL(creds, req.Model)
 	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
 	if err != nil {
 		return nil, nil, err
@@ -198,7 +292,7 @@ func (c *OpenAICompatible) Stream(ctx context.Context, req *core.ChatRequest, cr
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 
-	url := joinURL(c.baseURL(creds), "chat/completions")
+	url := c.chatCompletionsURL(creds, req.Model)
 	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
 	if err != nil {
 		return nil, err

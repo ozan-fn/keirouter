@@ -110,6 +110,69 @@ func TestOpenAICompatible_BadRequestNotFallbackable(t *testing.T) {
 	require.False(t, pe.Fallbackable(), "4xx request errors must not trigger fallback")
 }
 
+func TestOpenAICompatible_ValidateAcceptsReachedNonAuthProbeError(t *testing.T) {
+	var chatProbed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":"models endpoint not supported"}`)
+		case "/chat/completions":
+			chatProbed = true
+			require.Equal(t, "Bearer sk-test", r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"probe model not found"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatible("sumopod", srv.URL)
+	require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "sk-test"}))
+	require.True(t, chatProbed, "validation should fall back to a chat probe")
+}
+
+func TestOpenAICompatible_ValidateRejectsAuthError(t *testing.T) {
+	var chatProbed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat/completions" {
+			chatProbed = true
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"bad key"}`)
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatible("sumopod", srv.URL)
+	err := c.Validate(context.Background(), core.Credentials{APIKey: "bad-key"})
+	require.Error(t, err)
+	require.False(t, chatProbed, "auth failures should not fall back")
+}
+
+func TestAzureOpenAI_ChatUsesDeploymentURLAndAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/openai/deployments/prod-gpt/chat/completions", r.URL.Path)
+		require.Equal(t, "2024-10-01-preview", r.URL.Query().Get("api-version"))
+		require.Equal(t, "az-key", r.Header.Get("api-key"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"az1","model":"gpt-4o","choices":[{"message":{"role":"assistant","content":"azure ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatible("azure", "")
+	resp, err := c.Chat(context.Background(), textReq("ignored-model", false), core.Credentials{
+		APIKey: "az-key",
+		Extra: map[string]string{
+			"azure_endpoint": srv.URL,
+			"deployment":     "prod-gpt",
+			"api_version":    "2024-10-01-preview",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "azure ok", resp.Message.TextContent())
+}
+
 func TestAnthropic_Chat(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/messages", r.URL.Path)
@@ -126,6 +189,19 @@ func TestAnthropic_Chat(t *testing.T) {
 	require.Equal(t, "hello back", resp.Message.TextContent())
 	require.Equal(t, core.FinishStop, resp.FinishReason)
 	require.Equal(t, 7, resp.Usage.TotalTokens)
+}
+
+func TestOllama_ValidateProbesTags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/tags", r.URL.Path)
+		require.Equal(t, "Bearer ollama-key", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[]}`)
+	}))
+	defer srv.Close()
+
+	c := NewOllama("ollama", srv.URL)
+	require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "ollama-key"}))
 }
 
 func TestRegistry_DefaultProviders(t *testing.T) {

@@ -41,14 +41,38 @@ export function MediaProviderDetailPage() {
 
   const [label, setLabel] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [baseURL, setBaseURL] = useState("");
+  const [region, setRegion] = useState("");
+  const [accountID, setAccountID] = useState("");
+  const [azureEndpoint, setAzureEndpoint] = useState("");
+  const [azureDeployment, setAzureDeployment] = useState("");
+  const [azureAPIVersion, setAzureAPIVersion] = useState("2024-10-01-preview");
+  const [azureOrganization, setAzureOrganization] = useState("");
   const [error, setError] = useState("");
 
   const create = useMutation({
-    mutationFn: () => api.createAccount({ provider: id!, label, api_key: apiKey }),
+    mutationFn: () => api.createAccount({
+      provider: id!,
+      label,
+      api_key: apiKey || undefined,
+      base_url: baseURL || undefined,
+      region: provider?.regions?.length ? region || provider.default_region : undefined,
+      account_id: accountID || undefined,
+      azure_endpoint: azureEndpoint || undefined,
+      azure_deployment: azureDeployment || undefined,
+      azure_api_version: azureAPIVersion || undefined,
+      azure_organization: azureOrganization || undefined,
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
       setLabel("");
       setApiKey("");
+      setBaseURL("");
+      setAccountID("");
+      setAzureEndpoint("");
+      setAzureDeployment("");
+      setAzureAPIVersion("2024-10-01-preview");
+      setAzureOrganization("");
       setError("");
       toast.success("Account connected", "Upstream credentials saved and encrypted. The account is ready for routing.");
     },
@@ -74,6 +98,17 @@ export function MediaProviderDetailPage() {
   });
 
   const meta = kindMeta[kind ?? ""] ?? kindMeta.embedding;
+  const hasRegions = (provider?.regions?.length ?? 0) > 0;
+  const isNoAuth = provider?.auth_kind === "none" || provider?.auth_modes.includes("none");
+  const isAzure = provider?.id === "azure";
+  const isCloudflare = provider?.id === "cloudflare-ai";
+  const requiresBaseURL = provider?.id === "custom-openai" || provider?.id === "custom-anthropic";
+  const canSubmit =
+    !!provider &&
+    (isNoAuth || !!apiKey.trim()) &&
+    (!isCloudflare || !!accountID.trim()) &&
+    (!isAzure || (!!azureEndpoint.trim() && !!azureDeployment.trim())) &&
+    (!requiresBaseURL || !!baseURL.trim());
 
   if (providers.isLoading) return <Spinner />;
 
@@ -138,21 +173,60 @@ export function MediaProviderDetailPage() {
           {/* Add account form */}
           {provider.drivable && (
             <form
-              className="flex items-end gap-2"
+              className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
               onSubmit={(e) => {
                 e.preventDefault();
-                if (apiKey) create.mutate();
+                if (canSubmit) create.mutate();
               }}
             >
               <Field label="Label (optional)">
-                <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="my-key" className="w-36" />
+                <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="my-key" />
               </Field>
-              <Field label="API Key">
-                <Input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." type="password" className="flex-1" />
-              </Field>
-              <Button type="submit" disabled={create.isPending || !apiKey}>
+              {!isNoAuth && (
+                <Field label="API Key">
+                  <Input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." type="password" />
+                </Field>
+              )}
+              {isCloudflare && (
+                <Field label="Account ID">
+                  <Input value={accountID} onChange={(e) => setAccountID(e.target.value)} placeholder="abc123def456..." />
+                </Field>
+              )}
+              {isAzure ? (
+                <>
+                  <Field label="Azure endpoint">
+                    <Input value={azureEndpoint} onChange={(e) => setAzureEndpoint(e.target.value)} placeholder="https://resource.openai.azure.com" />
+                  </Field>
+                  <Field label="Deployment">
+                    <Input value={azureDeployment} onChange={(e) => setAzureDeployment(e.target.value)} placeholder="gpt-4o" />
+                  </Field>
+                  <Field label="API version">
+                    <Input value={azureAPIVersion} onChange={(e) => setAzureAPIVersion(e.target.value)} placeholder="2024-10-01-preview" />
+                  </Field>
+                  <Field label="Organization">
+                    <Input value={azureOrganization} onChange={(e) => setAzureOrganization(e.target.value)} placeholder="org_..." />
+                  </Field>
+                </>
+              ) : hasRegions ? (
+                <Field label="Region">
+                  <select
+                    value={region || provider.default_region || ""}
+                    onChange={(e) => setRegion(e.target.value)}
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+                  >
+                    {(provider.regions ?? []).map((r) => (
+                      <option key={r.id} value={r.id}>{r.label}</option>
+                    ))}
+                  </select>
+                </Field>
+              ) : (
+                <Field label={requiresBaseURL ? "Base URL" : "Base URL (optional)"}>
+                  <Input value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="for custom endpoints" />
+                </Field>
+              )}
+              <Button type="submit" disabled={create.isPending || !canSubmit} className="self-end">
                 <Plus className="h-4 w-4" />
-                {create.isPending ? "Adding…" : "Add"}
+                {create.isPending ? "Adding…" : isNoAuth ? "Connect" : "Add"}
               </Button>
             </form>
           )}

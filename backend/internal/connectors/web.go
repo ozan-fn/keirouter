@@ -46,6 +46,50 @@ func (c *WebConnector) baseURL(creds core.Credentials) string {
 	return c.defaultBase
 }
 
+// Validate probes a lightweight web-search/fetch endpoint. As in 9router, any
+// reached non-auth response means the credential and provider configuration are
+// accepted; 401/403 still fail.
+func (c *WebConnector) Validate(ctx context.Context, creds core.Credentials) error {
+	var err error
+	switch c.id {
+	case "tavily":
+		body, _ := json.Marshal(map[string]any{"query": "ping", "max_results": 1, "search_depth": "basic"})
+		_, err = doJSON(ctx, c.id, "validate", joinURL(c.baseURL(creds), "search"), body, map[string]string{"Authorization": bearer(creds.APIKey)})
+	case "exa":
+		body, _ := json.Marshal(map[string]any{"query": "ping", "numResults": 1})
+		_, err = doJSON(ctx, c.id, "validate", joinURL(c.baseURL(creds), "search"), body, map[string]string{"x-api-key": creds.APIKey})
+	case "serper":
+		body, _ := json.Marshal(map[string]any{"q": "ping", "num": 1})
+		_, err = doJSON(ctx, c.id, "validate", joinURL(c.baseURL(creds), "search"), body, map[string]string{"X-API-KEY": creds.APIKey})
+	case "brave-search":
+		q := url.Values{}
+		q.Set("q", "ping")
+		q.Set("count", "1")
+		_, err = doJSONMethod(ctx, "GET", c.id, "validate", joinURL(c.baseURL(creds), "web/search")+"?"+q.Encode(), nil, map[string]string{
+			"X-Subscription-Token": creds.APIKey,
+			"Accept":               "application/json",
+		})
+	case "firecrawl":
+		body, _ := json.Marshal(map[string]any{"url": "https://example.com", "formats": []string{"markdown"}})
+		_, err = doJSON(ctx, c.id, "validate", joinURL(c.baseURL(creds), "scrape"), body, map[string]string{"Authorization": bearer(creds.APIKey)})
+	case "jina-reader":
+		headers := map[string]string{"Accept": "text/plain"}
+		if creds.APIKey != "" {
+			headers["Authorization"] = bearer(creds.APIKey)
+		}
+		_, err = doJSONMethod(ctx, "GET", c.id, "validate", strings.TrimRight(c.baseURL(creds), "/")+"/https://example.com", nil, headers)
+	default:
+		return nil
+	}
+	if err == nil {
+		return nil
+	}
+	if validationAuthError(err) || !validationReachedUpstream(err) {
+		return err
+	}
+	return nil
+}
+
 // ---- Web search -------------------------------------------------------------
 
 // Search runs a web search against the configured provider.

@@ -106,6 +106,21 @@ export interface Account {
   created_at: string;
 }
 
+export interface AccountInput {
+  provider: string;
+  label: string;
+  api_key?: string;
+  base_url?: string;
+  region?: string;
+  account_id?: string;
+  azure_endpoint?: string;
+  azure_deployment?: string;
+  azure_api_version?: string;
+  azure_organization?: string;
+  proxy_pool_id?: string;
+  priority?: number;
+}
+
 export interface ChainStep {
   provider: string;
   model: string;
@@ -441,14 +456,14 @@ export const api = {
   deleteKey: (id: string) => request<void>("DELETE", `/keys/${id}`),
 
   listAccounts: () => request<{ accounts: Account[] }>("GET", "/accounts"),
-  createAccount: (input: { provider: string; label: string; api_key: string; base_url?: string; region?: string }) =>
+  createAccount: (input: AccountInput) =>
     request<{ id: string }>("POST", "/accounts", input),
   updateAccount: (id: string, patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string }) =>
     request<{ id: string }>("PATCH", `/accounts/${id}`, patch),
   deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${id}`),
   testAccount: (id: string) =>
     request<{ id: string; status: string; message: string }>("POST", `/accounts/${id}/test`),
-  validateKey: (input: { provider: string; api_key: string; base_url?: string; region?: string }) =>
+  validateKey: (input: AccountInput) =>
     request<{ status: string; message?: string }>("POST", "/validate-key", input),
   accountQuota: (id: string) =>
     request<{ provider: string; supported: boolean; plan_name?: string; message?: string; quotas?: UpstreamQuota[] }>(

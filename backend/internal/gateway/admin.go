@@ -254,11 +254,11 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		ProjectID string `json:"project_id"`
 		// Optional budget fields — when present, a budget is co-created
 		// atomically alongside the key so it is protected from the first request.
-		BudgetLimitUSD   *float64 `json:"budget_limit_usd"`
-		BudgetLimitTokens *int64  `json:"budget_limit_tokens"`
-		BudgetPeriod     string   `json:"budget_period"`
-		BudgetAlertPct   *int     `json:"budget_alert_pct"`
-		BudgetHardCutoff *bool    `json:"budget_hard_cutoff"`
+		BudgetLimitUSD    *float64 `json:"budget_limit_usd"`
+		BudgetLimitTokens *int64   `json:"budget_limit_tokens"`
+		BudgetPeriod      string   `json:"budget_period"`
+		BudgetAlertPct    *int     `json:"budget_alert_pct"`
+		BudgetHardCutoff  *bool    `json:"budget_hard_cutoff"`
 		// Optional model access restriction.
 		AllowedModels []string `json:"allowed_models"`
 	}
@@ -427,7 +427,8 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{
 			"id": a.ID, "provider": a.Provider, "label": a.Label,
 			"auth_kind": a.AuthKind, "priority": a.Priority,
-			"disabled": a.Disabled, "created_at": a.CreatedAt,
+			"disabled": a.Disabled, "proxy_pool_id": a.ProxyPoolID,
+			"created_at": a.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
@@ -435,12 +436,18 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Provider string `json:"provider"`
-		Label    string `json:"label"`
-		APIKey   string `json:"api_key"`
-		BaseURL  string `json:"base_url"`
-		Region   string `json:"region"`
-		Priority int    `json:"priority"`
+		Provider          string `json:"provider"`
+		Label             string `json:"label"`
+		APIKey            string `json:"api_key"`
+		BaseURL           string `json:"base_url"`
+		Region            string `json:"region"`
+		AccountID         string `json:"account_id"`
+		AzureEndpoint     string `json:"azure_endpoint"`
+		AzureDeployment   string `json:"azure_deployment"`
+		AzureAPIVersion   string `json:"azure_api_version"`
+		AzureOrganization string `json:"azure_organization"`
+		ProxyPoolID       string `json:"proxy_pool_id"`
+		Priority          int    `json:"priority"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -449,12 +456,18 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "provider is required")
 		return
 	}
-	if _, ok := connectors.SpecByID(body.Provider); !ok {
+	spec, ok := connectors.SpecByID(body.Provider)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "unknown provider: "+body.Provider)
 		return
 	}
 	if s.vault == nil {
 		writeError(w, http.StatusInternalServerError, "vault not configured")
+		return
+	}
+	authKind := accountAuthKind(spec, body.APIKey)
+	if authKind != store.AuthNone && strings.TrimSpace(body.APIKey) == "" {
+		writeError(w, http.StatusBadRequest, "api_key is required")
 		return
 	}
 
@@ -466,28 +479,44 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.AzureEndpoint != "" {
+		if err := httputil.ValidateBaseURL(body.AzureEndpoint); err != nil {
+			s.log.Warn("blocked suspicious azure_endpoint", "url", body.AzureEndpoint, "error", err)
+			writeError(w, http.StatusBadRequest, "invalid azure_endpoint: URL blocked by security policy")
+			return
+		}
+	}
+	meta, err := providerAccountMetadata(spec, providerMetadataInput{
+		BaseURL:           body.BaseURL,
+		Region:            body.Region,
+		AccountID:         body.AccountID,
+		AzureEndpoint:     body.AzureEndpoint,
+		AzureDeployment:   body.AzureDeployment,
+		AzureAPIVersion:   body.AzureAPIVersion,
+		AzureOrganization: body.AzureOrganization,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	now := time.Now()
+	label := strings.TrimSpace(body.Label)
+	if label == "" {
+		label = spec.DisplayName
+	}
 	acc := store.Account{
 		ID:        uuid.NewString(),
 		TenantID:  adminTenant,
 		Provider:  body.Provider,
-		Label:     body.Label,
-		AuthKind:  store.AuthAPIKey,
+		Label:     label,
+		AuthKind:  authKind,
 		Priority:  defaultInt(body.Priority, 100),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	meta := map[string]string{}
-	if body.Region != "" {
-		meta["region"] = body.Region
-		// Resolve region to base URL automatically.
-		if resolved := connectors.ResolveRegionBaseURL(body.Provider, body.Region); resolved != "" {
-			meta["base_url"] = resolved
-		}
-	}
-	if body.BaseURL != "" {
-		meta["base_url"] = body.BaseURL
+	if body.ProxyPoolID != "" {
+		acc.ProxyPoolID = body.ProxyPoolID
 	}
 	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta}); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
@@ -517,15 +546,30 @@ func (s *Server) adminDeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Provider string `json:"provider"`
-		APIKey   string `json:"api_key"`
-		BaseURL  string `json:"base_url"`
-		Region   string `json:"region"`
+		Provider          string `json:"provider"`
+		APIKey            string `json:"api_key"`
+		BaseURL           string `json:"base_url"`
+		Region            string `json:"region"`
+		AccountID         string `json:"account_id"`
+		AzureEndpoint     string `json:"azure_endpoint"`
+		AzureDeployment   string `json:"azure_deployment"`
+		AzureAPIVersion   string `json:"azure_api_version"`
+		AzureOrganization string `json:"azure_organization"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if body.Provider == "" || body.APIKey == "" {
+	if body.Provider == "" {
+		writeError(w, http.StatusBadRequest, "provider is required")
+		return
+	}
+	spec, ok := connectors.SpecByID(body.Provider)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown provider: "+body.Provider)
+		return
+	}
+	authKind := accountAuthKind(spec, body.APIKey)
+	if authKind != store.AuthNone && strings.TrimSpace(body.APIKey) == "" {
 		writeError(w, http.StatusBadRequest, "provider and api_key are required")
 		return
 	}
@@ -542,22 +586,32 @@ func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.AzureEndpoint != "" {
+		if err := httputil.ValidateBaseURL(body.AzureEndpoint); err != nil {
+			s.log.Warn("blocked suspicious azure_endpoint", "url", body.AzureEndpoint, "error", err)
+			writeError(w, http.StatusBadRequest, "invalid azure_endpoint: URL blocked by security policy")
+			return
+		}
+	}
+	meta, err := providerAccountMetadata(spec, providerMetadataInput{
+		BaseURL:           body.BaseURL,
+		Region:            body.Region,
+		AccountID:         body.AccountID,
+		AzureEndpoint:     body.AzureEndpoint,
+		AzureDeployment:   body.AzureDeployment,
+		AzureAPIVersion:   body.AzureAPIVersion,
+		AzureOrganization: body.AzureOrganization,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "message": err.Error()})
+		return
+	}
 
 	// Build a temporary in-memory account without persisting.
 	acc := store.Account{
 		ID:       "validate-temp",
 		Provider: body.Provider,
-		AuthKind: store.AuthAPIKey,
-	}
-	meta := map[string]string{}
-	if body.Region != "" {
-		meta["region"] = body.Region
-		if resolved := connectors.ResolveRegionBaseURL(body.Provider, body.Region); resolved != "" {
-			meta["base_url"] = resolved
-		}
-	}
-	if body.BaseURL != "" {
-		meta["base_url"] = body.BaseURL
+		AuthKind: authKind,
 	}
 	if err := s.vault.Seal(&acc, vault.NewSecret{APIKey: body.APIKey, Metadata: meta}); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "vault seal failed"))
@@ -865,13 +919,13 @@ func (s *Server) adminListBudgets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminCreateBudget(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ScopeKind   string `json:"scope_kind"`
-		ScopeID     string `json:"scope_id"`
+		ScopeKind   string  `json:"scope_kind"`
+		ScopeID     string  `json:"scope_id"`
 		LimitUSD    float64 `json:"limit_usd"`
 		LimitTokens int64   `json:"limit_tokens"`
-		Period      string `json:"period"`
-		AlertPct    int    `json:"alert_pct"`
-		HardCutoff  *bool  `json:"hard_cutoff"`
+		Period      string  `json:"period"`
+		AlertPct    int     `json:"alert_pct"`
+		HardCutoff  *bool   `json:"hard_cutoff"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -1369,21 +1423,21 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 	// Import providers (accounts) — preserves encrypted credentials.
 	if raw, ok := payload["accounts"]; ok {
 		var accounts []struct {
-			ID               string  `json:"id"`
-			Provider         string  `json:"provider"`
-			Label            string  `json:"label"`
-			AuthKind         string  `json:"auth_kind"`
-			Priority         int     `json:"priority"`
-			Disabled         bool    `json:"disabled"`
-			ProxyPoolID      string  `json:"proxy_pool_id"`
-			Metadata         string  `json:"metadata"`
-			SecretWrappedDEK string  `json:"secret_wrapped_dek"`
-			SecretCiphertext string  `json:"secret_ciphertext"`
-			TokenWrappedDEK  string  `json:"token_wrapped_dek"`
-			TokenCiphertext  string  `json:"token_ciphertext"`
-			RefreshWrappedDEK string `json:"refresh_wrapped_dek"`
-			RefreshCiphertext string `json:"refresh_ciphertext"`
-			TokenExpiresAt   *string `json:"token_expires_at"`
+			ID                string  `json:"id"`
+			Provider          string  `json:"provider"`
+			Label             string  `json:"label"`
+			AuthKind          string  `json:"auth_kind"`
+			Priority          int     `json:"priority"`
+			Disabled          bool    `json:"disabled"`
+			ProxyPoolID       string  `json:"proxy_pool_id"`
+			Metadata          string  `json:"metadata"`
+			SecretWrappedDEK  string  `json:"secret_wrapped_dek"`
+			SecretCiphertext  string  `json:"secret_ciphertext"`
+			TokenWrappedDEK   string  `json:"token_wrapped_dek"`
+			TokenCiphertext   string  `json:"token_ciphertext"`
+			RefreshWrappedDEK string  `json:"refresh_wrapped_dek"`
+			RefreshCiphertext string  `json:"refresh_ciphertext"`
+			TokenExpiresAt    *string `json:"token_expires_at"`
 		}
 		if err := json.Unmarshal(raw, &accounts); err == nil {
 			for _, a := range accounts {
@@ -1459,12 +1513,12 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 	// Import budgets.
 	if raw, ok := payload["budgets"]; ok {
 		var budgets []struct {
-			ScopeKind  string  `json:"scope_kind"`
-			ScopeID    string  `json:"scope_id"`
+			ScopeKind   string `json:"scope_kind"`
+			ScopeID     string `json:"scope_id"`
 			LimitMicros int64  `json:"limit_micros"`
-			Period     string  `json:"period"`
-			AlertPct   int     `json:"alert_pct"`
-			HardCutoff bool    `json:"hard_cutoff"`
+			Period      string `json:"period"`
+			AlertPct    int    `json:"alert_pct"`
+			HardCutoff  bool   `json:"hard_cutoff"`
 		}
 		if err := json.Unmarshal(raw, &budgets); err == nil {
 			for _, b := range budgets {
@@ -1501,16 +1555,16 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 			for _, p := range pools {
 				now := time.Now()
 				pool := store.ProxyPool{
-					ID:        uuid.NewString(),
-					Name:      p.Name,
-					Type:      "http",
-					ProxyURL:  p.ProxyURL,
-					NoProxy:   p.NoProxy,
-					Strict:    p.Strict,
-					IsActive:  defaultBool(p.IsActive, true),
+					ID:         uuid.NewString(),
+					Name:       p.Name,
+					Type:       "http",
+					ProxyURL:   p.ProxyURL,
+					NoProxy:    p.NoProxy,
+					Strict:     p.Strict,
+					IsActive:   defaultBool(p.IsActive, true),
 					TestStatus: "unknown",
-					CreatedAt: now,
-					UpdatedAt: now,
+					CreatedAt:  now,
+					UpdatedAt:  now,
 				}
 				if err := s.pools.Create(ctx, pool); err == nil {
 					imported++
@@ -1582,18 +1636,78 @@ func (s *Server) adminTestProxy(w http.ResponseWriter, r *http.Request) {
 
 // ---- helpers ----------------------------------------------------------------
 
+type providerMetadataInput struct {
+	BaseURL           string
+	Region            string
+	AccountID         string
+	AzureEndpoint     string
+	AzureDeployment   string
+	AzureAPIVersion   string
+	AzureOrganization string
+}
+
+func accountAuthKind(spec connectors.ProviderSpec, apiKey string) store.AuthKind {
+	if strings.TrimSpace(apiKey) == "" && spec.AuthKind == "none" {
+		return store.AuthNone
+	}
+	return store.AuthAPIKey
+}
+
+func providerAccountMetadata(spec connectors.ProviderSpec, in providerMetadataInput) (map[string]string, error) {
+	meta := map[string]string{}
+
+	baseURL := strings.TrimSpace(in.BaseURL)
+	if in.Region != "" {
+		meta["region"] = strings.TrimSpace(in.Region)
+		if resolved := connectors.ResolveRegionBaseURL(spec.ID, in.Region); resolved != "" {
+			baseURL = resolved
+		}
+	}
+	if spec.BaseURL == "" && spec.ID != "azure" && baseURL == "" {
+		return nil, fmt.Errorf("base_url is required for %s", spec.DisplayName)
+	}
+	if baseURL != "" {
+		meta["base_url"] = baseURL
+	}
+
+	switch spec.ID {
+	case "cloudflare-ai":
+		accountID := strings.TrimSpace(in.AccountID)
+		if accountID == "" {
+			return nil, errors.New("account_id is required for Cloudflare Workers AI")
+		}
+		// OpenAICompatible resolves {accountId} placeholders from Extra.
+		meta["accountId"] = accountID
+	case "azure":
+		endpoint := strings.TrimRight(strings.TrimSpace(in.AzureEndpoint), "/")
+		deployment := strings.TrimSpace(in.AzureDeployment)
+		if endpoint == "" {
+			return nil, errors.New("azure_endpoint is required for Azure OpenAI")
+		}
+		if deployment == "" {
+			return nil, errors.New("azure_deployment is required for Azure OpenAI")
+		}
+		meta["azure_endpoint"] = endpoint
+		meta["deployment"] = deployment
+		if v := strings.TrimSpace(in.AzureAPIVersion); v != "" {
+			meta["api_version"] = v
+		}
+		if v := strings.TrimSpace(in.AzureOrganization); v != "" {
+			meta["organization"] = v
+		}
+	}
+
+	return meta, nil
+}
+
 // validateAccountCredentials unseals an account's credentials and, if the
 // connector implements core.Validator, probes the upstream to confirm they are
 // accepted. Returns nil when validation passes or the connector does not support
-// it. Accounts with auth_kind "none" (e.g. local Ollama) skip validation since
-// there are no credentials to verify.
+// it. No-auth accounts still run connector probes when available so local
+// endpoints such as Ollama/SearXNG can verify reachability.
 func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Account) error {
 	if s.conns == nil || s.vault == nil {
 		return nil // can't validate without registry + vault
-	}
-	// Skip validation for no-auth providers — nothing to verify.
-	if acc.AuthKind == store.AuthNone {
-		return nil
 	}
 	conn, err := s.conns.Get(acc.Provider)
 	if err != nil {

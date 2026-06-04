@@ -199,6 +199,7 @@ export function ModelMultiSelect({
     ? createPortal(
         <div
           ref={dropdownRef}
+          onMouseDown={(e) => e.stopPropagation()}
           className="fixed z-[100] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
           style={{ top: rect.bottom + 4, left: rect.left, width: Math.max(rect.width, 360), maxHeight: 420 }}
         >
@@ -298,7 +299,7 @@ export function ModelMultiSelect({
     : null;
 
   return (
-    <div>
+    <div onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
       {/* Selected chips */}
       {value.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
@@ -320,7 +321,7 @@ export function ModelMultiSelect({
                 <span className="max-w-[180px] truncate">{id}</span>
                 <button
                   type="button"
-                  onClick={() => removeChip(id)}
+                  onClick={(e) => { e.stopPropagation(); removeChip(id); }}
                   className="ml-0.5 rounded p-0.5 transition-colors hover:bg-accent-500/20"
                 >
                   <X className="h-3 w-3" />
@@ -335,7 +336,8 @@ export function ModelMultiSelect({
       <div ref={triggerRef}>
         <button
           type="button"
-          onClick={() => {
+          onMouseDown={(e) => {
+            e.stopPropagation();
             setOpen(!open);
             setQuery("");
           }}

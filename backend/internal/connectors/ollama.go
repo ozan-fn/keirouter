@@ -48,6 +48,13 @@ func (c *Ollama) headers(creds core.Credentials) map[string]string {
 	return mergeHeaders(h, creds.Headers)
 }
 
+// Validate probes Ollama's lightweight model-list endpoint. Local Ollama uses
+// no auth; Ollama Cloud sends the configured bearer key.
+func (c *Ollama) Validate(ctx context.Context, creds core.Credentials) error {
+	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", joinURL(c.baseURL(creds), "api/tags"), nil, c.headers(creds))
+	return err
+}
+
 // Chat performs a non-streaming /api/chat call.
 func (c *Ollama) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
 	req.Stream = false

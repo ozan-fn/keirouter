@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, KeyRound, X, Zap, ArrowUp, ArrowDown, CheckCircle, XCircle, ToggleLeft, ToggleRight } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { useToast } from "../components/Toast";
 import {
   Card,
-  SectionHeader,
   CardHeader,
   Button,
   Input,
@@ -52,6 +51,11 @@ export function ProviderDetailPage() {
   const [apiKey, setApiKey] = useState("");
   const [baseURL, setBaseURL] = useState("");
   const [region, setRegion] = useState("");
+  const [accountID, setAccountID] = useState("");
+  const [azureEndpoint, setAzureEndpoint] = useState("");
+  const [azureDeployment, setAzureDeployment] = useState("");
+  const [azureAPIVersion, setAzureAPIVersion] = useState("2024-10-01-preview");
+  const [azureOrganization, setAzureOrganization] = useState("");
   const [error, setError] = useState("");
   const [oauthOpen, setOauthOpen] = useState(false);
   const [kiroOpen, setKiroOpen] = useState(false);
@@ -74,12 +78,22 @@ export function ProviderDetailPage() {
         api_key: apiKey,
         base_url: baseURL || undefined,
         region: hasRegions ? region : undefined,
+        account_id: accountID || undefined,
+        azure_endpoint: azureEndpoint || undefined,
+        azure_deployment: azureDeployment || undefined,
+        azure_api_version: azureAPIVersion || undefined,
+        azure_organization: azureOrganization || undefined,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
       setLabel("");
       setApiKey("");
       setBaseURL("");
+      setAccountID("");
+      setAzureEndpoint("");
+      setAzureDeployment("");
+      setAzureAPIVersion("2024-10-01-preview");
+      setAzureOrganization("");
       setError("");
       setAddKeyOpen(false);
       toast.success("Account connected", `Upstream credentials saved and encrypted. The account is ready for routing.`);
@@ -162,7 +176,11 @@ export function ProviderDetailPage() {
   }
 
   const isKiro = provider.id === "kiro";
-  const supportsApiKey = !isKiro && (provider.auth_modes.includes("api_key") || !oauthProvider);
+  const supportsManualConnect = !isKiro && (
+    provider.auth_modes.includes("api_key") ||
+    provider.auth_modes.includes("none") ||
+    !oauthProvider
+  );
 
   return (
     <>
@@ -210,10 +228,10 @@ export function ProviderDetailPage() {
                     Connect {provider.display_name}
                   </Button>
                 )}
-                {supportsApiKey && (
+                {supportsManualConnect && (
                   <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setAddKeyOpen(true)}>
                     <Plus className="h-3.5 w-3.5" />
-                    Add API key
+                    {provider.auth_kind === "none" ? "Connect" : "Add API key"}
                   </Button>
                 )}
               </div>
@@ -310,13 +328,23 @@ export function ProviderDetailPage() {
           apiKey={apiKey}
           baseURL={baseURL}
           region={region}
+          accountID={accountID}
+          azureEndpoint={azureEndpoint}
+          azureDeployment={azureDeployment}
+          azureAPIVersion={azureAPIVersion}
+          azureOrganization={azureOrganization}
           error={error}
           pending={create.isPending}
           onLabel={setLabel}
           onApiKey={setApiKey}
           onBaseURL={setBaseURL}
           onRegion={setRegion}
-          onSubmit={() => { if (apiKey) create.mutate(); }}
+          onAccountID={setAccountID}
+          onAzureEndpoint={setAzureEndpoint}
+          onAzureDeployment={setAzureDeployment}
+          onAzureAPIVersion={setAzureAPIVersion}
+          onAzureOrganization={setAzureOrganization}
+          onSubmit={() => create.mutate()}
           onClose={() => { setAddKeyOpen(false); setError(""); }}
         />
       )}
@@ -533,12 +561,22 @@ function AddApiKeyModal({
   apiKey,
   baseURL,
   region,
+  accountID,
+  azureEndpoint,
+  azureDeployment,
+  azureAPIVersion,
+  azureOrganization,
   error,
   pending,
   onLabel,
   onApiKey,
   onBaseURL,
   onRegion,
+  onAccountID,
+  onAzureEndpoint,
+  onAzureDeployment,
+  onAzureAPIVersion,
+  onAzureOrganization,
   onSubmit,
   onClose,
 }: {
@@ -548,30 +586,57 @@ function AddApiKeyModal({
   apiKey: string;
   baseURL: string;
   region: string;
+  accountID: string;
+  azureEndpoint: string;
+  azureDeployment: string;
+  azureAPIVersion: string;
+  azureOrganization: string;
   error: string;
   pending: boolean;
   onLabel: (v: string) => void;
   onApiKey: (v: string) => void;
   onBaseURL: (v: string) => void;
   onRegion: (v: string) => void;
+  onAccountID: (v: string) => void;
+  onAzureEndpoint: (v: string) => void;
+  onAzureDeployment: (v: string) => void;
+  onAzureAPIVersion: (v: string) => void;
+  onAzureOrganization: (v: string) => void;
   onSubmit: () => void;
   onClose: () => void;
 }) {
   const [checkStatus, setCheckStatus] = useState<"idle" | "ok" | "error">("idle");
   const [checkMsg, setCheckMsg] = useState("");
   const [checking, setChecking] = useState(false);
+  const isNoAuth = provider.auth_kind === "none" || provider.auth_modes.includes("none");
+  const isAzure = provider.id === "azure";
+  const isCloudflare = provider.id === "cloudflare-ai";
+  const requiresBaseURL = provider.id === "custom-openai" || provider.id === "custom-anthropic";
+  const credentialLabel = isNoAuth ? "Connection" : "API key";
+  const canSubmit =
+    !pending &&
+    (isNoAuth || !!apiKey.trim()) &&
+    (!isCloudflare || !!accountID.trim()) &&
+    (!isAzure || (!!azureEndpoint.trim() && !!azureDeployment.trim())) &&
+    (!requiresBaseURL || !!baseURL.trim());
 
   const handleCheck = async () => {
-    if (!apiKey) return;
+    if (!canSubmit && !isNoAuth) return;
     setChecking(true);
     setCheckStatus("idle");
     setCheckMsg("");
     try {
       const res = await api.validateKey({
         provider: provider.id,
-        api_key: apiKey,
+        label,
+        api_key: apiKey || undefined,
         base_url: baseURL || undefined,
         region: hasRegions ? region : undefined,
+        account_id: accountID || undefined,
+        azure_endpoint: azureEndpoint || undefined,
+        azure_deployment: azureDeployment || undefined,
+        azure_api_version: azureAPIVersion || undefined,
+        azure_organization: azureOrganization || undefined,
       });
       setCheckStatus(res.status === "ok" ? "ok" : "error");
       setCheckMsg(res.message || "");
@@ -605,22 +670,67 @@ function AddApiKeyModal({
           className="space-y-4 px-6 py-5"
           onSubmit={(e) => {
             e.preventDefault();
-            onSubmit();
+            if (canSubmit) onSubmit();
           }}
         >
           <Field label="Label">
             <Input value={label} onChange={(e) => onLabel(e.target.value)} placeholder="personal" />
           </Field>
-          <Field label="API key">
-            <Input
-              type="password"
-              value={apiKey}
-              onChange={(e) => { onApiKey(e.target.value); setCheckStatus("idle"); }}
-              placeholder="sk-..."
-              required
-            />
-          </Field>
-          {hasRegions ? (
+          {!isNoAuth && (
+            <Field label={credentialLabel}>
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => { onApiKey(e.target.value); setCheckStatus("idle"); }}
+                placeholder={provider.id === "xai" ? "xai-..." : "sk-..."}
+                required
+              />
+            </Field>
+          )}
+          {isCloudflare && (
+            <Field label="Cloudflare account ID">
+              <Input
+                value={accountID}
+                onChange={(e) => { onAccountID(e.target.value); setCheckStatus("idle"); }}
+                placeholder="abc123def456..."
+                required
+              />
+            </Field>
+          )}
+          {isAzure ? (
+            <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+              <Field label="Azure endpoint">
+                <Input
+                  value={azureEndpoint}
+                  onChange={(e) => { onAzureEndpoint(e.target.value); setCheckStatus("idle"); }}
+                  placeholder="https://your-resource.openai.azure.com"
+                  required
+                />
+              </Field>
+              <Field label="Deployment name">
+                <Input
+                  value={azureDeployment}
+                  onChange={(e) => { onAzureDeployment(e.target.value); setCheckStatus("idle"); }}
+                  placeholder="gpt-4o"
+                  required
+                />
+              </Field>
+              <Field label="API version">
+                <Input
+                  value={azureAPIVersion}
+                  onChange={(e) => { onAzureAPIVersion(e.target.value); setCheckStatus("idle"); }}
+                  placeholder="2024-10-01-preview"
+                />
+              </Field>
+              <Field label="Organization (optional)">
+                <Input
+                  value={azureOrganization}
+                  onChange={(e) => { onAzureOrganization(e.target.value); setCheckStatus("idle"); }}
+                  placeholder="org_..."
+                />
+              </Field>
+            </div>
+          ) : hasRegions ? (
             <Field label="Region">
               <select
                 value={region}
@@ -635,11 +745,12 @@ function AddApiKeyModal({
               </select>
             </Field>
           ) : (
-            <Field label="Base URL (optional)">
+            <Field label={requiresBaseURL ? "Base URL" : "Base URL (optional)"}>
               <Input
                 value={baseURL}
                 onChange={(e) => onBaseURL(e.target.value)}
                 placeholder="for custom endpoints"
+                required={requiresBaseURL}
               />
             </Field>
           )}
@@ -656,30 +767,19 @@ function AddApiKeyModal({
           {error && <ErrorBanner message={error} />}
 
           <div className="flex gap-3">
-            <Button type="button" variant="ghost" onClick={handleCheck} disabled={checking || !apiKey} className="flex-1">
+            <Button type="button" variant="ghost" onClick={handleCheck} disabled={checking || !canSubmit} className="flex-1">
               <CheckCircle className={`h-4 w-4 ${checking ? "animate-pulse" : ""}`} />
               {checking ? "Checking…" : "Check"}
             </Button>
-            <Button type="submit" disabled={pending || !apiKey} className="flex-1">
+            <Button type="submit" disabled={!canSubmit} className="flex-1">
               <Plus className="h-4 w-4" />
-              {pending ? "Adding…" : "Add account"}
+              {pending ? "Adding…" : isNoAuth ? "Connect" : "Add account"}
             </Button>
           </div>
         </form>
       </div>
     </div>
   );
-}
-
-function flowLabel(flow: string): string {
-  switch (flow) {
-    case "device_code":
-      return "Device code — enter a code on the provider site.";
-    case "authorization_code_pkce":
-      return "Browser sign-in (PKCE).";
-    default:
-      return "Browser sign-in.";
-  }
 }
 
 // ---- OAuth connect modal (reused flow) --------------------------------------
