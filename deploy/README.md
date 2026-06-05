@@ -100,7 +100,7 @@ Deploying KeiRouter on [Coolify](https://coolify.io/) is highly recommended as i
 2. **Select Source**: Choose **Git Repository** (Public) and enter:
    - **Repository URL**: `https://github.com/mydisha/keirouter`
    - **Branch**: `main`
-3. **Build Pack**: Select **Docker Compose** as the build pack. Coolify will automatically detect the `compose.yaml` file in the root directory.
+3. **Build Pack**: Select **Docker Compose** as the build pack. Pastikan Anda mengatur **Docker Compose Location** (atau *Compose file path*) ke `compose.yaml` karena Coolify mungkin mencari `docker-compose.yaml` secara default.
 4. **Configuration**:
    - **Domains**: Enter your custom domain (e.g., `https://keirouter.yourdomain.com`). Coolify will automatically map this to the exposed port.
    - **Port**: Make sure the container port is set to `20180` (this is the port KeiRouter listens on inside the container).

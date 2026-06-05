@@ -114,7 +114,7 @@ handle_existing_dir() {
       echo "  2) Sync     - overwrite it with latest $BRANCH"
       echo "  3) Abort"
       echo ""
-      read -rp "Choose [1/2/3]: " choice
+      read -rp "Choose [1/2/3]: " choice </dev/tty
     fi
 
     case "$choice" in
