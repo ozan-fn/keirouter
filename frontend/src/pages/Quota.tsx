@@ -91,7 +91,7 @@ export function QuotaPage() {
   });
 
   // Subscribe to SSE usage stream for instant cache invalidation. When a new
-  // usage record is inserted (e.g. a combo-mode request completes), the meter
+  // usage record is inserted (e.g. a chain-mode request completes), the meter
   // publishes to the hub, which pushes an SSE event here. We invalidate the
   // quota query so the next render shows fresh data without waiting for the
   // polling interval.
@@ -350,17 +350,43 @@ export function QuotaPage() {
         ) : sorted.length === 0 ? (
           <EmptyState title="No connected accounts" hint="Add a provider account to start tracking quota usage." />
         ) : (
-          <div className="divide-y divide-[var(--border)]">
-            {sorted.map((account) => (
-              <QuotaRow
-                key={account.id}
-                account={account}
-                selected={selected.has(account.id)}
-                onSelect={() => toggleSelect(account.id)}
-                onToggle={() => toggleAccount.mutate({ id: account.id, disabled: account.status !== "paused" })}
-                onDelete={() => deleteAccount.mutate(account.id)}
-              />
-            ))}
+          <div className="flex flex-col">
+            {(() => {
+              // Group accounts by provider
+              const groupedAccounts = providers.map(p => {
+                const pAccounts = sorted.filter(a => a.provider === p);
+                return {
+                  provider: p,
+                  provider_name: pAccounts[0]?.provider_name || p,
+                  accounts: pAccounts
+                };
+              }).filter(g => g.accounts.length > 0);
+
+              return groupedAccounts.map((group, i) => (
+                <div key={group.provider} className={i > 0 ? "border-t border-[var(--border)]" : ""}>
+                  <div className="flex items-center gap-2 bg-[var(--bg-subtle)]/30 px-4 py-2 border-b border-[var(--border)]">
+                    <ProviderIcon provider={group.provider} className="h-5 w-5" />
+                    <span className="text-sm font-semibold capitalize">{group.provider_name}</span>
+                    <span className="text-xs text-[var(--text-muted)] bg-[var(--bg-elevated)] px-1.5 py-0.5 rounded-full border border-[var(--border)]">
+                      {group.accounts.length}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-[var(--border)]">
+                    {group.accounts.map((account) => (
+                      <QuotaRow
+                        key={account.id}
+                        account={account}
+                        selected={selected.has(account.id)}
+                        onSelect={() => toggleSelect(account.id)}
+                        onToggle={() => toggleAccount.mutate({ id: account.id, disabled: account.status !== "paused" })}
+                        onDelete={() => deleteAccount.mutate(account.id)}
+                        hideProviderIcon
+                      />
+                    ))}
+                  </div>
+                </div>
+              ));
+            })()}
           </div>
         )}
       </Card>
@@ -376,12 +402,14 @@ function QuotaRow({
   onSelect,
   onToggle,
   onDelete,
+  hideProviderIcon,
 }: {
   account: QuotaAccount;
   selected: boolean;
   onSelect: () => void;
   onToggle: () => void;
   onDelete: () => void;
+  hideProviderIcon?: boolean;
 }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -417,12 +445,15 @@ function QuotaRow({
         />
 
         {/* Provider icon */}
-        <ProviderIcon provider={account.provider} />
+        {!hideProviderIcon && <ProviderIcon provider={account.provider} />}
 
         {/* Info */}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 pl-1">
           <div className="flex items-center gap-1.5">
-            <span className="text-sm font-semibold capitalize truncate">{account.provider_name}</span>
+            {!hideProviderIcon && <span className="text-sm font-semibold capitalize truncate">{account.provider_name}</span>}
+            <span className={`text-sm ${hideProviderIcon ? "font-medium" : "text-[var(--text-muted)]"} truncate`}>
+              {account.label || account.auth_kind}
+            </span>
             {account.plan_name && <Badge tone="accent">{account.plan_name}</Badge>}
             {depleted && account.status === "active" && <Badge tone="danger">depleted</Badge>}
             {account.status !== "active" && (
@@ -433,8 +464,8 @@ function QuotaRow({
             )}
           </div>
           <p className="truncate text-xs text-[var(--text-muted)]">
-            {account.label || account.auth_kind}
-            {hasQuota && ` · ${quotas.length} quota${quotas.length !== 1 ? "s" : ""}`}
+            {!hideProviderIcon && `${account.label || account.auth_kind} `}
+            {hasQuota ? `${!hideProviderIcon ? "· " : ""}${quotas.length} quota${quotas.length !== 1 ? "s" : ""}` : (!hideProviderIcon ? "" : "No quota configured")}
           </p>
         </div>
 
@@ -619,11 +650,12 @@ function QuotaDetailRow({ quota }: { quota: UpstreamQuota }) {
 
 // ─── Provider Icon ───────────────────────────────────────────────────────────
 
-function ProviderIcon({ provider }: { provider: string }) {
+function ProviderIcon({ provider, className }: { provider: string, className?: string }) {
   const [errored, setErrored] = useState(false);
+  const sizeClass = className || "h-7 w-7";
   if (errored) {
     return (
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--bg-subtle)] text-[10px] font-bold text-[var(--text-muted)]">
+      <div className={`flex shrink-0 items-center justify-center rounded-md bg-[var(--bg-subtle)] text-[10px] font-bold text-[var(--text-muted)] ${sizeClass}`}>
         {provider.slice(0, 2).toUpperCase()}
       </div>
     );

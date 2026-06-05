@@ -111,9 +111,9 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 	var cacheStore cache.Store
 	if cfg.Cache.Backend == "redis" && cfg.Cache.RedisURL != "" {
 		rs, err := cache.NewRedisStore(cache.RedisStoreConfig{
-			URL:       cfg.Cache.RedisURL,
-			TTL:       cfg.Cache.TTL,
-			Logger:    log,
+			URL:    cfg.Cache.RedisURL,
+			TTL:    cfg.Cache.TTL,
+			Logger: log,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("app: redis cache store: %w", err)
@@ -158,8 +158,12 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 		StreamStallTimeout: cfg.Server.StreamStallTimeout,
 	})
 
-	// Resolve frontend dist directory. Check relative to binary, then cwd.
+	// Resolve frontend dist directory. Check common install locations, then cwd.
 	frontendDir := resolveFrontendDir()
+	if frontendDir == "" {
+		log.Warn("dashboard assets not found",
+			"note", "API routes will still work, but the web dashboard will not be served")
+	}
 
 	// Tunnel managers for Cloudflare quick tunnel and Tailscale funnel.
 	cfManager := cloudflare.NewManager(dataDir, cfg.Server.Port, log)
@@ -275,24 +279,36 @@ func loadOrCreateMasterKey(cfg config.Config, dataDir string, log *slog.Logger) 
 	return key, nil
 }
 
-// resolveFrontendDir locates the frontend dist directory. It checks relative
-// to the executable path first (for production builds), then the current
-// working directory (for development).
+// resolveFrontendDir locates the frontend dist directory. The installer and
+// Docker image put assets under /usr/local/share/keirouter, while development
+// builds keep them in frontend/dist.
 func resolveFrontendDir() string {
 	candidates := []string{
+		os.Getenv("KEIROUTER_FRONTEND_DIR"),
+		"/usr/local/share/keirouter/frontend/dist",
+		"/usr/share/keirouter/frontend/dist",
+		"/opt/keirouter/frontend/dist",
+		"/usr/local/frontend/dist",
 		"frontend/dist",
 		"../frontend/dist",
 		"../../frontend/dist",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".keirouter", "frontend", "dist"))
 	}
 	// Also try relative to the executable.
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
 		candidates = append(candidates,
 			filepath.Join(dir, "frontend", "dist"),
+			filepath.Join(dir, "..", "share", "keirouter", "frontend", "dist"),
 			filepath.Join(dir, "..", "frontend", "dist"),
 		)
 	}
 	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
 		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
 			abs, _ := filepath.Abs(c)
 			return abs

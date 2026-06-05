@@ -1,0 +1,26 @@
+services:
+  keirouter:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KEIROUTER_DATABASE__DRIVER: postgres
+      KEIROUTER_DATABASE__DSN: "postgres://keirouter:${POSTGRES_PASSWORD:-keirouter}@postgres:5432/keirouter?sslmode=disable"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keirouter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-keirouter}
+      POSTGRES_DB: keirouter
+    volumes:
+      - keirouter-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keirouter -d keirouter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  keirouter-pg:

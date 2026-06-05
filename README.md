@@ -53,19 +53,37 @@ It's built with Go, which means it’s incredibly lightweight (using barely ~20M
 
 ## 🚀 Let's get started!
 
-### 1. Install KeiRouter
-You can install it in a snap using our quick script (make sure you have Go 1.22+ and Node.js 20+):
+### 1. Install & Run (One Line!)
+Make sure you have Go 1.24+ and Node.js 20+, then paste this:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/quickstart.sh | bash
 ```
 
-*Prefer Docker? We've got you covered:*
+That's it! No manual cloning, no `.env`, no config files. Everything is automatic:
+- Clones the repo to `~/keirouter`
+- Installs dependencies
+- Starts backend on `:20180` and dashboard on `:5180`
+- Default dashboard password: `keirouter`
+
+> **Already have the repo?** Just run `make setup` in the project root.
+
+**Prefer Docker?** No Go/Node.js needed:
 ```bash
-docker compose -f deploy/compose.yaml up -d --build
+curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash -s -- --docker
 ```
+
+**VPS / Coolify / Production?**
+```bash
+git clone https://github.com/mydisha/keirouter.git
+cd keirouter
+cp .env.example .env   # set KEIROUTER_MASTER_KEY for production
+docker compose up -d --build
+```
+
+See [deploy/README.md](deploy/README.md) for VPS, Postgres, and Coolify notes.
 
 ### 2. Set up your Dashboard
-Once it's running, open your browser and go to **http://localhost:20180**. 
+For the local quickstart, open **http://localhost:5180**. For Docker or the installed production server, open **http://localhost:20180**.
 Log in with the default password: `keirouter` (it will ask you to change this immediately for security).
 
 You can also create an API key directly from the terminal without the dashboard:
@@ -108,7 +126,7 @@ Curious how it works under the hood? Here's the life of a request:
 5. **Meter:** Logs how many tokens you used so you can view it on the dashboard.
 
 ## ⚙️ Configuration
-By default, KeiRouter uses an embedded SQLite database (zero config required!). If you are deploying it for a team, you can use PostgreSQL. Just copy `config.example.yaml` and run with `-config`, or use environment variables like `KEIROUTER_SERVER__PORT=8080`.
+By default, KeiRouter uses an embedded SQLite database (zero config required!). If you are deploying it for a team, you can use PostgreSQL. Just copy `config.example.yaml` and run with `-config`, or use environment variables like `KEIROUTER_SERVER__PORT=8080`. Docker/Coolify examples live in [deploy/README.md](deploy/README.md).
 
 ## 🔒 Security Notes
 - The admin API (`/api/*`) is restricted to your local machine by default. If you expose it to the internet, put it behind a reverse proxy and set a stable `master_key`!
@@ -117,7 +135,8 @@ By default, KeiRouter uses an embedded SQLite database (zero config required!). 
 ## 🧑‍💻 Development & Contributing
 Want to hack on KeiRouter?
 ```bash
-make dev   # Runs the backend on :20180 and dashboard on :5180
+make setup   # First time: installs deps + starts backend (:20180) and dashboard (:5180)
+make dev     # After first time: just starts the servers
 ```
 Contributions are always welcome! Check out [CONTRIBUTING.md](CONTRIBUTING.md) to see how you can get involved.
 

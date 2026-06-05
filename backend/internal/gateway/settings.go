@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/mydisha/keirouter/backend/internal/caveman"
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
 	"github.com/mydisha/keirouter/backend/internal/terse"
@@ -33,7 +36,7 @@ type EndpointSettings struct {
 	TerseLevel   string `json:"terse_level"`
 
 	// Routing strategy fields (mirrors 9router).
-	RoutingStrategy  string `json:"routing_strategy"`   // "fill-first" | "round-robin"
+	RoutingStrategy  string `json:"routing_strategy"`   // "fill-first" | "round-robin" | "smart-round-robin"
 	StickyLimit      int    `json:"sticky_limit"`       // calls per account before switching
 	ComboStrategy    string `json:"combo_strategy"`     // "fallback" | "round-robin"
 	ComboStickyLimit int    `json:"combo_sticky_limit"` // calls per combo model before switching
@@ -185,7 +188,7 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	if patch.RoutingStrategy != nil {
 		normalized, ok := normalizeAccountRoutingStrategy(*patch.RoutingStrategy)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "routing_strategy must be fill-first or round-robin")
+			writeError(w, http.StatusBadRequest, "routing_strategy must be fill-first, round-robin, or smart-round-robin")
 			return
 		}
 		current.RoutingStrategy = normalized
@@ -250,15 +253,45 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, current)
 }
 
-func (s *Server) endpointPlanOptions(ctx context.Context, opts dispatch.PlanOptions) dispatch.PlanOptions {
+func (s *Server) endpointPlanOptions(ctx context.Context, opts dispatch.PlanOptions, targets []dispatch.Target, affinityKey string) dispatch.PlanOptions {
 	es := s.loadEndpointSettings(ctx)
-	if es.RoutingStrategy == string(dispatch.StrategyRoundRobin) {
+	switch es.RoutingStrategy {
+	case string(dispatch.StrategyRoundRobin):
 		opts.AccountStrategy = dispatch.StrategyRoundRobin
 		opts.AccountStickyLimit = es.StickyLimit
+	case string(dispatch.StrategySmartRoundRobin):
+		opts.AccountStrategy = dispatch.StrategySmartRoundRobin
+		opts.AccountStickyLimit = es.StickyLimit
+		opts.AccountAffinityKey = affinityKey
 	}
 	if opts.Strategy == dispatch.StrategyRoundRobin || es.ComboStrategy == string(dispatch.StrategyRoundRobin) {
 		opts.Strategy = dispatch.StrategyRoundRobin
 		opts.StickyLimit = es.ComboStickyLimit
+	}
+	for _, target := range targets {
+		ps := s.loadProviderRoutingSettings(ctx, target.Provider)
+		if ps.RoutingStrategy == "inherit" {
+			continue
+		}
+		if opts.ProviderAccountStrategies == nil {
+			opts.ProviderAccountStrategies = map[string]dispatch.AccountRoutingOptions{}
+		}
+		route := dispatch.AccountRoutingOptions{
+			StickyLimit: ps.StickyLimit,
+		}
+		if ps.AffinityTTLMinutes > 0 {
+			route.AffinityTTL = time.Duration(ps.AffinityTTLMinutes) * time.Minute
+		}
+		switch ps.RoutingStrategy {
+		case string(dispatch.StrategyRoundRobin):
+			route.Strategy = dispatch.StrategyRoundRobin
+		case string(dispatch.StrategySmartRoundRobin):
+			route.Strategy = dispatch.StrategySmartRoundRobin
+			route.AffinityKey = affinityKey
+		default:
+			route.Strategy = dispatch.StrategyFallback
+		}
+		opts.ProviderAccountStrategies[target.Provider] = route
 	}
 	return opts
 }
@@ -269,6 +302,8 @@ func normalizeAccountRoutingStrategy(raw string) (string, bool) {
 		return "fill-first", true
 	case "round-robin", "round_robin", "roundrobin":
 		return string(dispatch.StrategyRoundRobin), true
+	case "smart-round-robin", "smart_round_robin", "smartroundrobin", "smart":
+		return string(dispatch.StrategySmartRoundRobin), true
 	default:
 		return "", false
 	}
@@ -287,6 +322,130 @@ func normalizeComboRoutingStrategy(raw string) (string, bool) {
 
 func normalizeStrategyToken(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// ---- provider routing settings --------------------------------------------
+
+const providerRoutingPrefix = "provider_routing_"
+
+// ProviderRoutingSettings optionally overrides account routing for one
+// provider. Inherit uses the global EndpointSettings account strategy.
+type ProviderRoutingSettings struct {
+	RoutingStrategy    string `json:"routing_strategy"` // inherit | fill-first | round-robin | smart-round-robin
+	StickyLimit        int    `json:"sticky_limit"`
+	AffinityTTLMinutes int    `json:"affinity_ttl_minutes"`
+}
+
+func defaultProviderRoutingSettings() ProviderRoutingSettings {
+	return ProviderRoutingSettings{
+		RoutingStrategy:    "inherit",
+		StickyLimit:        3,
+		AffinityTTLMinutes: int(dispatch.DefaultAffinityTTL / time.Minute),
+	}
+}
+
+func (s *Server) loadProviderRoutingSettings(ctx context.Context, provider string) ProviderRoutingSettings {
+	def := defaultProviderRoutingSettings()
+	if s.settings == nil || provider == "" {
+		return def
+	}
+	raw, err := s.settings.Get(ctx, providerRoutingPrefix+provider)
+	if err != nil || raw == "" {
+		return def
+	}
+	var ps ProviderRoutingSettings
+	if err := json.Unmarshal([]byte(raw), &ps); err != nil {
+		return def
+	}
+	if normalized, ok := normalizeProviderRoutingStrategy(ps.RoutingStrategy); ok {
+		ps.RoutingStrategy = normalized
+	} else {
+		ps.RoutingStrategy = def.RoutingStrategy
+	}
+	if ps.StickyLimit <= 0 {
+		ps.StickyLimit = def.StickyLimit
+	}
+	if ps.AffinityTTLMinutes <= 0 {
+		ps.AffinityTTLMinutes = def.AffinityTTLMinutes
+	}
+	return ps
+}
+
+func normalizeProviderRoutingStrategy(raw string) (string, bool) {
+	switch normalizeStrategyToken(raw) {
+	case "", "inherit":
+		return "inherit", true
+	case "fill-first", "fill_first", "priority", "fallback":
+		return "fill-first", true
+	case "round-robin", "round_robin", "roundrobin":
+		return string(dispatch.StrategyRoundRobin), true
+	case "smart-round-robin", "smart_round_robin", "smartroundrobin", "smart":
+		return string(dispatch.StrategySmartRoundRobin), true
+	default:
+		return "", false
+	}
+}
+
+func (s *Server) adminGetProviderRouting(w http.ResponseWriter, r *http.Request) {
+	provider := chi.URLParam(r, "id")
+	if _, ok := connectors.SpecByID(provider); !ok {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.loadProviderRoutingSettings(r.Context(), provider))
+}
+
+func (s *Server) adminUpdateProviderRouting(w http.ResponseWriter, r *http.Request) {
+	if s.settings == nil {
+		writeError(w, http.StatusInternalServerError, "settings store not configured")
+		return
+	}
+	provider := chi.URLParam(r, "id")
+	if _, ok := connectors.SpecByID(provider); !ok {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+	current := s.loadProviderRoutingSettings(r.Context(), provider)
+	var patch struct {
+		RoutingStrategy    *string `json:"routing_strategy"`
+		StickyLimit        *int    `json:"sticky_limit"`
+		AffinityTTLMinutes *int    `json:"affinity_ttl_minutes"`
+	}
+	if !decodeJSON(w, r, &patch) {
+		return
+	}
+	if patch.RoutingStrategy != nil {
+		normalized, ok := normalizeProviderRoutingStrategy(*patch.RoutingStrategy)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "routing_strategy must be inherit, fill-first, round-robin, or smart-round-robin")
+			return
+		}
+		current.RoutingStrategy = normalized
+	}
+	if patch.StickyLimit != nil {
+		if *patch.StickyLimit < 1 {
+			writeError(w, http.StatusBadRequest, "sticky_limit must be at least 1")
+			return
+		}
+		current.StickyLimit = *patch.StickyLimit
+	}
+	if patch.AffinityTTLMinutes != nil {
+		if *patch.AffinityTTLMinutes < 1 {
+			writeError(w, http.StatusBadRequest, "affinity_ttl_minutes must be at least 1")
+			return
+		}
+		current.AffinityTTLMinutes = *patch.AffinityTTLMinutes
+	}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.settings.Set(r.Context(), providerRoutingPrefix+provider, string(raw)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, current)
 }
 
 // ---- access settings --------------------------------------------------------

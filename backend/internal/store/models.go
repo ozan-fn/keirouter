@@ -195,3 +195,13 @@ type TargetRotation struct {
 	HitCount  int
 	UpdatedAt time.Time
 }
+
+// AccountAffinity pins a stable conversation/request key to an account. The
+// dispatcher uses it for smart round-robin so a conversation keeps context on
+// the same upstream account while new conversations still spread by rotation.
+type AccountAffinity struct {
+	ScopeKey  string
+	AccountID string
+	ExpiresAt time.Time
+	UpdatedAt time.Time
+}

@@ -26,6 +26,9 @@ import (
 func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/providers", s.adminListProviders)
 	r.Get("/providers/{id}/models", s.adminProviderModels)
+	r.Get("/providers/{id}/routing", s.adminGetProviderRouting)
+	r.Post("/providers/{id}/routing", s.adminUpdateProviderRouting)
+	r.Patch("/providers/{id}/routing", s.adminUpdateProviderRouting)
 
 	r.Get("/keys", s.adminListKeys)
 	r.Post("/keys", s.adminCreateKey)
@@ -269,6 +272,14 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if body.BudgetLimitUSD != nil && *body.BudgetLimitUSD < 0 {
+		writeError(w, http.StatusBadRequest, "budget_limit_usd must not be negative")
+		return
+	}
+	if body.BudgetLimitTokens != nil && *body.BudgetLimitTokens < 0 {
+		writeError(w, http.StatusBadRequest, "budget_limit_tokens must not be negative")
+		return
+	}
 
 	// Generate key material (crypto operations, no DB write yet).
 	issued, err := s.identity.Generate(adminTenant, body.ProjectID, body.Name)
@@ -317,7 +328,15 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		if body.BudgetAlertPct != nil {
 			alertPct = *body.BudgetAlertPct
 		}
-		period := defaultStr(body.BudgetPeriod, "monthly")
+		if alertPct < 1 || alertPct > 100 {
+			writeError(w, http.StatusBadRequest, "budget_alert_pct must be between 1 and 100")
+			return
+		}
+		period, ok := normalizeBudgetPeriod(body.BudgetPeriod)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid budget period")
+			return
+		}
 		var limitMicros int64
 		if body.BudgetLimitUSD != nil {
 			limitMicros = int64(*body.BudgetLimitUSD * 1_000_000)
@@ -935,6 +954,47 @@ func (s *Server) adminCreateBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "limit_usd or limit_tokens must be positive")
 		return
 	}
+	if body.LimitUSD < 0 {
+		writeError(w, http.StatusBadRequest, "limit_usd must not be negative")
+		return
+	}
+	if body.LimitTokens < 0 {
+		writeError(w, http.StatusBadRequest, "limit_tokens must not be negative")
+		return
+	}
+	period, ok := normalizeBudgetPeriod(body.Period)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid budget period")
+		return
+	}
+	alertPct := defaultInt(body.AlertPct, 80)
+	if alertPct < 1 || alertPct > 100 {
+		writeError(w, http.StatusBadRequest, "alert_pct must be between 1 and 100")
+		return
+	}
+	scopeKind := store.BudgetScope(defaultStr(body.ScopeKind, string(store.ScopeTenant)))
+	scopeID := strings.TrimSpace(body.ScopeID)
+	switch scopeKind {
+	case store.ScopeTenant:
+		scopeID = defaultStr(scopeID, adminTenant)
+	case store.ScopeAPIKey:
+		if scopeID == "" {
+			writeError(w, http.StatusBadRequest, "scope_id is required for api_key budgets")
+			return
+		}
+		if _, err := s.identity.Get(r.Context(), scopeID); err != nil {
+			writeError(w, http.StatusBadRequest, "api key not found")
+			return
+		}
+	case store.ScopeProject:
+		if scopeID == "" {
+			writeError(w, http.StatusBadRequest, "scope_id is required for project budgets")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "invalid budget scope")
+		return
+	}
 	hardCutoff := true
 	if body.HardCutoff != nil {
 		hardCutoff = *body.HardCutoff
@@ -944,12 +1004,12 @@ func (s *Server) adminCreateBudget(w http.ResponseWriter, r *http.Request) {
 	b := store.Budget{
 		ID:          uuid.NewString(),
 		TenantID:    adminTenant,
-		ScopeKind:   store.BudgetScope(defaultStr(body.ScopeKind, string(store.ScopeTenant))),
-		ScopeID:     defaultStr(body.ScopeID, adminTenant),
+		ScopeKind:   scopeKind,
+		ScopeID:     scopeID,
 		LimitMicros: int64(body.LimitUSD * 1_000_000),
 		LimitTokens: body.LimitTokens,
-		Period:      defaultStr(body.Period, "monthly"),
-		AlertPct:    defaultInt(body.AlertPct, 80),
+		Period:      period,
+		AlertPct:    alertPct,
 		HardCutoff:  hardCutoff,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -992,23 +1052,40 @@ func (s *Server) adminUpdateBudget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.LimitUSD != nil {
-		if *body.LimitUSD <= 0 {
-			writeError(w, http.StatusBadRequest, "limit_usd must be positive")
+		if *body.LimitUSD < 0 {
+			writeError(w, http.StatusBadRequest, "limit_usd must not be negative")
 			return
 		}
 		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
 	}
 	if body.LimitTokens != nil {
+		if *body.LimitTokens < 0 {
+			writeError(w, http.StatusBadRequest, "limit_tokens must not be negative")
+			return
+		}
 		existing.LimitTokens = *body.LimitTokens
 	}
 	if body.Period != nil {
-		existing.Period = *body.Period
+		period, ok := normalizeBudgetPeriod(*body.Period)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid budget period")
+			return
+		}
+		existing.Period = period
 	}
 	if body.AlertPct != nil {
+		if *body.AlertPct < 1 || *body.AlertPct > 100 {
+			writeError(w, http.StatusBadRequest, "alert_pct must be between 1 and 100")
+			return
+		}
 		existing.AlertPct = *body.AlertPct
 	}
 	if body.HardCutoff != nil {
 		existing.HardCutoff = *body.HardCutoff
+	}
+	if existing.LimitMicros <= 0 && existing.LimitTokens <= 0 {
+		writeError(w, http.StatusBadRequest, "limit_usd or limit_tokens must be positive")
+		return
 	}
 	existing.UpdatedAt = time.Now()
 
@@ -1017,6 +1094,16 @@ func (s *Server) adminUpdateBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func normalizeBudgetPeriod(period string) (string, bool) {
+	period = defaultStr(period, "monthly")
+	switch period {
+	case "daily", "weekly", "monthly", "total":
+		return period, true
+	default:
+		return "", false
+	}
 }
 
 // adminBudgetStatus returns all budgets enriched with current-period spend data.

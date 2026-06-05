@@ -164,6 +164,52 @@ func (r *RoutingRepo) SetTargetRotationState(ctx context.Context, state TargetRo
 	return nil
 }
 
+// Account affinity ----------------------------------------------------------
+
+// GetAccountAffinity returns the account pinned to a routing affinity key.
+// Missing rows are treated as empty affinity.
+func (r *RoutingRepo) GetAccountAffinity(ctx context.Context, scopeKey string) (AccountAffinity, error) {
+	q := r.db.rebind(`SELECT scope_key, account_id, expires_at, updated_at FROM account_affinity WHERE scope_key = ?`)
+	var state AccountAffinity
+	var expires string
+	var updated string
+	err := r.db.sql.QueryRowContext(ctx, q, scopeKey).Scan(&state.ScopeKey, &state.AccountID, &expires, &updated)
+	if err == sql.ErrNoRows {
+		return AccountAffinity{ScopeKey: scopeKey}, nil
+	}
+	if err != nil {
+		return AccountAffinity{}, fmt.Errorf("store: get account affinity: %w", err)
+	}
+	state.ExpiresAt = parseTime(expires)
+	state.UpdatedAt = parseTime(updated)
+	return state, nil
+}
+
+// SetAccountAffinity pins an affinity key to an account until ExpiresAt.
+func (r *RoutingRepo) SetAccountAffinity(ctx context.Context, state AccountAffinity) error {
+	q := r.db.rebind(`INSERT INTO account_affinity (scope_key, account_id, expires_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(scope_key) DO UPDATE SET
+			account_id = excluded.account_id,
+			expires_at = excluded.expires_at,
+			updated_at = excluded.updated_at`)
+	_, err := r.db.sql.ExecContext(ctx, q, state.ScopeKey, state.AccountID, formatTime(state.ExpiresAt), formatTime(time.Now()))
+	if err != nil {
+		return fmt.Errorf("store: set account affinity: %w", err)
+	}
+	return nil
+}
+
+// ExpireAccountAffinities removes expired smart-routing pins.
+func (r *RoutingRepo) ExpireAccountAffinities(ctx context.Context) (int64, error) {
+	q := r.db.rebind(`DELETE FROM account_affinity WHERE expires_at < ?`)
+	res, err := r.db.sql.ExecContext(ctx, q, formatTime(time.Now()))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // randHex generates a random hex string of the given byte length.
 func randHex(n int) string {
 	b := make([]byte, n)

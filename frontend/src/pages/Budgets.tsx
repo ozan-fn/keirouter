@@ -1,9 +1,27 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Wallet, Plus, Trash2, Pencil, AlertTriangle, ShieldCheck, KeyRound, Building2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  Check,
+  ChevronDown,
+  Clock3,
+  DollarSign,
+  Gauge,
+  KeyRound,
+  Lock,
+  Pencil,
+  Plus,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Wallet,
+} from "lucide-react";
 import { api, type BudgetStatus, type APIKey } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
+import { FormattedTokenInput } from "../components/ModelSelect";
 import {
   Card,
   SectionHeader,
@@ -44,43 +62,19 @@ function progressColor(pct: number, alertPct: number): string {
   return "bg-emerald-500";
 }
 
-// Format number with thousand separators: 1000000 → "1.000.000"
-function formatTokenLimit(value: string): string {
-  if (!value) return "";
-  const n = parseInt(value.replace(/\D/g, ""), 10);
-  if (isNaN(n)) return "";
-  return n.toLocaleString("id-ID");
+function parseUSD(value: string): number {
+  const n = parseFloat(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/* ── Formatted Token Input ─────────────────────────────────────────── */
+function parseTokens(value: string): number {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
 
-function FormattedTokenInput({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  const [focused, setFocused] = useState(false);
-  const formatted = formatTokenLimit(value);
-
-  return (
-    <input
-      type="text"
-      inputMode="numeric"
-      value={focused ? value : formatted}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onChange={(e) => {
-        const raw = e.target.value.replace(/[^\d]/g, "");
-        onChange(raw);
-      }}
-      placeholder={placeholder ? formatTokenLimit(placeholder) : undefined}
-      className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
-    />
-  );
+function clampAlertPct(value: number): number {
+  if (!Number.isFinite(value)) return 80;
+  return Math.min(100, Math.max(1, value));
 }
 
 export function BudgetsPage() {
@@ -187,6 +181,7 @@ export function BudgetsPage() {
         onClose={() => setShowCreate(false)}
         title="Create budget"
         subtitle="Set a spending cap for a scope and period."
+        maxWidth="max-w-2xl"
       >
         <CreateBudgetForm
           keys={keys.data?.keys ?? []}
@@ -200,9 +195,11 @@ export function BudgetsPage() {
         onClose={() => setEditingId(null)}
         title="Edit budget"
         subtitle={editingBudget ? `Editing ${editingBudget.scope_name} ${editingBudget.period} budget` : undefined}
+        maxWidth="max-w-2xl"
       >
         {editingBudget && (
           <EditBudgetForm
+            key={editingBudget.id}
             budget={editingBudget}
             onClose={() => setEditingId(null)}
           />
@@ -367,6 +364,368 @@ function BudgetRow({
   );
 }
 
+/* ── API key searchable select ────────────────────────────────────── */
+
+function APIKeySearchSelect({
+  keys,
+  value,
+  onChange,
+}: {
+  keys: APIKey[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [rect, setRect] = useState<DOMRect | null>(null);
+
+  const selected = useMemo(() => keys.find((k) => k.id === value), [keys, value]);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return keys;
+    return keys.filter((k) => {
+      const allowed = (k.allowed_models ?? []).join(" ");
+      return `${k.name} ${k.display} ${allowed}`.toLowerCase().includes(q);
+    });
+  }, [keys, query]);
+
+  const updateRect = useCallback(() => {
+    if (triggerRef.current) setRect(triggerRef.current.getBoundingClientRect());
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    updateRect();
+    const onScroll = () => updateRect();
+    const onResize = () => updateRect();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open, updateRect]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as globalThis.Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (dropdownRef.current?.contains(target)) return;
+      setOpen(false);
+      setQuery("");
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setQuery("");
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const choose = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setQuery("");
+  };
+
+  const dropdown = open && rect
+    ? createPortal(
+        <div
+          ref={dropdownRef}
+          onMouseDown={(e) => e.stopPropagation()}
+          className="fixed z-[100] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
+          style={{ top: rect.bottom + 6, left: rect.left, width: Math.max(rect.width, 360), maxHeight: 420 }}
+        >
+          <div className="border-b border-[var(--border)] p-2">
+            <div className="flex items-center gap-2 rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2">
+              <Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search API keys…"
+                className="w-full bg-transparent text-sm outline-none placeholder:text-[var(--text-muted)]"
+              />
+            </div>
+          </div>
+          <div className="max-h-72 overflow-y-auto p-1">
+            {filtered.length === 0 ? (
+              <p className="px-3 py-6 text-center text-xs text-[var(--text-muted)]">No API keys found</p>
+            ) : (
+              filtered.map((k) => {
+                const active = k.id === value;
+                const modelCount = k.allowed_models?.length ?? 0;
+                return (
+                  <button
+                    key={k.id}
+                    type="button"
+                    onClick={() => choose(k.id)}
+                    className={`flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-[var(--bg-subtle)] ${
+                      active ? "bg-accent-500/10" : ""
+                    }`}
+                    role="option"
+                    aria-selected={active}
+                  >
+                    <span
+                      className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+                        active ? "border-accent-500 bg-accent-500 text-white" : "border-[var(--border)]"
+                      }`}
+                    >
+                      {active && <Check className="h-3.5 w-3.5" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">{k.name}</span>
+                        {k.disabled && <Badge tone="danger">disabled</Badge>}
+                      </span>
+                      <span className="mt-0.5 block truncate font-mono text-xs text-[var(--text-muted)]">{k.display}</span>
+                      {modelCount > 0 && (
+                        <span className="mt-1 block truncate text-xs text-[var(--text-muted)]">
+                          {modelCount} model rule{modelCount > 1 ? "s" : ""}: {k.allowed_models?.join(", ")}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+
+  return (
+    <div ref={triggerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex min-h-11 w-full items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--bg-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        {selected ? (
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{selected.name}</span>
+            <span className="block truncate font-mono text-xs text-[var(--text-muted)]">{selected.display}</span>
+          </span>
+        ) : (
+          <span className="text-[var(--text-muted)]">Select an API key…</span>
+        )}
+        <ChevronDown className={`h-4 w-4 shrink-0 text-[var(--text-muted)] transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {dropdown}
+    </div>
+  );
+}
+
+function SelectedKeySummary({ keyRecord }: { keyRecord?: APIKey }) {
+  if (!keyRecord) {
+    return (
+      <div className="rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+        <p className="text-sm font-medium">No API key selected</p>
+        <p className="mt-1 text-xs text-[var(--text-muted)]">Pick a key to attach this budget to one credential only.</p>
+      </div>
+    );
+  }
+
+  const models = keyRecord.allowed_models ?? [];
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-sm font-medium">{keyRecord.name}</p>
+        {keyRecord.disabled && <Badge tone="danger">disabled</Badge>}
+        {models.length > 0 ? <Badge tone="accent">{models.length} model rule{models.length > 1 ? "s" : ""}</Badge> : <Badge>all models</Badge>}
+      </div>
+      <p className="mt-1 truncate font-mono text-xs text-[var(--text-muted)]">{keyRecord.display}</p>
+      {models.length > 0 && (
+        <p className="mt-2 line-clamp-2 text-xs text-[var(--text-muted)]">
+          Allowed models: {models.join(", ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function LimitFields({
+  limit,
+  setLimit,
+  limitTokens,
+  setLimitTokens,
+  period,
+  setPeriod,
+  usdPlaceholder = "50.00",
+  tokenPlaceholder = "100000000",
+}: {
+  limit: string;
+  setLimit: (value: string) => void;
+  limitTokens: string;
+  setLimitTokens: (value: string) => void;
+  period: string;
+  setPeriod: (value: string) => void;
+  usdPlaceholder?: string;
+  tokenPlaceholder?: string;
+}) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-3">
+      <Field label="Limit (USD)">
+        <div className="relative">
+          <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+            <DollarSign className="h-4 w-4 text-[var(--text-muted)]" />
+          </div>
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            placeholder={usdPlaceholder}
+            className="pl-9"
+          />
+        </div>
+      </Field>
+      <Field label="Limit (Tokens)">
+        <FormattedTokenInput
+          value={limitTokens}
+          onChange={setLimitTokens}
+          placeholder={tokenPlaceholder}
+        />
+      </Field>
+      <Field label="Period">
+        <Select value={period} onChange={(e) => setPeriod(e.target.value)}>
+          {periods.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    </div>
+  );
+}
+
+function GuardFields({
+  alertPct,
+  setAlertPct,
+  hardCutoff,
+  setHardCutoff,
+}: {
+  alertPct: number;
+  setAlertPct: (value: number) => void;
+  hardCutoff: boolean;
+  setHardCutoff: (value: boolean) => void;
+}) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-[12rem_1fr]">
+      <Field label="Alert threshold (%)">
+        <div className="relative">
+          <Input
+            type="number"
+            min="1"
+            max="100"
+            value={alertPct}
+            onChange={(e) => setAlertPct(clampAlertPct(parseInt(e.target.value, 10)))}
+            className="pr-8"
+          />
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+            <span className="text-sm text-[var(--text-muted)]">%</span>
+          </div>
+        </div>
+      </Field>
+      <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Hard cutoff</p>
+          <p className="mt-0.5 text-xs text-[var(--text-muted)]">
+            {hardCutoff ? "Requests stop when the budget is exhausted." : "Usage is tracked without blocking requests."}
+          </p>
+        </div>
+        <Toggle checked={hardCutoff} onChange={setHardCutoff} />
+      </div>
+    </div>
+  );
+}
+
+function BudgetPreview({
+  scopeLabel,
+  limit,
+  limitTokens,
+  period,
+  hardCutoff,
+}: {
+  scopeLabel: string;
+  limit: string;
+  limitTokens: string;
+  period: string;
+  hardCutoff: boolean;
+}) {
+  const usd = parseUSD(limit);
+  const tokens = parseTokens(limitTokens);
+  return (
+    <div className="rounded-xl border border-accent-200/40 bg-accent-50/30 dark:border-accent-900/40 dark:bg-accent-900/10 p-5">
+      <h4 className="mb-4 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Configuration Summary</h4>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <p className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+            <KeyRound className="h-3.5 w-3.5" />
+            Scope
+          </p>
+          <p className="mt-1 truncate text-sm font-medium">{scopeLabel}</p>
+        </div>
+        <div>
+          <p className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+            <DollarSign className="h-3.5 w-3.5" />
+            USD Cap
+          </p>
+          <p className="mt-1 text-sm font-medium">{usd > 0 ? `$${usd.toFixed(2)}` : "No USD cap"}</p>
+        </div>
+        <div>
+          <p className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+            <Clock3 className="h-3.5 w-3.5" />
+            Window
+          </p>
+          <p className="mt-1 text-sm font-medium">{periods.find((p) => p.value === period)?.label ?? period}</p>
+        </div>
+        <div>
+          <p className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+            <Lock className="h-3.5 w-3.5" />
+            Enforcement
+          </p>
+          <p className="mt-1 text-sm font-medium">
+            {hardCutoff ? (
+              <span className="text-red-600 dark:text-red-400">Blocking</span>
+            ) : (
+              <span className="text-emerald-600 dark:text-emerald-400">Advisory</span>
+            )}
+          </p>
+        </div>
+        {tokens > 0 && (
+          <div className="sm:col-span-2 lg:col-span-4 pt-3 border-t border-[var(--border)] border-dashed">
+            <p className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+              <Gauge className="h-3.5 w-3.5" />
+              Token Cap
+            </p>
+            <p className="mt-1 text-sm font-medium">{formatTokens(tokens)} tokens</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Create form ─────────────────────────────────────────────────── */
 
 function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => void }) {
@@ -381,14 +740,19 @@ function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => vo
   const [alertPct, setAlertPct] = useState(80);
   const [hardCutoff, setHardCutoff] = useState(true);
   const [error, setError] = useState("");
+  
+  const selectedKey = useMemo(() => keys.find((k) => k.id === scopeId), [keys, scopeId]);
+  const usdLimit = parseUSD(limit);
+  const tokenLimit = parseTokens(limitTokens);
+  const canSubmit = (usdLimit > 0 || tokenLimit > 0) && (scopeKind !== "api_key" || !!scopeId);
 
   const create = useMutation({
     mutationFn: () =>
       api.createBudget({
         scope_kind: scopeKind,
         scope_id: scopeKind === "api_key" && scopeId ? scopeId : undefined,
-        limit_usd: parseFloat(limit) || undefined,
-        limit_tokens: parseInt(limitTokens) || undefined,
+        limit_usd: usdLimit > 0 ? usdLimit : undefined,
+        limit_tokens: tokenLimit > 0 ? tokenLimit : undefined,
         period,
         alert_pct: alertPct,
         hard_cutoff: hardCutoff,
@@ -397,8 +761,8 @@ function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => vo
       qc.invalidateQueries({ queryKey: ["budget-status"] });
       qc.invalidateQueries({ queryKey: ["budgets"] });
       const parts = [];
-      if (parseFloat(limit) > 0) parts.push(`$${parseFloat(limit).toFixed(2)}`);
-      if (parseInt(limitTokens) > 0) parts.push(`${formatTokens(parseInt(limitTokens))} tokens`);
+      if (usdLimit > 0) parts.push(`$${usdLimit.toFixed(2)}`);
+      if (tokenLimit > 0) parts.push(`${formatTokens(tokenLimit)} tokens`);
       toast.success(
         "Budget created",
         `${parts.join(" + ")} ${period} limit set for ${scopeKind === "api_key" ? "API key" : "tenant"}.${hardCutoff ? " Requests will be blocked when exhausted." : ""}`,
@@ -413,107 +777,122 @@ function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => vo
 
   return (
     <form
-      className="space-y-4 px-6 py-5"
+      className="space-y-8"
       onSubmit={(e) => {
         e.preventDefault();
-        if (parseFloat(limit) > 0 || parseInt(limitTokens) > 0) create.mutate();
+        setError("");
+        if (scopeKind === "api_key" && !scopeId) {
+          setError("Select an API key before creating this budget.");
+          return;
+        }
+        if (usdLimit <= 0 && tokenLimit <= 0) {
+          setError("Set at least one positive USD or token limit.");
+          return;
+        }
+        create.mutate();
       }}
     >
-      {/* Scope selector */}
-      <div className="flex gap-3">
-        <div className="w-44">
-          <Field label="Scope">
-            <Select
-              value={scopeKind}
-              onChange={(e) => {
-                setScopeKind(e.target.value);
+      <div className="px-6 py-5 space-y-8">
+        
+        {/* Section 1: Scope */}
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-strong)]">1. Target Scope</h3>
+            <p className="text-xs text-[var(--text-muted)]">Choose the scope this budget applies to.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setScopeKind("tenant");
                 setScopeId("");
               }}
+              className={`rounded-xl border px-4 py-3.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${
+                scopeKind === "tenant"
+                  ? "border-accent-400 bg-accent-500/10"
+                  : "border-[var(--border)] bg-[var(--bg-subtle)] hover:bg-[var(--bg)]"
+              }`}
             >
-              <option value="tenant">Tenant (global)</option>
-              <option value="api_key">API Key</option>
-            </Select>
-          </Field>
-        </div>
-        {scopeKind === "api_key" && (
-          <div className="flex-1">
-            <Field label="API Key">
-              <Select value={scopeId} onChange={(e) => setScopeId(e.target.value)}>
-                <option value="">Select a key…</option>
-                {keys.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.name} ({k.display})
-                  </option>
-                ))}
-              </Select>
-            </Field>
+              <Building2 className="h-5 w-5 text-[var(--text-muted)]" />
+              <span className="mt-2.5 block text-sm font-medium">Tenant Default</span>
+              <span className="mt-0.5 block text-xs text-[var(--text-muted)]">Applies globally to the tenant</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setScopeKind("api_key")}
+              className={`rounded-xl border px-4 py-3.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 ${
+                scopeKind === "api_key"
+                  ? "border-accent-400 bg-accent-500/10"
+                  : "border-[var(--border)] bg-[var(--bg-subtle)] hover:bg-[var(--bg)]"
+              }`}
+            >
+              <KeyRound className="h-5 w-5 text-[var(--text-muted)]" />
+              <span className="mt-2.5 block text-sm font-medium">Specific API Key</span>
+              <span className="mt-0.5 block text-xs text-[var(--text-muted)]">Isolate spending for one credential</span>
+            </button>
           </div>
-        )}
+
+          {scopeKind === "api_key" && (
+            <div className="mt-3 rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg-subtle)] p-4 space-y-3 shadow-sm">
+              <p className="text-xs font-medium text-[var(--text-muted)]">Select API Key</p>
+              <APIKeySearchSelect keys={keys} value={scopeId} onChange={setScopeId} />
+              <SelectedKeySummary keyRecord={selectedKey} />
+            </div>
+          )}
+        </section>
+
+        <div className="h-px bg-[var(--border)] w-full" />
+
+        {/* Section 2: Limits */}
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-strong)]">2. Spending Limits</h3>
+            <p className="text-xs text-[var(--text-muted)]">Set maximum thresholds for USD spend or token consumption.</p>
+          </div>
+          <LimitFields
+            limit={limit}
+            setLimit={setLimit}
+            limitTokens={limitTokens}
+            setLimitTokens={setLimitTokens}
+            period={period}
+            setPeriod={setPeriod}
+          />
+        </section>
+
+        <div className="h-px bg-[var(--border)] w-full" />
+
+        {/* Section 3: Enforcement */}
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-strong)]">3. Enforcement Rules</h3>
+            <p className="text-xs text-[var(--text-muted)]">Configure how to handle exhaustion and approaching limits.</p>
+          </div>
+          <GuardFields
+            alertPct={alertPct}
+            setAlertPct={setAlertPct}
+            hardCutoff={hardCutoff}
+            setHardCutoff={setHardCutoff}
+          />
+        </section>
+        
+        {/* Preview Summary */}
+        <BudgetPreview
+          scopeLabel={scopeKind === "api_key" ? selectedKey?.name ?? "API key" : "Default tenant"}
+          limit={limit}
+          limitTokens={limitTokens}
+          period={period}
+          hardCutoff={hardCutoff}
+        />
+
+        {error && <ErrorBanner message={error} />}
       </div>
 
-      {/* Limit (USD) + Limit (Tokens) + Period */}
-      <div className="flex gap-3">
-        <div className="flex-1">
-          <Field label="Limit (USD)">
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              value={limit}
-              onChange={(e) => setLimit(e.target.value)}
-              placeholder="50.00"
-            />
-          </Field>
-        </div>
-        <div className="flex-1">
-          <Field label="Limit (Tokens)">
-            <FormattedTokenInput
-              value={limitTokens}
-              onChange={setLimitTokens}
-              placeholder="100000000"
-            />
-          </Field>
-        </div>
-        <div className="w-36">
-          <Field label="Period">
-            <Select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              {periods.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-      </div>
-
-      {/* Alert + Cutoff */}
-      <div className="flex items-end gap-6">
-        <div className="w-40">
-          <Field label="Alert threshold (%)">
-            <Input
-              type="number"
-              min="1"
-              max="100"
-              value={alertPct}
-              onChange={(e) => setAlertPct(parseInt(e.target.value) || 80)}
-            />
-          </Field>
-        </div>
-        <div className="flex items-center gap-2 pb-0.5">
-          <Toggle checked={hardCutoff} onChange={setHardCutoff} />
-          <span className="text-sm">Hard cutoff (block when exhausted)</span>
-        </div>
-      </div>
-
-      {error && <ErrorBanner message={error} />}
-
-      <div className="flex gap-2 pt-2 border-t border-[var(--border)]">
+      <div className="flex gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-4 rounded-b-xl">
         <div className="flex-1" />
         <Button variant="ghost" type="button" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={create.isPending || (parseFloat(limit) <= 0 && parseInt(limitTokens) <= 0) || (scopeKind === "api_key" && !scopeId)}>
+        <Button type="submit" disabled={create.isPending || !canSubmit}>
           {create.isPending ? "Creating…" : "Create budget"}
         </Button>
       </div>
@@ -533,12 +912,16 @@ function EditBudgetForm({ budget, onClose }: { budget: BudgetStatus; onClose: ()
   const [alertPct, setAlertPct] = useState(budget.alert_pct);
   const [hardCutoff, setHardCutoff] = useState(budget.hard_cutoff);
   const [error, setError] = useState("");
+  
+  const usdLimit = parseUSD(limit);
+  const tokenLimit = parseTokens(limitTokens);
+  const canSubmit = usdLimit > 0 || tokenLimit > 0;
 
   const update = useMutation({
     mutationFn: () =>
       api.updateBudget(budget.id, {
-        limit_usd: parseFloat(limit) || undefined,
-        limit_tokens: parseInt(limitTokens) || undefined,
+        limit_usd: usdLimit,
+        limit_tokens: tokenLimit,
         period,
         alert_pct: alertPct,
         hard_cutoff: hardCutoff,
@@ -547,8 +930,8 @@ function EditBudgetForm({ budget, onClose }: { budget: BudgetStatus; onClose: ()
       qc.invalidateQueries({ queryKey: ["budget-status"] });
       qc.invalidateQueries({ queryKey: ["budgets"] });
       const parts = [];
-      if (parseFloat(limit) > 0) parts.push(`$${parseFloat(limit).toFixed(2)}`);
-      if (parseInt(limitTokens) > 0) parts.push(`${formatTokens(parseInt(limitTokens))} tokens`);
+      if (usdLimit > 0) parts.push(`$${usdLimit.toFixed(2)}`);
+      if (tokenLimit > 0) parts.push(`${formatTokens(tokenLimit)} tokens`);
       toast.success(
         "Budget updated",
         `Limit changed to ${parts.join(" + ")} ${period}. ${hardCutoff ? "Hard cutoff is active." : "Advisory mode — requests won't be blocked."}`,
@@ -563,78 +946,110 @@ function EditBudgetForm({ budget, onClose }: { budget: BudgetStatus; onClose: ()
 
   return (
     <form
-      className="space-y-4 px-6 py-5"
+      className="space-y-8"
       onSubmit={(e) => {
         e.preventDefault();
-        if (parseFloat(limit) > 0 || parseInt(limitTokens) > 0) update.mutate();
+        setError("");
+        if (!canSubmit) {
+          setError("Set at least one positive USD or token limit.");
+          return;
+        }
+        update.mutate();
       }}
     >
-      {/* Limit (USD) + Limit (Tokens) + Period */}
-      <div className="flex gap-3">
-        <div className="flex-1">
-          <Field label="Limit (USD)">
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              value={limit}
-              onChange={(e) => setLimit(e.target.value)}
-              placeholder="0 = no limit"
-            />
-          </Field>
-        </div>
-        <div className="flex-1">
-          <Field label="Limit (Tokens)">
-            <FormattedTokenInput
-              value={limitTokens}
-              onChange={setLimitTokens}
-              placeholder="0 = no limit"
-            />
-          </Field>
-        </div>
-        <div className="w-36">
-          <Field label="Period">
-            <Select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              {periods.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
+      <div className="px-6 py-5 space-y-8">
+        
+        {/* Section 1: Scope */}
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-strong)]">1. Target Scope</h3>
+            <p className="text-xs text-[var(--text-muted)]">The scope this budget applies to (immutable).</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+              <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                {budget.scope_kind === "api_key" ? <KeyRound className="h-3.5 w-3.5" /> : <Building2 className="h-3.5 w-3.5" />}
+                Scope
+              </div>
+              <p className="mt-1 truncate text-sm font-medium">{budget.scope_name}</p>
+              <p className="mt-1 font-mono text-xs text-[var(--text-muted)]">{budget.scope_kind}</p>
+            </div>
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
+              <p className="text-xs font-medium text-[var(--text-muted)]">Current usage</p>
+              <div className="mt-2 space-y-2">
+                {budget.limit_micros > 0 && (
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-[var(--text-muted)]">USD</span>
+                    <span className="font-medium tabular-nums">{budget.pct_used.toFixed(1)}%</span>
+                  </div>
+                )}
+                {budget.limit_tokens > 0 && (
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-[var(--text-muted)]">Tokens</span>
+                    <span className="font-medium tabular-nums">{budget.tokens_pct_used.toFixed(1)}%</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div className="h-px bg-[var(--border)] w-full" />
+
+        {/* Section 2: Limits */}
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-strong)]">2. Spending Limits</h3>
+            <p className="text-xs text-[var(--text-muted)]">Set maximum thresholds for USD spend or token consumption.</p>
+          </div>
+          <LimitFields
+            limit={limit}
+            setLimit={setLimit}
+            limitTokens={limitTokens}
+            setLimitTokens={setLimitTokens}
+            period={period}
+            setPeriod={setPeriod}
+            usdPlaceholder="0 = no USD cap"
+            tokenPlaceholder="0"
+          />
+        </section>
+
+        <div className="h-px bg-[var(--border)] w-full" />
+
+        {/* Section 3: Enforcement */}
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--text-strong)]">3. Enforcement Rules</h3>
+            <p className="text-xs text-[var(--text-muted)]">Configure how to handle exhaustion and approaching limits.</p>
+          </div>
+          <GuardFields
+            alertPct={alertPct}
+            setAlertPct={setAlertPct}
+            hardCutoff={hardCutoff}
+            setHardCutoff={setHardCutoff}
+          />
+        </section>
+
+        <BudgetPreview
+          scopeLabel={budget.scope_name}
+          limit={limit}
+          limitTokens={limitTokens}
+          period={period}
+          hardCutoff={hardCutoff}
+        />
+
+        {error && <ErrorBanner message={error} />}
       </div>
 
-      <div className="flex items-end gap-6">
-        <div className="w-40">
-          <Field label="Alert threshold (%)">
-            <Input
-              type="number"
-              min="1"
-              max="100"
-              value={alertPct}
-              onChange={(e) => setAlertPct(parseInt(e.target.value) || 80)}
-            />
-          </Field>
-        </div>
-        <div className="flex items-center gap-2 pb-0.5">
-          <Toggle checked={hardCutoff} onChange={setHardCutoff} />
-          <span className="text-sm">Hard cutoff</span>
-        </div>
-      </div>
-
-      {error && <ErrorBanner message={error} />}
-
-      <div className="flex gap-2 pt-2 border-t border-[var(--border)]">
+      <div className="flex gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-4 rounded-b-xl">
         <div className="flex-1" />
         <Button variant="ghost" type="button" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={update.isPending || (parseFloat(limit) <= 0 && parseInt(limitTokens) <= 0)}>
+        <Button type="submit" disabled={update.isPending || !canSubmit}>
           {update.isPending ? "Saving…" : "Save changes"}
         </Button>
       </div>
     </form>
   );
 }
-

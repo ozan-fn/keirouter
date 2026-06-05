@@ -34,7 +34,7 @@ const terseHints: Record<string, string> = {
 };
 
 const isRoundRobin = (strategy: string) =>
-  strategy === "round-robin" || strategy === "round_robin";
+  strategy === "round-robin" || strategy === "round_robin" || strategy === "smart-round-robin" || strategy === "smart_round_robin";
 
 export function SettingsPage() {
   const qc = useQueryClient();
@@ -179,7 +179,7 @@ function RoutingStrategy({
     <Card>
       <SectionHeader
         title="Routing Strategy"
-        description="Control how requests are distributed across accounts and combos."
+        description="Control how requests are distributed across accounts and chains."
         icon={Route}
       />
       <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
@@ -213,8 +213,8 @@ function RoutingStrategy({
 
         <div className="flex items-center justify-between gap-4 px-6 py-4">
           <div>
-            <p className="text-sm font-medium">Combo round robin</p>
-            <p className="mt-0.5 text-xs text-[var(--text-muted)]">Cycle through providers in combos instead of always starting with first</p>
+            <p className="text-sm font-medium">Chain round robin</p>
+            <p className="mt-0.5 text-xs text-[var(--text-muted)]">Cycle through providers in chains instead of always starting with first</p>
           </div>
           <Toggle
             checked={isRoundRobin(local.combo_strategy)}
@@ -225,8 +225,8 @@ function RoutingStrategy({
         {isRoundRobin(local.combo_strategy) && (
           <div className="flex items-center justify-between gap-4 px-6 py-4">
             <div>
-              <p className="text-sm font-medium">Combo sticky limit</p>
-              <p className="mt-0.5 text-xs text-[var(--text-muted)]">Calls per combo model before switching</p>
+              <p className="text-sm font-medium">Chain sticky limit</p>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">Calls per chain model before switching</p>
             </div>
             <Input
               type="number"
@@ -245,8 +245,8 @@ function RoutingStrategy({
               ? `Distributing requests across all available accounts with ${local.sticky_limit || 3} calls per account.`
               : "Using accounts in priority order (Fill First)."}
             {isRoundRobin(local.combo_strategy)
-              ? ` Combos rotate after ${local.combo_sticky_limit || 1} call${(local.combo_sticky_limit || 1) === 1 ? "" : "s"} per model.`
-              : " Combos always start with their first model."}
+              ? ` Chains rotate after ${local.combo_sticky_limit || 1} call${(local.combo_sticky_limit || 1) === 1 ? "" : "s"} per model.`
+              : " Chains always start with their first model."}
           </p>
         </div>
       </div>

@@ -3,6 +3,9 @@ package gateway
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -135,10 +138,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 	for i, t := range resolved.Targets {
 		s.consoleLog.Logf("DEBUG", "  target[%d]: %s/%s", i, t.Provider, t.Model)
 	}
+	affinityKey := requestAffinityKey(r, body, req)
 
 	opts := pipeline.Options{
 		Targets:  resolved.Targets,
-		PlanOpts: s.endpointPlanOptions(r.Context(), resolved.PlanOpts),
+		PlanOpts: s.endpointPlanOptions(r.Context(), resolved.PlanOpts, resolved.Targets, affinityKey),
 		Slimmer:  s.slimmerConfig(),
 		Terse:    s.terseConfig(),
 		Caveman:  s.cavemanConfig(),
@@ -516,4 +520,130 @@ func detectClient(r *http.Request) string {
 	default:
 		return ""
 	}
+}
+
+func requestAffinityKey(r *http.Request, body []byte, req *core.ChatRequest) string {
+	for _, header := range []string{
+		"X-KeiRouter-Affinity",
+		"X-Conversation-ID",
+		"X-Thread-ID",
+		"X-Session-ID",
+		"OpenAI-Conversation-ID",
+	} {
+		if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
+			return "header:" + strings.ToLower(header) + ":" + v
+		}
+	}
+
+	if v := jsonAffinityKey(body); v != "" {
+		return "body:" + v
+	}
+	if req == nil {
+		return ""
+	}
+	seed := conversationSeed(req)
+	if seed == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return "fingerprint:" + hex.EncodeToString(sum[:])
+}
+
+func jsonAffinityKey(body []byte) string {
+	var obj map[string]json.RawMessage
+	if len(body) == 0 || json.Unmarshal(body, &obj) != nil {
+		return ""
+	}
+	for _, key := range []string{
+		"conversation_id",
+		"thread_id",
+		"session_id",
+		"previous_response_id",
+		"parent_id",
+	} {
+		if v := rawString(obj[key]); v != "" {
+			return key + ":" + v
+		}
+	}
+	if v := rawString(obj["conversation"]); v != "" {
+		return "conversation:" + v
+	}
+	if v := rawObjectString(obj["conversation"], "id"); v != "" {
+		return "conversation.id:" + v
+	}
+	if v := rawObjectString(obj["metadata"], "conversation_id"); v != "" {
+		return "metadata.conversation_id:" + v
+	}
+	if v := rawObjectString(obj["metadata"], "thread_id"); v != "" {
+		return "metadata.thread_id:" + v
+	}
+	if v := rawObjectString(obj["metadata"], "session_id"); v != "" {
+		return "metadata.session_id:" + v
+	}
+	return ""
+}
+
+func rawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func rawObjectString(raw json.RawMessage, key string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	return rawString(obj[key])
+}
+
+func conversationSeed(req *core.ChatRequest) string {
+	var b strings.Builder
+	b.WriteString(req.Metadata.APIKeyID)
+	b.WriteByte('\n')
+	b.WriteString(req.Metadata.ClientKind)
+	b.WriteByte('\n')
+	b.WriteString(string(req.Metadata.SourceDialect))
+	b.WriteByte('\n')
+	b.WriteString(req.Model)
+	if system := strings.TrimSpace(req.System); system != "" {
+		b.WriteString("\nsystem:")
+		b.WriteString(limitAffinityText(system))
+	}
+	seenText := 0
+	for _, msg := range req.Messages {
+		if msg.Role != core.RoleUser {
+			continue
+		}
+		text := strings.TrimSpace(msg.TextContent())
+		if text == "" {
+			continue
+		}
+		b.WriteString("\nuser:")
+		b.WriteString(limitAffinityText(text))
+		seenText++
+		if seenText >= 1 {
+			break
+		}
+	}
+	if seenText == 0 {
+		return ""
+	}
+	return b.String()
+}
+
+func limitAffinityText(s string) string {
+	const max = 512
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }

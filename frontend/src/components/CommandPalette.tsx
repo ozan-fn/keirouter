@@ -56,7 +56,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       // Navigation
       { id: "nav-overview", label: "Overview", icon: LayoutGrid, section: "Overview", action: () => go("/"), keywords: ["home", "dashboard"] },
       { id: "nav-endpoints", label: "Endpoints", icon: Network, section: "Traffic & Logic", action: () => go("/endpoints"), keywords: ["proxy", "settings"] },
-      { id: "nav-chains", label: "Combos", icon: Layers, section: "Traffic & Logic", action: () => go("/chains"), keywords: ["chain", "routing", "fallback"] },
+      { id: "nav-chains", label: "Chains", icon: Layers, section: "Traffic & Logic", action: () => go("/chains"), keywords: ["chain", "routing", "fallback"] },
       { id: "nav-skills", label: "Skills", icon: Sparkles, section: "Traffic & Logic", action: () => go("/skills"), keywords: ["prompt", "custom"] },
       { id: "nav-providers", label: "Providers", icon: Boxes, section: "Connections", action: () => go("/providers"), keywords: ["accounts", "openai", "anthropic"] },
       { id: "nav-media", label: "Media", icon: Image, section: "Connections", action: () => go("/media"), keywords: ["image", "video", "tts", "stt"] },
@@ -72,7 +72,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       // Quick actions
       { id: "action-new-key", label: "Create API Key", icon: Plus, section: "Actions", action: () => go("/keys"), keywords: ["new", "generate"] },
       { id: "action-new-account", label: "Add Provider Account", icon: Plus, section: "Actions", action: () => go("/providers"), keywords: ["new", "connect"] },
-      { id: "action-new-chain", label: "Create Combo", icon: Plus, section: "Actions", action: () => go("/chains"), keywords: ["new", "chain", "routing"] },
+      { id: "action-new-chain", label: "Create Chain", icon: Plus, section: "Actions", action: () => go("/chains"), keywords: ["new", "chain", "routing"] },
       { id: "action-new-pool", label: "Add Proxy Pool", icon: Plus, section: "Actions", action: () => go("/proxy-pools"), keywords: ["new", "proxy"] },
       { id: "action-settings", label: "Open Settings", icon: Settings, section: "Actions", action: () => go("/settings"), keywords: ["config", "preferences"] },
     ],

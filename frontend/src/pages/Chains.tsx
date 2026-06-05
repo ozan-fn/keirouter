@@ -201,53 +201,70 @@ function SearchableSelect({
   );
 }
 
-// ─── Combo Topology ──────────────────────────────────────────────────────────
+// ─── Chain Topology ──────────────────────────────────────────────────────────
 
-function ComboStartNode({ data }: { data: { name: string; strategy: string; stepCount: number } }) {
+function ChainStartNode({ data }: { data: { name: string; strategy: string; stepCount: number } }) {
   return (
     <>
-      <Handle type="source" position={Position.Right} className="!bg-accent-500 !border-0 !w-2 !h-2" />
-      <div className="flex items-center gap-2.5 rounded-xl border-2 border-accent-500 bg-accent-50 px-4 py-2.5 shadow-sm dark:bg-accent-900/30">
-        <Layers className="h-4 w-4 text-accent-600 dark:text-accent-400" />
-        <div>
-          <span className="block text-sm font-bold text-accent-700 dark:text-accent-300">chain:{data.name}</span>
-          <span className="text-[10px] text-[var(--text-muted)]">{data.stepCount} step{data.stepCount !== 1 ? "s" : ""} · {displayStrategy(data.strategy)}</span>
+      <Handle type="source" position={Position.Right} className="!bg-accent-500 !border-2 !border-[var(--bg)] !w-3 !h-3 -mr-1.5" />
+      <div className="group relative flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] p-4 pr-6 shadow-[var(--shadow-float)] transition-all hover:border-accent-500/50">
+        <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-accent-500/10 to-transparent opacity-50" />
+        <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-500/20 text-accent-600 dark:text-accent-400">
+          <Layers className="h-5 w-5" />
         </div>
-      </div>
-    </>
-  );
-}
-
-function ComboStepNode({ data }: { data: { position: number; provider: string; model: string; color: string; icon: string; isLast: boolean; isFallback: boolean } }) {
-  return (
-    <>
-      <Handle type="target" position={Position.Left} className="!bg-accent-500 !border-0 !w-2 !h-2" />
-      {!data.isLast && <Handle type="source" position={Position.Right} className="!bg-accent-500 !border-0 !w-2 !h-2" />}
-      <div className={`flex items-center gap-2 rounded-lg border-2 bg-[var(--bg-elevated)] px-3 py-2 shadow-sm ${
-        data.isFallback ? "border-amber-400 dark:border-amber-500" : ""
-      }`} style={{ borderColor: data.isFallback ? undefined : (data.color || "var(--border)") }}>
-        {data.isFallback ? (
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-500 text-[9px] font-bold text-white">
-            <Shield className="h-3 w-3" />
+        <div className="relative">
+          <span className="block font-mono text-sm font-bold text-[var(--text)] tracking-tight">chain:{data.name}</span>
+          <span className="mt-0.5 flex items-center gap-1.5 text-[11px] font-medium text-[var(--text-muted)]">
+            <span className="text-[9px] uppercase tracking-wider"><Badge tone="accent">{displayStrategy(data.strategy)}</Badge></span>
+            <span>{data.stepCount} step{data.stepCount !== 1 ? "s" : ""}</span>
           </span>
-        ) : (
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-accent-600 text-[9px] font-bold text-white">{data.position + 1}</span>
-        )}
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${data.isFallback ? "#f59e0b" : data.color}15` }}>
-          <img src={data.icon} alt={data.provider} className="h-4 w-4 rounded-sm object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-        </div>
-        <div className="min-w-0">
-          <span className="block text-xs font-medium">{data.provider}</span>
-          <span className="block max-w-[140px] truncate font-mono text-[10px] text-[var(--text-muted)]">{data.model}</span>
         </div>
       </div>
     </>
   );
 }
 
-const comboNodeTypes = { comboStart: ComboStartNode, comboStep: ComboStepNode };
+function ChainStepNode({ data }: { data: { position: number; provider: string; model: string; color: string; icon: string; isLast: boolean; isFallback: boolean } }) {
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="!bg-[var(--text-muted)] !border-2 !border-[var(--bg)] !w-3 !h-3 -ml-1.5" />
+      {!data.isLast && <Handle type="source" position={Position.Right} className="!bg-[var(--text-muted)] !border-2 !border-[var(--bg)] !w-3 !h-3 -mr-1.5" />}
+      
+      <div className="group relative flex min-w-[220px] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-sm transition-all hover:border-[var(--text-muted)]">
+        <div className="absolute left-0 top-0 h-1 w-full" style={{ backgroundColor: data.isFallback ? "#f59e0b" : (data.color || "var(--border)") }} />
+        
+        <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2">
+          <div className="flex items-center gap-2">
+            {data.isFallback ? (
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-amber-500 text-[10px] font-bold text-white shadow-sm">
+                <Shield className="h-3 w-3" />
+              </span>
+            ) : (
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-[var(--bg-elevated)] border border-[var(--border)] text-[10px] font-bold text-[var(--text)] shadow-sm">
+                {data.position + 1}
+              </span>
+            )}
+            <span className="text-[11px] font-semibold tracking-wide text-[var(--text-muted)] uppercase">
+              {data.isFallback ? "Fallback" : `Step ${data.position + 1}`}
+            </span>
+          </div>
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-white shadow-sm ring-1 ring-black/5 dark:bg-black/20 dark:ring-white/10">
+            <img src={data.icon} alt={data.provider} className="h-4 w-4 rounded-sm object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          </div>
+        </div>
+        
+        <div className="p-3">
+          <span className="block text-[11px] text-[var(--text-muted)]">{data.provider}</span>
+          <span className="block truncate font-mono text-[13px] font-medium text-[var(--text)]">{data.model}</span>
+        </div>
+      </div>
+    </>
+  );
+}
 
-function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider[] }) {
+const chainNodeTypes = { chainStart: ChainStartNode, chainStep: ChainStepNode };
+
+function ChainTopology({ chain, providers }: { chain: Chain; providers: Provider[] }) {
   const providerMap = useMemo(() => {
     const m = new Map<string, Provider>();
     providers.forEach((p) => m.set(p.id, p));
@@ -257,7 +274,7 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
   const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
     const ns: Node[] = [];
     const es: Edge[] = [];
-    const nodeW = 180;
+    const nodeW = 220;
     const gap = 60;
     const allSteps = [...chain.steps];
     const hasFallback = chain.fallback_provider && chain.fallback_model;
@@ -267,7 +284,7 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
 
     ns.push({
       id: "start",
-      type: "comboStart",
+      type: "chainStart",
       position: { x: 0, y: 40 },
       data: { name: chain.name, strategy: chain.strategy, stepCount: chain.steps.length },
       draggable: false,
@@ -279,8 +296,8 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
       const isFallback = hasFallback && i === allSteps.length - 1;
       ns.push({
         id: nodeId,
-        type: "comboStep",
-        position: { x: 220 + i * (nodeW + gap), y: 40 },
+        type: "chainStep",
+        position: { x: 300 + i * (nodeW + gap), y: 35 },
         data: {
           position: i,
           provider: step.provider,
@@ -322,15 +339,15 @@ function ComboTopology({ chain, providers }: { chain: Chain; providers: Provider
     setTimeout(() => instance.fitView({ padding: 0.15, duration: 200 }), 50);
   }, []);
 
-  const totalWidth = 220 + (chain.steps.length + (chain.fallback_provider && chain.fallback_model ? 1 : 0)) * 240;
-  const height = 140;
+  const totalWidth = 300 + (chain.steps.length + (chain.fallback_provider && chain.fallback_model ? 1 : 0)) * 280;
+  const height = 180;
 
   return (
     <div style={{ height, width: "100%", minWidth: Math.min(totalWidth, 600) }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={comboNodeTypes}
+        nodeTypes={chainNodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onInit={onInit}
@@ -407,7 +424,7 @@ export function ChainsPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["chains"] });
       setDeletingId(null);
-      toast.success("Combo deleted", "The routing chain has been removed. Target it by name will no longer resolve.");
+      toast.success("Chain deleted", "The routing chain has been removed. Target it by name will no longer resolve.");
     },
     onError: (e: Error) => toast.error("Deletion failed", e.message),
   });
@@ -428,13 +445,13 @@ export function ChainsPage() {
   return (
     <>
       <PageHeader
-        title="Combos"
+        title="Chains"
         icon={Layers}
-        description="Named model chains. Target with chain:name or the bare combo name as your model."
+        description="Named model chains. Target with chain:name or the bare chain name as your model."
         action={
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4" />
-            Create Combo
+            Create Chain
           </Button>
         }
       />
@@ -444,7 +461,7 @@ export function ChainsPage() {
           <Card className="border-red-500/30 bg-red-500/5 dark:border-red-500/20 dark:bg-red-500/10">
             <div className="flex items-center justify-between px-4 py-3">
               <p className="text-sm">
-                Delete combo <span className="font-mono font-medium">{list.find((c) => c.id === deletingId)?.name}</span>?
+                Delete chain <span className="font-mono font-medium">{list.find((c) => c.id === deletingId)?.name}</span>?
               </p>
               <div className="flex items-center gap-2">
                 <Button variant="ghost" onClick={() => setDeletingId(null)} className="h-8 text-xs">Cancel</Button>
@@ -463,14 +480,14 @@ export function ChainsPage() {
         ) : list.length === 0 ? (
           <Card>
             <EmptyState
-              title="No combos yet"
-              hint="Create a combo to group models into a named fallback chain."
+              title="No chains yet"
+              hint="Create a chain to group models into a named fallback chain."
             />
           </Card>
         ) : (
           <div className="space-y-3">
             {list.map((c) => (
-              <ComboCard
+              <ChainCard
                 key={c.id}
                 chain={c}
                 providers={providerList}
@@ -487,7 +504,7 @@ export function ChainsPage() {
       </div>
 
       {showModal && (
-        <ComboModal
+        <ChainModal
           chain={editingId ? list.find((c) => c.id === editingId) : undefined}
           providers={providerList}
           onClose={closeModal}
@@ -497,9 +514,9 @@ export function ChainsPage() {
   );
 }
 
-// ─── Combo Card ──────────────────────────────────────────────────────────────
+// ─── Chain Card ──────────────────────────────────────────────────────────────
 
-function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
+function ChainCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
   chain: Chain;
   providers: Provider[];
   onEdit: () => void;
@@ -507,11 +524,8 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
   onToggleRR: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [showAll, setShowAll] = useState(false);
   const [showTopology, setShowTopology] = useState(false);
   const models = c.steps.map((s) => `${s.provider}/${s.model}`);
-  const displayModels = showAll ? models : models.slice(0, 3);
-  const remaining = models.length - 3;
   const hasFallback = c.fallback_provider && c.fallback_model;
 
   const providerMap = useMemo(() => {
@@ -527,110 +541,116 @@ function ComboCard({ chain: c, providers, onEdit, onDelete, onToggleRR }: {
   };
 
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] transition-colors hover:border-[var(--border)] hover:shadow-sm">
-      <div className="px-4 py-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <Layers className="h-4 w-4 shrink-0 text-accent-500" />
-              <span className="font-mono text-sm font-semibold">chain:{c.name}</span>
-              <Badge tone="accent">{displayStrategy(c.strategy)}</Badge>
-              <span className="text-xs text-[var(--text-muted)]">{models.length} model{models.length !== 1 ? "s" : ""}</span>
+    <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-sm transition-all hover:border-[var(--text-muted)]">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--bg-subtle)]/50 px-5 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent-500/10 text-accent-600 dark:bg-accent-500/20 dark:text-accent-400">
+            <Layers className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-base font-bold tracking-tight text-[var(--text)]">chain:{c.name}</span>
+              <button onClick={copyName} className="text-[var(--text-muted)] hover:text-accent-500" title="Copy chain name">
+                {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-medium text-[var(--text-muted)]">
+              <span className="flex items-center gap-1 rounded bg-[var(--bg)] px-1.5 py-0.5 border border-[var(--border)]">
+                {isRoundRobinStrategy(c.strategy) ? <Shuffle className="h-3 w-3 text-violet-500" /> : <Zap className="h-3 w-3 text-amber-500" />}
+                {displayStrategy(c.strategy)}
+              </span>
+              <span>{models.length} model{models.length !== 1 ? "s" : ""}</span>
               {hasFallback && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                  <Shield className="h-3 w-3" /> fallback
+                <span className="flex items-center gap-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 px-1.5 py-0.5">
+                  <Shield className="h-3 w-3" /> Fallback
                 </span>
               )}
             </div>
+          </div>
+        </div>
 
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              {displayModels.map((m, i) => {
-                const providerId = m.split("/")[0];
-                const color = providerMap.get(providerId)?.color;
-                return (
-                  <span key={i} className="flex items-center">
-                    {i > 0 && <ArrowRight className="mx-0.5 h-3 w-3 text-[var(--text-muted)]" />}
-                    <span className="flex items-center gap-1.5 rounded-md bg-[var(--bg-subtle)] px-2 py-0.5" style={color ? { borderLeft: `2px solid ${color}` } : undefined}>
-                      <img src={`/providers/${providerId}.png`} alt="" className="h-3 w-3 rounded-sm object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                      <span className="font-mono text-[11px] text-[var(--text-muted)]">{m}</span>
-                    </span>
-                  </span>
-                );
-              })}
-              {!showAll && remaining > 0 && (
-                <button onClick={() => setShowAll(true)}
-                  className="rounded-md bg-[var(--bg-subtle)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] hover:bg-[var(--bg-elevated)]">
-                  +{remaining} more
-                </button>
-              )}
-              {showAll && models.length > 3 && (
-                <button onClick={() => setShowAll(false)}
-                  className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text)]">
-                  show less
-                </button>
-              )}
-              {hasFallback && (
-                <>
-                  <ArrowRight className="mx-0.5 h-3 w-3 text-amber-400" />
-                  <span className="flex items-center gap-1.5 rounded-md border border-amber-300/40 bg-amber-500/5 px-2 py-0.5 dark:bg-amber-500/10">
-                    <Shield className="h-3 w-3 text-amber-500" />
-                    <span className="font-mono text-[11px] text-amber-600 dark:text-amber-400">{c.fallback_provider}/{c.fallback_model}</span>
-                  </span>
-                </>
-              )}
+        <div className="flex shrink-0 items-center gap-1">
+          <button onClick={() => setShowTopology(!showTopology)}
+            className={`flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors ${
+              showTopology
+                ? "border-accent-500 bg-accent-500/10 text-accent-600 dark:border-accent-500/40 dark:text-accent-400"
+                : "border-[var(--border)] bg-[var(--bg)] text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+            }`}>
+            <Network className="h-3.5 w-3.5" /> Topology
+          </button>
+          
+          <button onClick={onToggleRR}
+            className={`flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium transition-colors ${
+              isRoundRobinStrategy(c.strategy)
+                ? "border-violet-500 bg-violet-500/10 text-violet-600 dark:border-violet-500/40 dark:text-violet-400"
+                : "border-[var(--border)] bg-[var(--bg)] text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+            }`}
+            title="Toggle round-robin">
+            <Shuffle className="h-3.5 w-3.5" /> RR
+          </button>
+          
+          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          
+          <button onClick={onEdit}
+            className="rounded-lg p-2 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+            title="Edit">
+            <Pencil className="h-4 w-4" />
+          </button>
+          <button onClick={onDelete}
+            className="rounded-lg p-2 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"
+            title="Delete">
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="px-5 py-4">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-3">
+          {c.steps.map((step, i) => {
+            const color = providerMap.get(step.provider)?.color || "var(--border)";
+            return (
+              <div key={i} className="flex items-center gap-2">
+                {i > 0 && <ArrowRight className="h-4 w-4 text-[var(--border)]" strokeWidth={2} />}
+                <div className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg)] py-1.5 pl-1.5 pr-3 shadow-sm hover:border-[var(--text-muted)] transition-colors">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${color}15` }}>
+                    <img src={`/providers/${step.provider}.png`} alt="" className="h-4 w-4 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="font-mono text-[11px] font-medium leading-none text-[var(--text)]">{step.model}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {hasFallback && (
+            <div className="flex items-center gap-2">
+              <ArrowRight className="h-4 w-4 text-[var(--border)]" strokeWidth={2} />
+              <div className="flex items-center gap-2 rounded-lg border border-amber-300/40 bg-amber-500/5 py-1.5 pl-1.5 pr-3 shadow-sm dark:border-amber-500/20 dark:bg-amber-500/10">
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-500/10 text-amber-500">
+                  <Shield className="h-4 w-4" />
+                </div>
+                <div className="flex flex-col">
+                  <span className="font-mono text-[11px] font-medium leading-none text-amber-700 dark:text-amber-400">{c.fallback_model}</span>
+                </div>
+              </div>
             </div>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-0.5">
-            <button onClick={() => setShowTopology(!showTopology)}
-              className={`flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium transition-colors ${
-                showTopology
-                  ? "border-accent-500/40 bg-accent-500/10 text-accent-600 dark:text-accent-400"
-                  : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]"
-              }`}
-              title="Show topology">
-              <Network className="h-3 w-3" />
-            </button>
-            <button onClick={onToggleRR}
-              className={`flex h-7 items-center gap-1 rounded-lg border px-2 text-[10px] font-medium transition-colors ${
-                isRoundRobinStrategy(c.strategy)
-                  ? "border-accent-500/40 bg-accent-500/10 text-accent-600 dark:text-accent-400"
-                  : "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]"
-              }`}
-              title="Toggle round-robin">
-              RR
-            </button>
-            <button onClick={copyName}
-              className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
-              title="Copy combo name">
-              {copied ? <Check className="h-4 w-4 text-emerald-500 dark:text-emerald-400" /> : <Copy className="h-4 w-4" />}
-            </button>
-            <button onClick={onEdit}
-              className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
-              title="Edit">
-              <Pencil className="h-4 w-4" />
-            </button>
-            <button onClick={onDelete}
-              className="rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"
-              title="Delete">
-              <Trash2 className="h-4 w-4" />
-            </button>
-          </div>
+          )}
         </div>
       </div>
 
       {showTopology && (
-        <div className="border-t border-[var(--border)] px-4 py-3">
-          <ComboTopology chain={c} providers={providers} />
+        <div className="border-t border-[var(--border)] bg-[var(--bg)] px-2 py-2">
+          <ChainTopology chain={c} providers={providers} />
         </div>
       )}
     </div>
   );
 }
 
-// ─── Combo Modal (Create / Edit) ─────────────────────────────────────────────
+// ─── Chain Modal (Create / Edit) ─────────────────────────────────────────────
 
-function ComboModal({ chain, providers, onClose }: {
+function ChainModal({ chain, providers, onClose }: {
   chain?: Chain;
   providers: Provider[];
   onClose: () => void;
@@ -664,12 +684,12 @@ function ComboModal({ chain, providers, onClose }: {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["chains"] });
-      toast.success("Combo created", `Routing chain "${name.trim()}" is now available as a model target.`);
+      toast.success("Chain created", `Routing chain "${name.trim()}" is now available as a model target.`);
       onClose();
     },
     onError: (e: Error) => {
       setError(e.message);
-      toast.error("Combo creation failed", e.message);
+      toast.error("Chain creation failed", e.message);
     },
   });
 
@@ -683,12 +703,12 @@ function ComboModal({ chain, providers, onClose }: {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["chains"] });
-      toast.success("Combo updated", `Routing chain "${name.trim()}" has been saved with the new configuration.`);
+      toast.success("Chain updated", `Routing chain "${name.trim()}" has been saved with the new configuration.`);
       onClose();
     },
     onError: (e: Error) => {
       setError(e.message);
-      toast.error("Combo update failed", e.message);
+      toast.error("Chain update failed", e.message);
     },
   });
 
@@ -742,7 +762,7 @@ function ComboModal({ chain, providers, onClose }: {
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-          <h2 className="text-base font-semibold">{isEdit ? "Edit Combo" : "Create Combo"}</h2>
+          <h2 className="text-base font-semibold">{isEdit ? "Edit Chain" : "Create Chain"}</h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-[var(--text-muted)] hover:text-[var(--text)]">
             <X className="h-4 w-4" />
           </button>
@@ -751,8 +771,8 @@ function ComboModal({ chain, providers, onClose }: {
         {/* Body */}
         <div className="flex-1 overflow-y-auto space-y-6 px-6 py-5">
           {/* Name */}
-          <Field label="Combo name">
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-combo"
+          <Field label="Chain name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-chain"
               className="font-mono" />
             <p className="mt-1 text-[10px] text-[var(--text-muted)]">
               Use as <span className="font-mono">chain:{name || "name"}</span> or bare <span className="font-mono">{name || "name"}</span> as model.
@@ -844,7 +864,7 @@ function ComboModal({ chain, providers, onClose }: {
           <Button onClick={() => (isEdit ? update.mutate() : create.mutate())}
             disabled={!valid || create.isPending || update.isPending}>
             {(create.isPending || update.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-            {isEdit ? "Save changes" : "Create combo"}
+            {isEdit ? "Save changes" : "Create chain"}
           </Button>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
         </div>

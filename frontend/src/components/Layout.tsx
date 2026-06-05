@@ -49,7 +49,7 @@ const navGroups: NavGroup[] = [
     heading: "Traffic & Logic",
     items: [
       { to: "/endpoints", label: "Endpoints", icon: Network },
-      { to: "/chains", label: "Combos", icon: Layers },
+      { to: "/chains", label: "Chains", icon: Layers },
       { to: "/skills", label: "Skills", icon: Sparkles },
     ],
   },

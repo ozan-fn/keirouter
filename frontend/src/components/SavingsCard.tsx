@@ -18,18 +18,18 @@ const periodLabels: Record<string, string> = {
   month: "Last 30 Days",
 };
 
-// Premium Minimalist Dark Palette (Anti-Slop)
+// Earth Tone Palette (App matched)
 const C = {
-  bg: "#0A0A0B",
-  surface: "#121214",
-  border: "#27272A",
-  borderLight: "#18181B",
-  text: "#FAFAFA",
-  textSecondary: "#A1A1AA",
-  textMuted: "#71717A",
-  accent: "#E4E4E7", // Sharp white for main numbers
-  accentSecondary: "#38BDF8", // Refined sharp blue for secondary tone
-  positive: "#10B981", // Emerald for reductions
+  bg: "#faf9f7",
+  surface: "#ffffff",
+  border: "rgba(0,0,0,0.08)",
+  borderLight: "rgba(0,0,0,0.04)",
+  text: "#1c1b18",
+  textSecondary: "#43413a",
+  textMuted: "#a8a59a",
+  accent: "#C45F3A", // Terracotta / Orange
+  accentLight: "#d98a6a",
+  positive: "#059669", // Emerald for good metrics
 };
 
 // ─── Hidden Card (rendered off-screen for capture) ───────────────────────────
@@ -44,6 +44,12 @@ interface SavingsCardData {
   cavemanActive: boolean;
   terseActive: boolean;
   actualCost: number;
+}
+
+function formatCost(cost: number): string {
+  if (cost === 0) return "0.00";
+  if (cost < 0.01) return cost.toFixed(4);
+  return cost.toFixed(2);
 }
 
 function SavingsCardContent({ data }: { data: SavingsCardData }) {
@@ -76,44 +82,47 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
           "'-apple-system', 'BlinkMacSystemFont', 'SF Pro Display', 'Inter', sans-serif",
         background: C.bg,
         color: C.text,
-        padding: "40px",
+        padding: "48px 56px",
+        display: "flex",
+        flexDirection: "column",
       }}
     >
-      {/* Outer Border Frame */}
+      {/* Subtle Texture */}
       <div
         style={{
-          width: "100%",
-          height: "100%",
-          border: `1px solid ${C.border}`,
-          borderRadius: 12,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
+          position: "absolute",
+          inset: 0,
+          backgroundImage:
+            "linear-gradient(rgba(0,0,0,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.02) 1px, transparent 1px)",
+          backgroundSize: "40px 40px",
+          zIndex: 0,
         }}
-      >
-        {/* Header Bar */}
+      />
+
+      <div style={{ position: "relative", zIndex: 1, flex: 1, display: "flex", flexDirection: "column" }}>
+        
+        {/* Header */}
         <div
           style={{
-            height: 80,
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            padding: "0 40px",
+            paddingBottom: "32px",
             borderBottom: `1px solid ${C.border}`,
-            background: C.surface,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <img
               src="/keirouter-logo.png"
               alt="KeiRouter"
-              style={{ width: 28, height: 28, objectFit: "contain" }}
+              style={{ width: 32, height: 32, objectFit: "contain" }}
               crossOrigin="anonymous"
             />
             <span
               style={{
-                fontSize: 20,
-                fontWeight: 600,
+                fontSize: 22,
+                fontWeight: 700,
+                color: C.text,
                 letterSpacing: "-0.01em",
               }}
             >
@@ -123,7 +132,7 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
             <span
               style={{
                 fontSize: 13,
-                fontWeight: 500,
+                fontWeight: 600,
                 color: C.textSecondary,
                 letterSpacing: "0.1em",
                 textTransform: "uppercase",
@@ -132,33 +141,37 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
               Savings Report
             </span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 500, color: C.textMuted }}>Period</span>
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{periodLabels[period] || period}</span>
+          <div style={{
+            background: C.surface,
+            padding: "8px 16px",
+            borderRadius: 20,
+            border: `1px solid ${C.borderLight}`,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.02)"
+          }}>
+            <span
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+                color: C.textSecondary,
+              }}
+            >
+              {periodLabels[period] || period}
+            </span>
           </div>
         </div>
 
-        {/* Main Split Content */}
-        <div style={{ flex: 1, display: "flex" }}>
+        {/* Main Content Layout */}
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "64px", paddingTop: "40px" }}>
           
-          {/* Left Panel: Primary Metric */}
-          <div
-            style={{
-              flex: "0 0 55%",
-              padding: "60px 40px",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "center",
-              borderRight: `1px solid ${C.border}`,
-            }}
-          >
+          {/* Left: Big Hero Metric */}
+          <div style={{ flex: "0 0 50%", display: "flex", flexDirection: "column", gap: "24px" }}>
             <span
               style={{
                 fontSize: 16,
-                fontWeight: 500,
-                color: C.textSecondary,
-                marginBottom: 24,
-                letterSpacing: "0.02em",
+                fontWeight: 600,
+                color: C.textMuted,
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
               }}
             >
               Total Cost Saved
@@ -166,112 +179,116 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
             <span
               style={{
                 fontSize: 140,
-                fontWeight: 700,
-                color: C.accent,
+                fontWeight: 800,
+                color: C.positive,
                 lineHeight: 1,
                 letterSpacing: "-0.04em",
-                marginBottom: 24,
               }}
             >
-              ${costSaved.toFixed(2)}
+              ${formatCost(costSaved)}
             </span>
             
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{
-                background: "rgba(16, 185, 129, 0.1)",
-                color: C.positive,
-                padding: "8px 16px",
-                borderRadius: 6,
-                fontSize: 16,
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19"></line>
-                  <polyline points="19 12 12 19 5 12"></polyline>
-                </svg>
-                {savingsPct.toFixed(1)}% Cost Reduction
-              </div>
-            </div>
-          </div>
-
-          {/* Right Panel: Data Grid */}
-          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-            <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-              
-              {/* Stat Row 1 */}
-              <div style={{ flex: 1, display: "flex", borderBottom: `1px solid ${C.border}` }}>
-                <StatBox label="Tokens Saved" value={fmtNum(tokensSaved)} borderRight />
-                <StatBox label="Total Requests" value={fmtNum(totalRequests)} />
-              </div>
-
-              {/* Stat Row 2 */}
-              <div style={{ flex: 1, display: "flex", borderBottom: `1px solid ${C.border}` }}>
-                <StatBox label="Cost With KeiRouter" value={`$${actualCost.toFixed(2)}`} borderRight />
-                <StatBox label="Original Cost (Est.)" value={`$${(actualCost + costSaved).toFixed(2)}`} muted />
-              </div>
-
-              {/* Optimizers Row */}
-              <div style={{ padding: "32px 40px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", background: C.surface }}>
-                <span
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: C.textMuted,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.1em",
-                    marginBottom: 16,
-                  }}
-                >
-                  Active Optimizers
-                </span>
-                <div style={{ display: "flex", gap: 12 }}>
-                  {optimizers.length > 0 ? optimizers.map((opt) => (
-                    <div
-                      key={opt.name}
-                      style={{
-                        padding: "6px 12px",
-                        border: `1px solid ${C.border}`,
-                        borderRadius: 6,
-                        background: C.bg,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                      }}
-                    >
-                      <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.accentSecondary }} />
-                      <span style={{ fontSize: 14, fontWeight: 500, color: C.text }}>{opt.name}</span>
-                    </div>
-                  )) : (
-                    <span style={{ fontSize: 14, color: C.textMuted }}>None</span>
-                  )}
+            {costSaved > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{
+                  background: "rgba(5, 150, 105, 0.1)",
+                  color: C.positive,
+                  padding: "8px 16px",
+                  borderRadius: 20,
+                  fontSize: 18,
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <polyline points="19 12 12 19 5 12"></polyline>
+                  </svg>
+                  {savingsPct.toFixed(1)}% Reduction
                 </div>
               </div>
-
-            </div>
+            )}
           </div>
 
+          {/* Right: Data Cards */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "24px" }}>
+            
+            {/* Bento Grid */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
+              <DataCard label="Tokens Saved" value={fmtNum(tokensSaved)} />
+              <DataCard label="Total Requests" value={fmtNum(totalRequests)} />
+              <DataCard label="KeiRouter Cost" value={`$${formatCost(actualCost)}`} />
+              {costSaved > 0 ? (
+                <DataCard label="Original Cost (Est)" value={`$${formatCost(actualCost + costSaved)}`} muted />
+              ) : (
+                <DataCard label="Original Cost (Est)" value={`$${formatCost(actualCost)}`} muted />
+              )}
+            </div>
+
+            {/* Optimizers Strip */}
+            <div style={{
+              marginTop: "16px",
+              background: C.surface,
+              border: `1px solid ${C.borderLight}`,
+              borderRadius: 16,
+              padding: "24px",
+              boxShadow: "0 4px 20px rgba(0,0,0,0.02)"
+            }}>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: C.textMuted,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.1em",
+                  marginBottom: 16,
+                }}
+              >
+                Active Optimizers
+              </span>
+              <div style={{ display: "flex", gap: 12 }}>
+                {optimizers.length > 0 ? optimizers.map((opt) => (
+                  <div
+                    key={opt.name}
+                    style={{
+                      padding: "8px 16px",
+                      border: `1px solid ${C.borderLight}`,
+                      borderRadius: 8,
+                      background: C.bg,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: C.accent }} />
+                    <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{opt.name}</span>
+                  </div>
+                )) : (
+                  <span style={{ fontSize: 14, fontWeight: 500, color: C.textMuted }}>None active in this period</span>
+                )}
+              </div>
+            </div>
+
+          </div>
         </div>
 
         {/* Footer Bar */}
         <div
           style={{
-            height: 60,
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            padding: "0 40px",
+            paddingTop: "32px",
+            marginTop: "auto",
             borderTop: `1px solid ${C.border}`,
-            background: C.surface,
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 500, color: C.textSecondary, letterSpacing: "0.02em" }}>
+          <span style={{ fontSize: 14, fontWeight: 500, color: C.textSecondary }}>
             keirouter.dev
           </span>
-          <span style={{ fontSize: 13, fontWeight: 500, color: C.textSecondary, letterSpacing: "0.02em" }}>
+          <span style={{ fontSize: 14, fontWeight: 500, color: C.textMuted }}>
             AI Routing, Optimized.
           </span>
         </div>
@@ -281,30 +298,31 @@ function SavingsCardContent({ data }: { data: SavingsCardData }) {
   );
 }
 
-function StatBox({ label, value, muted, borderRight }: { label: string; value: string, muted?: boolean, borderRight?: boolean }) {
+function DataCard({ label, value, muted }: { label: string; value: string, muted?: boolean }) {
   return (
     <div style={{ 
-      flex: 1, 
-      padding: "32px 40px", 
+      background: C.surface,
+      border: `1px solid ${C.borderLight}`,
+      borderRadius: 16,
+      padding: "24px",
       display: "flex", 
       flexDirection: "column", 
-      justifyContent: "center",
-      borderRight: borderRight ? `1px solid ${C.border}` : "none"
+      gap: "12px",
+      boxShadow: "0 4px 20px rgba(0,0,0,0.02)"
     }}>
       <span
         style={{
           fontSize: 13,
-          fontWeight: 500,
+          fontWeight: 600,
           color: C.textMuted,
-          marginBottom: 12,
         }}
       >
         {label}
       </span>
       <span
         style={{
-          fontSize: 36,
-          fontWeight: 600,
+          fontSize: 28,
+          fontWeight: 700,
           color: muted ? C.textSecondary : C.text,
           letterSpacing: "-0.02em",
         }}

@@ -35,55 +35,55 @@ import (
 
 // Server holds the gateway's dependencies and HTTP routes.
 type Server struct {
-	cfg      config.Config
-	log      *slog.Logger
-	db       *store.DB
-	identity *identity.Service
-	auth     *auth.Service
-	pipeline *pipeline.Pipeline
-	conns    *connectors.Registry
-	chains   *store.ChainRepo
-	aliases  *store.AliasRepo
-	accounts *store.AccountRepo
-	pools    *store.ProxyPoolRepo
-	budgets  *store.BudgetRepo
-	usage    *store.UsageRepo
-	settings *store.SettingsRepo
-	vault    *vault.Vault
-	codecs   *transform.Registry
-	metrics  *observ.Metrics
-	consoleLog *consolelog.Buffer
-	cliTools    *clitools.Registry
-	cliToolHome string
-	frontendDir string
-	dataDir     string
+	cfg           config.Config
+	log           *slog.Logger
+	db            *store.DB
+	identity      *identity.Service
+	auth          *auth.Service
+	pipeline      *pipeline.Pipeline
+	conns         *connectors.Registry
+	chains        *store.ChainRepo
+	aliases       *store.AliasRepo
+	accounts      *store.AccountRepo
+	pools         *store.ProxyPoolRepo
+	budgets       *store.BudgetRepo
+	usage         *store.UsageRepo
+	settings      *store.SettingsRepo
+	vault         *vault.Vault
+	codecs        *transform.Registry
+	metrics       *observ.Metrics
+	consoleLog    *consolelog.Buffer
+	cliTools      *clitools.Registry
+	cliToolHome   string
+	frontendDir   string
+	dataDir       string
 	oauthSessions *oauth.SessionStore
-	cfManager   *cloudflare.Manager
-	tsManager   *tailscale.Manager
-	usageHub    *usagehub.Hub
-	router   chi.Router
+	cfManager     *cloudflare.Manager
+	tsManager     *tailscale.Manager
+	usageHub      *usagehub.Hub
+	router        chi.Router
 }
 
 // Deps bundles the gateway's collaborators.
 type Deps struct {
-	Config   config.Config
-	Logger   *slog.Logger
-	DB       *store.DB
-	Identity *identity.Service
-	Auth     *auth.Service
-	Pipeline *pipeline.Pipeline
-	Conns    *connectors.Registry
-	Chains   *store.ChainRepo
-	Aliases  *store.AliasRepo
-	Accounts *store.AccountRepo
-	Pools    *store.ProxyPoolRepo
-	Budgets  *store.BudgetRepo
-	Usage    *store.UsageRepo
-	Settings *store.SettingsRepo
-	Vault    *vault.Vault
-	Codecs   *transform.Registry
-	Metrics  *observ.Metrics
-	ConsoleLog *consolelog.Buffer
+	Config      config.Config
+	Logger      *slog.Logger
+	DB          *store.DB
+	Identity    *identity.Service
+	Auth        *auth.Service
+	Pipeline    *pipeline.Pipeline
+	Conns       *connectors.Registry
+	Chains      *store.ChainRepo
+	Aliases     *store.AliasRepo
+	Accounts    *store.AccountRepo
+	Pools       *store.ProxyPoolRepo
+	Budgets     *store.BudgetRepo
+	Usage       *store.UsageRepo
+	Settings    *store.SettingsRepo
+	Vault       *vault.Vault
+	Codecs      *transform.Registry
+	Metrics     *observ.Metrics
+	ConsoleLog  *consolelog.Buffer
 	CLITools    *clitools.Registry
 	CLITHome    string
 	FrontendDir string
@@ -112,32 +112,32 @@ func New(d Deps) *Server {
 		conLog = consolelog.New()
 	}
 	s := &Server{
-		cfg:      d.Config,
-		log:      log,
-		db:       d.DB,
-		identity: d.Identity,
-		auth:     d.Auth,
-		pipeline: d.Pipeline,
-		conns:    d.Conns,
-		chains:   d.Chains,
-		aliases:  d.Aliases,
-		accounts: d.Accounts,
-		pools:    d.Pools,
-		budgets:  d.Budgets,
-		usage:    d.Usage,
-		settings: d.Settings,
-		vault:    d.Vault,
-		codecs:   d.Codecs,
-		metrics:  d.Metrics,
-		consoleLog: conLog,
-		cliTools:    cliTools,
-		cliToolHome: cliToolHome,
-		frontendDir: d.FrontendDir,
-		dataDir:     d.DataDir,
+		cfg:           d.Config,
+		log:           log,
+		db:            d.DB,
+		identity:      d.Identity,
+		auth:          d.Auth,
+		pipeline:      d.Pipeline,
+		conns:         d.Conns,
+		chains:        d.Chains,
+		aliases:       d.Aliases,
+		accounts:      d.Accounts,
+		pools:         d.Pools,
+		budgets:       d.Budgets,
+		usage:         d.Usage,
+		settings:      d.Settings,
+		vault:         d.Vault,
+		codecs:        d.Codecs,
+		metrics:       d.Metrics,
+		consoleLog:    conLog,
+		cliTools:      cliTools,
+		cliToolHome:   cliToolHome,
+		frontendDir:   d.FrontendDir,
+		dataDir:       d.DataDir,
 		oauthSessions: oauth.NewSessionStore(),
-		cfManager:   d.CfManager,
-		tsManager:   d.TsManager,
-		usageHub:    d.UsageHub,
+		cfManager:     d.CfManager,
+		tsManager:     d.TsManager,
+		usageHub:      d.UsageHub,
 	}
 	s.router = s.routes()
 	return s
@@ -153,7 +153,7 @@ func (s *Server) routes() chi.Router {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: s.cfg.Server.CORSOrigins,
 		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Authorization", "Content-Type", "x-api-key"},
+		AllowedHeaders: []string{"Authorization", "Content-Type", "x-api-key", "X-KeiRouter-Affinity", "X-Conversation-ID", "X-Thread-ID", "X-Session-ID", "OpenAI-Conversation-ID"},
 	}))
 
 	// Health check (unauthenticated).

@@ -19,8 +19,8 @@ proxied API calls resolve.
 npm run build    # type-checks then emits static assets to dist/
 ```
 
-In production, the backend embeds and serves these assets, so the dashboard
-ships inside the single KeiRouter binary.
+In production, the backend serves these assets from a standard install path
+(`/usr/local/share/keirouter/frontend/dist` by default) or from the Docker image.
 
 ## Design
 

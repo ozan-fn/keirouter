@@ -16,6 +16,8 @@ package dispatch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"time"
@@ -69,6 +71,9 @@ const (
 	StrategyFallback Strategy = "fallback"
 	// StrategyRoundRobin rotates the starting target per call.
 	StrategyRoundRobin Strategy = "round-robin"
+	// StrategySmartRoundRobin rotates new sessions but keeps an affinity key on
+	// the same account so account-local provider context is preserved.
+	StrategySmartRoundRobin Strategy = "smart-round-robin"
 )
 
 // ConnectorSource resolves a connector by provider id.
@@ -92,6 +97,8 @@ type RoutingSource interface {
 	SetChainRotationState(ctx context.Context, state store.ChainRotation) error
 	GetTargetRotationState(ctx context.Context, scopeKey string) (store.TargetRotation, error)
 	SetTargetRotationState(ctx context.Context, state store.TargetRotation) error
+	GetAccountAffinity(ctx context.Context, scopeKey string) (store.AccountAffinity, error)
+	SetAccountAffinity(ctx context.Context, state store.AccountAffinity) error
 }
 
 // Dispatcher walks fallback chains, yielding resolved attempts.
@@ -145,7 +152,28 @@ type PlanOptions struct {
 	// AccountStickyLimit is the number of consecutive requests per account
 	// before account round-robin advances. Zero defaults to DefaultStickyLimit.
 	AccountStickyLimit int
+	// AccountAffinityKey pins smart round-robin requests to an account when
+	// the same conversation/session key is seen again.
+	AccountAffinityKey string
+	// AccountAffinityTTL controls how long a smart round-robin pin lives.
+	// Zero defaults to DefaultAffinityTTL.
+	AccountAffinityTTL time.Duration
+	// ProviderAccountStrategies overrides account routing per provider.
+	ProviderAccountStrategies map[string]AccountRoutingOptions
 }
+
+// AccountRoutingOptions is the provider-scoped subset of PlanOptions used for
+// account ordering inside one provider/model target.
+type AccountRoutingOptions struct {
+	Strategy    Strategy
+	StickyLimit int
+	AffinityKey string
+	AffinityTTL time.Duration
+}
+
+// DefaultAffinityTTL keeps context affinity across a typical work session
+// without pinning abandoned sessions forever.
+const DefaultAffinityTTL = 24 * time.Hour
 
 // Plan resolves the ordered list of attempts for a chain of targets, scoped to
 // a tenant and constrained to the given required capabilities. It returns an
@@ -186,7 +214,7 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 			lastReason = fmt.Sprintf("no accounts configured for provider %q", target.Provider)
 			continue
 		}
-		accs = d.applyAccountRotation(ctx, tenantID, target, accs, opts)
+		accs = d.applyAccountRouting(ctx, tenantID, target, accs, opts.accountRoutingForTarget(target.Provider))
 
 		for _, acc := range accs {
 			// Account-level cooldown (global cooldown from NoteFailure).
@@ -347,15 +375,40 @@ func (d *Dispatcher) applyRotation(ctx context.Context, targets []Target, opts P
 	return rotated
 }
 
-// applyAccountRotation reorders accounts within one target according to the
+func (opts PlanOptions) accountRoutingForTarget(provider string) AccountRoutingOptions {
+	if opts.ProviderAccountStrategies != nil {
+		if override, ok := opts.ProviderAccountStrategies[provider]; ok {
+			return override
+		}
+	}
+	return AccountRoutingOptions{
+		Strategy:    opts.AccountStrategy,
+		StickyLimit: opts.AccountStickyLimit,
+		AffinityKey: opts.AccountAffinityKey,
+		AffinityTTL: opts.AccountAffinityTTL,
+	}
+}
+
+func (d *Dispatcher) applyAccountRouting(ctx context.Context, tenantID string, target Target, accounts []store.Account, opts AccountRoutingOptions) []store.Account {
+	switch opts.Strategy {
+	case StrategyRoundRobin:
+		return d.applyAccountRoundRobin(ctx, tenantID, target, accounts, opts)
+	case StrategySmartRoundRobin:
+		return d.applySmartAccountRoundRobin(ctx, tenantID, target, accounts, opts)
+	default:
+		return accounts
+	}
+}
+
+// applyAccountRoundRobin reorders accounts within one target according to the
 // account round-robin strategy. The persisted key is tenant/provider/model so
 // direct model routes and combo steps share fair account distribution.
-func (d *Dispatcher) applyAccountRotation(ctx context.Context, tenantID string, target Target, accounts []store.Account, opts PlanOptions) []store.Account {
-	if opts.AccountStrategy != StrategyRoundRobin || len(accounts) <= 1 || d.routing == nil {
+func (d *Dispatcher) applyAccountRoundRobin(ctx context.Context, tenantID string, target Target, accounts []store.Account, opts AccountRoutingOptions) []store.Account {
+	if len(accounts) <= 1 || d.routing == nil {
 		return accounts
 	}
 
-	sticky := opts.AccountStickyLimit
+	sticky := opts.StickyLimit
 	if sticky <= 0 {
 		sticky = DefaultStickyLimit
 	}
@@ -376,8 +429,72 @@ func (d *Dispatcher) applyAccountRotation(ctx context.Context, tenantID string, 
 	return rotated
 }
 
+// applySmartAccountRoundRobin is round-robin for new affinity keys and sticky
+// for known keys. It mirrors load-balancer session affinity: the first request
+// chooses an account using round-robin, then follow-up requests for the same
+// affinity key start with that account while keeping the rest as fallbacks.
+func (d *Dispatcher) applySmartAccountRoundRobin(ctx context.Context, tenantID string, target Target, accounts []store.Account, opts AccountRoutingOptions) []store.Account {
+	if len(accounts) <= 1 || d.routing == nil {
+		return accounts
+	}
+	if opts.AffinityKey == "" {
+		return d.applyAccountRoundRobin(ctx, tenantID, target, accounts, opts)
+	}
+
+	ttl := opts.AffinityTTL
+	if ttl <= 0 {
+		ttl = DefaultAffinityTTL
+	}
+	now := time.Now()
+	scopeKey := accountAffinityKey(tenantID, target, opts.AffinityKey)
+	affinity, _ := d.routing.GetAccountAffinity(ctx, scopeKey)
+	if affinity.AccountID != "" && affinity.ExpiresAt.After(now) {
+		if reordered, ok := moveAccountToFront(accounts, affinity.AccountID); ok {
+			_ = d.routing.SetAccountAffinity(ctx, store.AccountAffinity{
+				ScopeKey:  scopeKey,
+				AccountID: affinity.AccountID,
+				ExpiresAt: now.Add(ttl),
+			})
+			return reordered
+		}
+	}
+
+	rotated := d.applyAccountRoundRobin(ctx, tenantID, target, accounts, opts)
+	if len(rotated) > 0 {
+		_ = d.routing.SetAccountAffinity(ctx, store.AccountAffinity{
+			ScopeKey:  scopeKey,
+			AccountID: rotated[0].ID,
+			ExpiresAt: now.Add(ttl),
+		})
+	}
+	return rotated
+}
+
 func accountRotationKey(tenantID string, target Target) string {
 	return tenantID + "\x00" + target.Provider + "\x00" + target.Model
+}
+
+func accountAffinityKey(tenantID string, target Target, affinityKey string) string {
+	sum := sha256.Sum256([]byte(affinityKey))
+	return tenantID + "\x00" + target.Provider + "\x00" + target.Model + "\x00affinity\x00" + hex.EncodeToString(sum[:])
+}
+
+func moveAccountToFront(accounts []store.Account, accountID string) ([]store.Account, bool) {
+	idx := -1
+	for i, acc := range accounts {
+		if acc.ID == accountID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return accounts, false
+	}
+	out := make([]store.Account, 0, len(accounts))
+	out = append(out, accounts[idx])
+	out = append(out, accounts[:idx]...)
+	out = append(out, accounts[idx+1:]...)
+	return out, true
 }
 
 // advanceRotationState returns the cursor to use for this request, plus the

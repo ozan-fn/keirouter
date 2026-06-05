@@ -7,19 +7,38 @@
 #   make build      build backend binary + frontend assets
 #   make test       run backend tests
 #   make bootstrap  create an initial API key
+#   make setup      one-command: install deps + run (no .env needed)
 
 BACKEND_DIR := backend
 FRONTEND_DIR := frontend
 BIN := keirouter
 
-.PHONY: dev backend frontend build build-backend build-frontend test vet bootstrap install clean docker
+.PHONY: dev backend frontend build build-backend build-frontend test vet bootstrap install setup quickstart clean docker
 
 ## dev: run backend and frontend concurrently; Ctrl-C stops both.
+##      The backend starts first; frontend waits until the backend is healthy
+##      so the Vite proxy never hits ECONNREFUSED on cold start.
 dev:
 	@echo "Starting KeiRouter backend (:20180) and dashboard (:5180)…"
 	@trap 'kill 0' INT TERM EXIT; \
 	( cd $(BACKEND_DIR) && go run ./cmd/keirouter ) & \
-	( cd $(FRONTEND_DIR) && npm run dev ) & \
+	( \
+		echo "⏳ Waiting for backend…"; \
+		ready=0; \
+		for i in $$(seq 1 30); do \
+			if curl -sf http://127.0.0.1:20180/healthz >/dev/null 2>&1; then \
+				echo "✅ Backend ready"; \
+				ready=1; \
+				break; \
+			fi; \
+			sleep 0.5; \
+		done; \
+		if [ "$$ready" -ne 1 ]; then \
+			echo "Backend did not become healthy on http://127.0.0.1:20180/healthz"; \
+			exit 1; \
+		fi; \
+		cd $(FRONTEND_DIR) && npm run dev \
+	) & \
 	wait
 
 ## backend: run only the Go backend.
@@ -64,3 +83,21 @@ docker:
 clean:
 	rm -f $(BIN)
 	rm -rf $(FRONTEND_DIR)/dist
+
+## setup: install deps (if needed) then start dev servers.
+##        Zero config — no .env required for local use.
+##        Usage: make setup
+setup:
+	@echo "🚀 KeiRouter — one-command setup"
+	@test -d $(FRONTEND_DIR)/node_modules || ( echo "📦 Installing frontend deps…" && cd $(FRONTEND_DIR) && npm ci --quiet )
+	@cd $(BACKEND_DIR) && go mod download 2>/dev/null || true
+	@echo ""
+	@echo "✅ Dependencies ready. Starting dev servers…"
+	@echo "   Backend  → http://localhost:20180"
+	@echo "   Dashboard→ http://localhost:5180"
+	@echo "   Password → keirouter"
+	@echo ""
+	@$(MAKE) dev
+
+## quickstart: alias for setup.
+quickstart: setup

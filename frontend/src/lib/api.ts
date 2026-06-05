@@ -45,6 +45,12 @@ export interface EndpointSettings {
   observability_enabled?: boolean;
 }
 
+export interface ProviderRoutingSettings {
+  routing_strategy: "inherit" | "fill-first" | "round-robin" | "smart-round-robin" | string;
+  sticky_limit: number;
+  affinity_ttl_minutes: number;
+}
+
 export interface OAuthProvider {
   provider: string;
   display_name: string;
@@ -443,6 +449,10 @@ export const api = {
   providers: () => request<{ providers: Provider[] }>("GET", "/providers"),
   providerModels: (id: string) =>
     request<{ models: { id: string; name: string; kind: string }[] }>("GET", `/providers/${id}/models`),
+  providerRouting: (id: string) =>
+    request<ProviderRoutingSettings>("GET", `/providers/${id}/routing`),
+  updateProviderRouting: (id: string, patch: Partial<ProviderRoutingSettings>) =>
+    request<ProviderRoutingSettings>("POST", `/providers/${id}/routing`, patch),
 
   listKeys: () => request<{ keys: APIKey[] }>("GET", "/keys"),
   createKey: (name: string, opts?: {

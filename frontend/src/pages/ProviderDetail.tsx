@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota } from "../lib/api";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route } from "lucide-react";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { useToast } from "../components/Toast";
 import {
@@ -15,6 +15,7 @@ import {
   Spinner,
   EmptyState,
   ErrorBanner,
+  SegmentedControl,
 } from "../components/ui";
 
 // defaultRedirectURI is the OAuth callback the provider redirects to after sign-in.
@@ -39,6 +40,11 @@ export function ProviderDetailPage() {
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
   const oauthProviders = useQuery({ queryKey: ["oauth-providers"], queryFn: () => api.oauthProviders() });
   const pools = useQuery({ queryKey: ["proxy-pools"], queryFn: () => api.listProxyPools() });
+  const routing = useQuery({
+    queryKey: ["provider-routing", id],
+    queryFn: () => api.providerRouting(id!),
+    enabled: !!id,
+  });
   const disabledModels = useQuery({
     queryKey: ["disabled-models", id],
     queryFn: () => api.listDisabledModels(id!),
@@ -184,6 +190,15 @@ export function ProviderDetailPage() {
     onError: (e: Error) => toast.error("Couldn't enable models", e.message),
   });
 
+  const updateRouting = useMutation({
+    mutationFn: (patch: Partial<ProviderRoutingSettings>) => api.updateProviderRouting(id!, patch),
+    onSuccess: (data) => {
+      qc.setQueryData(["provider-routing", id], data);
+      toast.success("Routing updated", "Account routing strategy for this provider was saved.");
+    },
+    onError: (e: Error) => toast.error("Routing update failed", e.message),
+  });
+
   // Sort accounts by priority for display.
   const sortedAccounts = [...myAccounts].sort((a, b) => a.priority - b.priority);
   const disabledModelIds = new Set(disabledModels.data?.ids ?? []);
@@ -298,6 +313,14 @@ export function ProviderDetailPage() {
             </div>
           )}
         </Card>
+
+        <ProviderRoutingCard
+          settings={routing.data}
+          accountCount={myAccounts.length}
+          loading={routing.isLoading}
+          saving={updateRouting.isPending}
+          onUpdate={(patch) => updateRouting.mutate(patch)}
+        />
 
         {/* Available Models */}
         {models.data?.models && models.data.models.length > 0 && (
@@ -422,6 +445,102 @@ export function ProviderDetailPage() {
         />
       )}
     </>
+  );
+}
+
+const routingOptions = [
+  { value: "inherit", label: "Inherit" },
+  { value: "fill-first", label: "Fill first" },
+  { value: "round-robin", label: "Round robin" },
+  { value: "smart-round-robin", label: "Smart" },
+];
+
+const routingDescriptions: Record<string, string> = {
+  inherit: "Uses the global routing strategy from Settings.",
+  "fill-first": "Always starts from the highest priority healthy account.",
+  "round-robin": "Cycles accounts after the sticky limit.",
+  "smart-round-robin": "Cycles new conversations, then keeps each conversation on the same account.",
+};
+
+function ProviderRoutingCard({
+  settings,
+  accountCount,
+  loading,
+  saving,
+  onUpdate,
+}: {
+  settings?: ProviderRoutingSettings;
+  accountCount: number;
+  loading: boolean;
+  saving: boolean;
+  onUpdate: (patch: Partial<ProviderRoutingSettings>) => void;
+}) {
+  const mode = settings?.routing_strategy || "inherit";
+  const stickyLimit = settings?.sticky_limit || 3;
+  const ttlHours = Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60));
+  const rotatesAccounts = mode === "round-robin" || mode === "smart-round-robin";
+
+  return (
+    <Card>
+      <CardHeader
+        title="Account routing"
+        description={`${accountCount} account${accountCount === 1 ? "" : "s"} available for this provider.`}
+        action={<Route className="h-4 w-4 text-[var(--text-muted)]" />}
+      />
+      {loading ? (
+        <Spinner />
+      ) : (
+        <div className="divide-y divide-[var(--border)]">
+          <div className="flex flex-col gap-3 px-6 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Strategy</p>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">{routingDescriptions[mode] || routingDescriptions.inherit}</p>
+            </div>
+            <SegmentedControl
+              value={mode}
+              onChange={(value) => onUpdate({ routing_strategy: value })}
+              options={routingOptions}
+            />
+          </div>
+
+          {rotatesAccounts && (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
+              <div>
+                <p className="text-sm font-medium">Sticky limit</p>
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">Calls before a new session can move to the next account.</p>
+              </div>
+              <Input
+                type="number"
+                min={1}
+                max={100}
+                value={stickyLimit}
+                disabled={saving}
+                onChange={(e) => onUpdate({ sticky_limit: parseInt(e.target.value, 10) || 1 })}
+                className="w-24 text-center"
+              />
+            </div>
+          )}
+
+          {mode === "smart-round-robin" && (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
+              <div>
+                <p className="text-sm font-medium">Conversation affinity TTL</p>
+                <p className="mt-0.5 text-xs text-[var(--text-muted)]">Hours to keep a conversation pinned to its selected account.</p>
+              </div>
+              <Input
+                type="number"
+                min={1}
+                max={168}
+                value={ttlHours}
+                disabled={saving}
+                onChange={(e) => onUpdate({ affinity_ttl_minutes: (parseInt(e.target.value, 10) || 1) * 60 })}
+                className="w-24 text-center"
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 

@@ -118,6 +118,90 @@ func TestPlanWith_AccountRoundRobinHonorsStickyLimit(t *testing.T) {
 	require.Equal(t, []string{"acc-1", "acc-1", "acc-2", "acc-2", "acc-1"}, got)
 }
 
+func TestPlanWith_SmartRoundRobinPinsAffinityKey(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t,
+		testAccount("acc-1", 10),
+		testAccount("acc-2", 20),
+		testAccount("acc-3", 30),
+	)
+
+	targets := []Target{{Provider: "openai", Model: "gpt-4o"}}
+	opts := PlanOptions{AccountStrategy: StrategySmartRoundRobin, AccountAffinityKey: "thread-a"}
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet(), opts)
+	require.NoError(t, err)
+	require.Equal(t, "acc-1", attempts[0].Account.ID)
+
+	attempts, err = d.PlanWith(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet(), opts)
+	require.NoError(t, err)
+	require.Equal(t, "acc-1", attempts[0].Account.ID)
+
+	opts.AccountAffinityKey = "thread-b"
+	attempts, err = d.PlanWith(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet(), opts)
+	require.NoError(t, err)
+	require.Equal(t, "acc-2", attempts[0].Account.ID)
+
+	opts.AccountAffinityKey = "thread-a"
+	attempts, err = d.PlanWith(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet(), opts)
+	require.NoError(t, err)
+	require.Equal(t, "acc-1", attempts[0].Account.ID)
+}
+
+func TestPlanWith_ProviderAccountStrategyOverride(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t,
+		testAccount("acc-1", 10),
+		testAccount("acc-2", 20),
+	)
+
+	targets := []Target{{Provider: "openai", Model: "gpt-4o"}}
+	opts := PlanOptions{
+		AccountStrategy: StrategyFallback,
+		ProviderAccountStrategies: map[string]AccountRoutingOptions{
+			"openai": {Strategy: StrategyRoundRobin},
+		},
+	}
+
+	var got []string
+	for i := 0; i < 3; i++ {
+		attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet(), opts)
+		require.NoError(t, err)
+		got = append(got, attempts[0].Account.ID)
+	}
+
+	require.Equal(t, []string{"acc-1", "acc-2", "acc-1"}, got)
+}
+
+func TestPlanWith_TargetRoundRobinRotatesComboTargets(t *testing.T) {
+	ctx := context.Background()
+	d, db := newDispatchTest(t, testAccount("acc-1", 10))
+	now := time.Now()
+	require.NoError(t, db.Chains().Create(ctx, store.Chain{
+		ID:        "chain-1",
+		TenantID:  store.DefaultTenantID,
+		Name:      "combo",
+		Strategy:  string(StrategyRoundRobin),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}))
+
+	targets := []Target{
+		{Provider: "openai", Model: "gpt-4o"},
+		{Provider: "openai", Model: "gpt-5"},
+	}
+	opts := PlanOptions{Strategy: StrategyRoundRobin, ChainID: "chain-1"}
+
+	var got []string
+	for i := 0; i < 3; i++ {
+		attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet(), opts)
+		require.NoError(t, err)
+		got = append(got, attempts[0].Target.Model)
+	}
+
+	require.Equal(t, []string{"gpt-4o", "gpt-5", "gpt-4o"}, got)
+}
+
 func TestAdvanceRotationStateHonorsStickyLimit(t *testing.T) {
 	cursor, nextCursor, hits := advanceRotationState(3, 0, 0, 2)
 	require.Equal(t, 0, cursor)

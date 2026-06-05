@@ -154,6 +154,34 @@ func TestSettingsRepo_GetSet(t *testing.T) {
 	require.Equal(t, "light", v)
 }
 
+func TestRoutingRepo_AccountAffinity(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	affinity := AccountAffinity{
+		ScopeKey:  "tenant/provider/model/thread",
+		AccountID: "acc-1",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	require.NoError(t, db.Routing().SetAccountAffinity(ctx, affinity))
+
+	got, err := db.Routing().GetAccountAffinity(ctx, affinity.ScopeKey)
+	require.NoError(t, err)
+	require.Equal(t, "acc-1", got.AccountID)
+	require.True(t, got.ExpiresAt.After(time.Now()))
+
+	affinity.AccountID = "acc-2"
+	affinity.ExpiresAt = time.Now().Add(-time.Minute)
+	require.NoError(t, db.Routing().SetAccountAffinity(ctx, affinity))
+	deleted, err := db.Routing().ExpireAccountAffinities(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted)
+
+	got, err = db.Routing().GetAccountAffinity(ctx, affinity.ScopeKey)
+	require.NoError(t, err)
+	require.Empty(t, got.AccountID)
+}
+
 func TestAuditRepo_AppendAndList(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

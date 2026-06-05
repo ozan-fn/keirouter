@@ -3,7 +3,7 @@ name: keirouter
 services:
   keirouter:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/Dockerfile
     image: ${KEIROUTER_IMAGE:-keirouter:latest}
     restart: unless-stopped
