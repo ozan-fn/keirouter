@@ -174,7 +174,7 @@ export function ErrorBanner({ message, className = "" }: { message: string; clas
       className={`flex items-start gap-2.5 rounded-lg border border-[color:var(--color-danger)]/30 bg-[color:var(--color-danger)]/10 px-3.5 py-2.5 ${className}`}
     >
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--color-danger)]" strokeWidth={2} />
-      <p className="text-sm leading-snug text-[color:var(--color-danger)]">{message}</p>
+      <p className="text-sm leading-snug break-words overflow-hidden text-[color:var(--color-danger)]">{message}</p>
     </div>
   );
 }

@@ -287,7 +287,7 @@ func apiKeyProviders() []ProviderSpec {
 		{ID: "codebuddy", DisplayName: "CodeBuddy", Alias: "cb", Dialect: core.DialectOpenAI,
 			BaseURL: "https://copilot.tencent.com/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#0052D9", Website: "https://copilot.tencent.com"},
-		{ID: "agentrouter", DisplayName: "AgentRouter", Alias: "ar", Dialect: core.DialectAnthropic,
+		{ID: "agentrouter", DisplayName: "AgentRouter", Alias: "ar", Dialect: core.DialectOpenAI,
 			BaseURL: "https://agentrouter.org/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#10B981", Website: "https://agentrouter.org"},
 		{ID: "aimlapi", DisplayName: "AIML API", Alias: "aimlapi", Dialect: core.DialectOpenAI,
