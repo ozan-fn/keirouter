@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -36,67 +37,67 @@ import (
 
 // Server holds the gateway's dependencies and HTTP routes.
 type Server struct {
-	cfg           config.Config
-	log           *slog.Logger
-	db            *store.DB
-	identity      *identity.Service
-	auth          *auth.Service
-	pipeline      *pipeline.Pipeline
-	conns         *connectors.Registry
-	chains        *store.ChainRepo
-	aliases       *store.AliasRepo
-	accounts      *store.AccountRepo
-	pools         *store.ProxyPoolRepo
-	budgets       *store.BudgetRepo
-	usage         *store.UsageRepo
-	settings      *store.SettingsRepo
-	vault         *vault.Vault
-	codecs        *transform.Registry
-	metrics       *observ.Metrics
-	consoleLog    *consolelog.Buffer
-	cliTools      *clitools.Registry
-	cliToolHome   string
-	frontendDir   string
-	dataDir       string
-	oauthSessions *oauth.SessionStore
-	cfManager     *cloudflare.Manager
-	tsManager     *tailscale.Manager
-	usageHub       *usagehub.Hub
+	cfg             config.Config
+	log             *slog.Logger
+	db              *store.DB
+	identity        *identity.Service
+	auth            *auth.Service
+	pipeline        *pipeline.Pipeline
+	conns           *connectors.Registry
+	chains          *store.ChainRepo
+	aliases         *store.AliasRepo
+	accounts        *store.AccountRepo
+	pools           *store.ProxyPoolRepo
+	budgets         *store.BudgetRepo
+	usage           *store.UsageRepo
+	settings        *store.SettingsRepo
+	vault           *vault.Vault
+	codecs          *transform.Registry
+	metrics         *observ.Metrics
+	consoleLog      *consolelog.Buffer
+	cliTools        *clitools.Registry
+	cliToolHome     string
+	frontendDir     string
+	dataDir         string
+	oauthSessions   *oauth.SessionStore
+	cfManager       *cloudflare.Manager
+	tsManager       *tailscale.Manager
+	usageHub        *usagehub.Hub
 	timeoutNotifier *TimeoutNotifier
-	version        string
-	updates        *update.Checker
-	router         chi.Router
+	version         string
+	updates         *update.Checker
+	router          chi.Router
 }
 
 // Deps bundles the gateway's collaborators.
 type Deps struct {
-	Config      config.Config
-	Logger      *slog.Logger
-	Version     string
-	Updates     *update.Checker
-	DB          *store.DB
-	Identity    *identity.Service
-	Auth        *auth.Service
-	Pipeline    *pipeline.Pipeline
-	Conns       *connectors.Registry
-	Chains      *store.ChainRepo
-	Aliases     *store.AliasRepo
-	Accounts    *store.AccountRepo
-	Pools       *store.ProxyPoolRepo
-	Budgets     *store.BudgetRepo
-	Usage       *store.UsageRepo
-	Settings    *store.SettingsRepo
-	Vault       *vault.Vault
-	Codecs      *transform.Registry
-	Metrics     *observ.Metrics
-	ConsoleLog  *consolelog.Buffer
-	CLITools    *clitools.Registry
-	CLITHome    string
-	FrontendDir string
-	DataDir     string
-	CfManager   *cloudflare.Manager
-	TsManager   *tailscale.Manager
-	UsageHub       *usagehub.Hub
+	Config          config.Config
+	Logger          *slog.Logger
+	Version         string
+	Updates         *update.Checker
+	DB              *store.DB
+	Identity        *identity.Service
+	Auth            *auth.Service
+	Pipeline        *pipeline.Pipeline
+	Conns           *connectors.Registry
+	Chains          *store.ChainRepo
+	Aliases         *store.AliasRepo
+	Accounts        *store.AccountRepo
+	Pools           *store.ProxyPoolRepo
+	Budgets         *store.BudgetRepo
+	Usage           *store.UsageRepo
+	Settings        *store.SettingsRepo
+	Vault           *vault.Vault
+	Codecs          *transform.Registry
+	Metrics         *observ.Metrics
+	ConsoleLog      *consolelog.Buffer
+	CLITools        *clitools.Registry
+	CLITHome        string
+	FrontendDir     string
+	DataDir         string
+	CfManager       *cloudflare.Manager
+	TsManager       *tailscale.Manager
+	UsageHub        *usagehub.Hub
 	TimeoutNotifier *TimeoutNotifier
 }
 
@@ -119,35 +120,35 @@ func New(d Deps) *Server {
 		conLog = consolelog.New()
 	}
 	s := &Server{
-		cfg:           d.Config,
-		log:           log,
-		db:            d.DB,
-		identity:      d.Identity,
-		auth:          d.Auth,
-		pipeline:      d.Pipeline,
-		conns:         d.Conns,
-		chains:        d.Chains,
-		aliases:       d.Aliases,
-		accounts:      d.Accounts,
-		pools:         d.Pools,
-		budgets:       d.Budgets,
-		usage:         d.Usage,
-		settings:      d.Settings,
-		vault:         d.Vault,
-		codecs:        d.Codecs,
-		metrics:       d.Metrics,
-		consoleLog:    conLog,
-		cliTools:      cliTools,
-		cliToolHome:   cliToolHome,
-		frontendDir:   d.FrontendDir,
-		dataDir:       d.DataDir,
-		oauthSessions: oauth.NewSessionStore(),
-		cfManager:     d.CfManager,
-		tsManager:     d.TsManager,
-		usageHub:       d.UsageHub,
+		cfg:             d.Config,
+		log:             log,
+		db:              d.DB,
+		identity:        d.Identity,
+		auth:            d.Auth,
+		pipeline:        d.Pipeline,
+		conns:           d.Conns,
+		chains:          d.Chains,
+		aliases:         d.Aliases,
+		accounts:        d.Accounts,
+		pools:           d.Pools,
+		budgets:         d.Budgets,
+		usage:           d.Usage,
+		settings:        d.Settings,
+		vault:           d.Vault,
+		codecs:          d.Codecs,
+		metrics:         d.Metrics,
+		consoleLog:      conLog,
+		cliTools:        cliTools,
+		cliToolHome:     cliToolHome,
+		frontendDir:     d.FrontendDir,
+		dataDir:         d.DataDir,
+		oauthSessions:   oauth.NewSessionStore(),
+		cfManager:       d.CfManager,
+		tsManager:       d.TsManager,
+		usageHub:        d.UsageHub,
 		timeoutNotifier: d.TimeoutNotifier,
-		version:        d.Version,
-		updates:        d.Updates,
+		version:         d.Version,
+		updates:         d.Updates,
 	}
 	s.router = s.routes()
 	return s
@@ -158,6 +159,9 @@ func (s *Server) Handler() http.Handler { return s.router }
 
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
+	// Collapse a duplicated /v1/v1 prefix before routing. Must run first so the
+	// rewritten path reaches the real /v1/* routes below.
+	r.Use(collapseDoubleV1)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
@@ -289,6 +293,22 @@ func (s *Server) routes() chi.Router {
 	}
 
 	return r
+}
+
+// collapseDoubleV1 rewrites a duplicated /v1/v1 path prefix down to a single
+// /v1. The Anthropic SDK (Claude Code) always appends /v1/messages to
+// ANTHROPIC_BASE_URL, so a base URL that already ends in /v1 yields
+// /v1/v1/messages. base-URL styles (with or without a trailing /v1).
+func collapseDoubleV1(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/v1":
+			r.URL.Path = "/v1"
+		case strings.HasPrefix(r.URL.Path, "/v1/v1/"):
+			r.URL.Path = r.URL.Path[len("/v1"):]
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ---- HTTP helpers -----------------------------------------------------------

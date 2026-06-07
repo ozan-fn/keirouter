@@ -1411,6 +1411,13 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	export := map[string]any{}
 
+	// Optional passphrase enables a portable backup: each sealed credential is
+	// re-keyed from the local master key to a passphrase-derived key, so the
+	// backup can be restored on a machine with a different master key.
+	passphrase := strings.TrimSpace(r.URL.Query().Get("passphrase"))
+	portable := passphrase != ""
+	export["portable"] = portable
+
 	// Export providers (accounts) — includes encrypted credentials.
 	accs, _ := s.accounts.ListByTenant(ctx, adminTenant)
 	accountsOut := make([]map[string]any, 0, len(accs))
@@ -1421,17 +1428,25 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 			"disabled": a.Disabled, "proxy_pool_id": a.ProxyPoolID,
 			"metadata": a.Metadata,
 		}
-		if a.SecretWrappedDEK != "" {
-			out["secret_wrapped_dek"] = a.SecretWrappedDEK
-			out["secret_ciphertext"] = a.SecretCiphertext
-		}
-		if a.TokenWrappedDEK != "" {
-			out["token_wrapped_dek"] = a.TokenWrappedDEK
-			out["token_ciphertext"] = a.TokenCiphertext
-		}
-		if a.RefreshWrappedDEK != "" {
-			out["refresh_wrapped_dek"] = a.RefreshWrappedDEK
-			out["refresh_ciphertext"] = a.RefreshCiphertext
+		if portable {
+			if err := s.exportPortableSecrets(out, a, passphrase); err != nil {
+				s.consoleLog.Logf("ERROR", "portable export failed for account %s: %v", a.ID, err)
+				writeError(w, http.StatusInternalServerError, "portable export failed: cannot re-key account "+a.ID+" (master key mismatch?)")
+				return
+			}
+		} else {
+			if a.SecretWrappedDEK != "" {
+				out["secret_wrapped_dek"] = a.SecretWrappedDEK
+				out["secret_ciphertext"] = a.SecretCiphertext
+			}
+			if a.TokenWrappedDEK != "" {
+				out["token_wrapped_dek"] = a.TokenWrappedDEK
+				out["token_ciphertext"] = a.TokenCiphertext
+			}
+			if a.RefreshWrappedDEK != "" {
+				out["refresh_wrapped_dek"] = a.RefreshWrappedDEK
+				out["refresh_ciphertext"] = a.RefreshCiphertext
+			}
 		}
 		if a.TokenExpiresAt != nil {
 			out["token_expires_at"] = a.TokenExpiresAt
@@ -1512,24 +1527,41 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	imported := 0
 
+	// A portable backup carries passphrase-encrypted secrets; the passphrase is
+	// supplied alongside the payload so we can re-key into the local master key.
+	portable := false
+	if raw, ok := payload["portable"]; ok {
+		_ = json.Unmarshal(raw, &portable)
+	}
+	passphrase := ""
+	if raw, ok := payload["passphrase"]; ok {
+		_ = json.Unmarshal(raw, &passphrase)
+	}
+	passphrase = strings.TrimSpace(passphrase)
+	if portable && passphrase == "" {
+		writeError(w, http.StatusBadRequest, "this backup is portable: a passphrase is required to import it")
+		return
+	}
+
 	// Import providers (accounts) — preserves encrypted credentials.
 	if raw, ok := payload["accounts"]; ok {
 		var accounts []struct {
-			ID                string  `json:"id"`
-			Provider          string  `json:"provider"`
-			Label             string  `json:"label"`
-			AuthKind          string  `json:"auth_kind"`
-			Priority          int     `json:"priority"`
-			Disabled          bool    `json:"disabled"`
-			ProxyPoolID       string  `json:"proxy_pool_id"`
-			Metadata          string  `json:"metadata"`
-			SecretWrappedDEK  string  `json:"secret_wrapped_dek"`
-			SecretCiphertext  string  `json:"secret_ciphertext"`
-			TokenWrappedDEK   string  `json:"token_wrapped_dek"`
-			TokenCiphertext   string  `json:"token_ciphertext"`
-			RefreshWrappedDEK string  `json:"refresh_wrapped_dek"`
-			RefreshCiphertext string  `json:"refresh_ciphertext"`
-			TokenExpiresAt    *string `json:"token_expires_at"`
+			ID                string                `json:"id"`
+			Provider          string                `json:"provider"`
+			Label             string                `json:"label"`
+			AuthKind          string                `json:"auth_kind"`
+			Priority          int                   `json:"priority"`
+			Disabled          bool                  `json:"disabled"`
+			ProxyPoolID       string                `json:"proxy_pool_id"`
+			Metadata          string                `json:"metadata"`
+			SecretWrappedDEK  string                `json:"secret_wrapped_dek"`
+			SecretCiphertext  string                `json:"secret_ciphertext"`
+			TokenWrappedDEK   string                `json:"token_wrapped_dek"`
+			TokenCiphertext   string                `json:"token_ciphertext"`
+			RefreshWrappedDEK string                `json:"refresh_wrapped_dek"`
+			RefreshCiphertext string                `json:"refresh_ciphertext"`
+			PortableSecret    portableAccountSecret `json:"portable_secret"`
+			TokenExpiresAt    *string               `json:"token_expires_at"`
 		}
 		if err := json.Unmarshal(raw, &accounts); err == nil {
 			for _, a := range accounts {
@@ -1559,6 +1591,13 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 					ProxyPoolID:       a.ProxyPoolID,
 					CreatedAt:         now,
 					UpdatedAt:         now,
+				}
+				if portable {
+					if err := s.importPortableSecrets(&acc, a.PortableSecret, passphrase); err != nil {
+						s.consoleLog.Logf("ERROR", "portable import failed for account %s: %v", acc.ID, err)
+						writeError(w, http.StatusBadRequest, "portable import failed: wrong passphrase or corrupt backup")
+						return
+					}
 				}
 				if err := s.accounts.Create(ctx, acc); err == nil {
 					imported++

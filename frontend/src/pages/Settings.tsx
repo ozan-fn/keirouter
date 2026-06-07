@@ -431,21 +431,37 @@ function DatabaseSettings() {
   const [loading, setLoading] = useState(false);
 
   const handleExport = async () => {
+    // A portable backup re-keys credentials to a passphrase so it can be
+    // restored on another machine (different master key). Empty = local backup
+    // that only opens on this install's master key.
+    const passphrase = window.prompt(
+      "Optional passphrase for a PORTABLE backup (re-keys credentials so they can be restored on another machine).\n\nLeave blank for a local backup tied to this machine's master key.",
+      "",
+    );
+    // prompt returns null when cancelled.
+    if (passphrase === null) return;
+    const pass = passphrase.trim();
+
     setLoading(true);
     try {
-      const data = await api.exportDatabase();
+      const data = await api.exportDatabase(pass || undefined);
       const content = JSON.stringify(data, null, 2);
       const blob = new Blob([content], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       const stamp = new Date().toISOString().replace(/[.:]/g, "-");
       a.href = url;
-      a.download = `keirouter-backup-${stamp}.json`;
+      a.download = `keirouter-backup${pass ? "-portable" : ""}-${stamp}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast.success("Backup downloaded", "Full database snapshot saved as JSON. Store it safely for disaster recovery.");
+      toast.success(
+        "Backup downloaded",
+        pass
+          ? "Portable backup saved. Keep the passphrase safe — it is required to import on another machine."
+          : "Local backup saved. It only restores on this machine's master key.",
+      );
     } catch (e) {
       toast.error("Export failed", (e as Error).message);
     } finally {
@@ -461,7 +477,23 @@ function DatabaseSettings() {
     try {
       const raw = await file.text();
       const payload = JSON.parse(raw);
-      const result = await api.importDatabase(payload);
+
+      // Portable backups carry credentials re-keyed to a passphrase; prompt for it.
+      let pass: string | undefined;
+      if (payload && payload.portable === true) {
+        const entered = window.prompt(
+          "This is a portable backup. Enter the passphrase used when it was exported:",
+          "",
+        );
+        if (entered === null) {
+          setLoading(false);
+          if (importRef.current) importRef.current.value = "";
+          return;
+        }
+        pass = entered.trim();
+      }
+
+      const result = await api.importDatabase(payload, pass);
       toast.success("Import complete", `${result.imported} records restored. Existing data was merged or updated.`);
     } catch (e) {
       toast.error("Import failed", (e as Error).message);

@@ -24,6 +24,10 @@ func New(sealer *crypto.Sealer) *Vault {
 	return &Vault{sealer: sealer}
 }
 
+// Sealer exposes the underlying envelope sealer for portable export/import,
+// where sealed blobs must be re-keyed between the master key and a passphrase.
+func (v *Vault) Sealer() *crypto.Sealer { return v.sealer }
+
 // NewSecret describes a plaintext credential to seal into an account record.
 type NewSecret struct {
 	// APIKey is set for api_key accounts.

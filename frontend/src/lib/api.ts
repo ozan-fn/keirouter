@@ -631,10 +631,16 @@ export const api = {
   // Update check (queries GitHub for the latest release + changelog).
   updateCheck: () => request<UpdateInfo>("GET", "/update/check"),
 
-  // Database export/import.
-  exportDatabase: () => request<Record<string, unknown>>("GET", "/settings/database"),
-  importDatabase: (payload: Record<string, unknown>) =>
-    request<{ imported: number }>("POST", "/settings/database", payload),
+  // Database export/import. An optional passphrase produces a portable backup
+  // whose credentials are re-keyed to the passphrase (movable across machines
+  // with different master keys).
+  exportDatabase: (passphrase?: string) =>
+    request<Record<string, unknown>>(
+      "GET",
+      passphrase ? `/settings/database?passphrase=${encodeURIComponent(passphrase)}` : "/settings/database",
+    ),
+  importDatabase: (payload: Record<string, unknown>, passphrase?: string) =>
+    request<{ imported: number }>("POST", "/settings/database", passphrase ? { ...payload, passphrase } : payload),
 
   // Proxy test.
   testProxy: (proxyUrl: string) =>
