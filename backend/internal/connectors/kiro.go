@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -472,6 +473,13 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 	// Kiro returns a binary eventstream, not SSE; use a plain streaming POST.
 	resp, err := openStream(ctx, c.id, req.Model, c.baseURL(creds), body, c.headers(creds))
 	if err != nil {
+		// On an upstream rejection (e.g. CodeWhisperer's 400 "Improperly formed
+		// request"), the offending field is opaque. When KIRO_DEBUG is set, dump
+		// the rendered request body so the exact payload can be inspected. The
+		// body may contain prompt content, so this is opt-in only.
+		if os.Getenv("KIRO_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[kiro-debug] model=%s upstream error: %v\n[kiro-debug] request body:\n%s\n", req.Model, err, string(body))
+		}
 		return nil, err
 	}
 

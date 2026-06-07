@@ -38,6 +38,11 @@ type TimeoutReader interface {
 	RequestTimeout() time.Duration
 }
 
+// CooldownRetryMax is the maximum time to wait for a cooldown to expire
+// before giving up. All accounts on cooldown is a transient state; a short
+// wait is better than an immediate failure to the client.
+const CooldownRetryMax = 10 * time.Second
+
 // Pipeline wires the request-processing stages together.
 type Pipeline struct {
 	dispatcher *dispatch.Dispatcher
@@ -189,7 +194,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	save := buildSaveState(slimStats, opts)
 
 	required := capability.Required(req)
-	attempts, err := p.dispatcher.PlanWith(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
+	attempts, err := p.planWithCooldownRetry(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
 	if err != nil {
 		p.log.Debug("dispatcher plan failed", "err", err)
 		return nil, err
@@ -298,7 +303,7 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 
 	required := capability.Required(req)
 	scope := budget.Scope{TenantID: req.Metadata.TenantID, ProjectID: req.Metadata.ProjectID, APIKeyID: req.Metadata.APIKeyID}
-	attempts, err := p.dispatcher.PlanWith(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
+	attempts, err := p.planWithCooldownRetry(ctx, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts)
 	if err != nil {
 		p.log.Debug("stream dispatcher plan failed", "err", err)
 		p.budgetRelease(scope)
@@ -600,6 +605,52 @@ func (p *Pipeline) budgetRelease(scope budget.Scope) {
 	if p.budget != nil {
 		p.budget.Release(scope)
 	}
+}
+
+// planWithCooldownRetry wraps dispatcher planning with a brief wait-and-retry
+// when all accounts are on cooldown. Cooldown is a transient state (typically
+// 2-30s), so a short wait yields usable accounts instead of an instant failure.
+// Retries up to 3 times, sleeping up to CooldownRetryMax total.
+func (p *Pipeline) planWithCooldownRetry(ctx context.Context, tenantID string, targets []dispatch.Target, required core.CapabilitySet, opts dispatch.PlanOptions) ([]dispatch.Attempt, error) {
+	attempts, err := p.dispatcher.PlanWith(ctx, tenantID, targets, required, opts)
+	if err == nil && len(attempts) > 0 {
+		return attempts, nil
+	}
+	// Only retry when the error is a cooldown block (all accounts on cooldown).
+	if err == nil || !strings.Contains(err.Error(), "on cooldown") {
+		return attempts, err
+	}
+
+	deadline := time.Now().Add(CooldownRetryMax)
+	for i := 0; i < 3; i++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		wait := time.Duration(i+1) * 2 * time.Second
+		if wait > time.Until(deadline) {
+			wait = time.Until(deadline)
+		}
+		if wait <= 0 {
+			break
+		}
+		p.log.Debug("all accounts on cooldown, waiting before retry", "wait", wait, "attempt", i+1)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		attempts, err = p.dispatcher.PlanWith(ctx, tenantID, targets, required, opts)
+		if err == nil && len(attempts) > 0 {
+			return attempts, nil
+		}
+		if err == nil || !strings.Contains(err.Error(), "on cooldown") {
+			return attempts, err
+		}
+	}
+	return attempts, err
 }
 
 // applyTokenSaving runs the input-side (slimmer/RTK) and output-side

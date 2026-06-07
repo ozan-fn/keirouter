@@ -217,10 +217,17 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 			var toolUses []map[string]any
 			for _, p := range m.Content {
 				if p.Type == core.PartToolCall && p.ToolCall != nil {
+					// CodeWhisperer requires a non-null object for input and a
+					// validator-safe tool name; a null input or an out-of-spec
+					// name returns "Improperly formed request" (HTTP 400).
+					input := rawToAny(p.ToolCall.Arguments)
+					if input == nil {
+						input = map[string]any{}
+					}
 					toolUses = append(toolUses, map[string]any{
 						"toolUseId": firstNonEmptyStr(p.ToolCall.ID, uuid.NewString()),
-						"name":      p.ToolCall.Name,
-						"input":     rawToAny(p.ToolCall.Arguments),
+						"name":      sanitizeKiroToolName(p.ToolCall.Name),
+						"input":     input,
 					})
 				}
 			}
@@ -281,6 +288,11 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 		merged = append(merged, h)
 	}
 
+	// Enforce strict user/assistant alternation. CodeWhisperer rejects
+	// histories that start with an assistant turn or have consecutive
+	// assistant turns with "Improperly formed request" (HTTP 400).
+	merged = normalizeKiroAlternation(merged)
+
 	// Pop the last user message as the current message.
 	current := map[string]any{"content": ""}
 	for i := len(merged) - 1; i >= 0; i-- {
@@ -314,9 +326,12 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 			if strings.TrimSpace(desc) == "" {
 				desc = "Tool: " + t.Name
 			}
+			// Sanitize the tool name to CodeWhisperer's accepted format. The
+			// same transform is applied to toolUses[].name in assistant history
+			// so the spec and the call stay consistent.
 			tools = append(tools, map[string]any{
 				"toolSpecification": map[string]any{
-					"name":        t.Name,
+					"name":        sanitizeKiroToolName(t.Name),
 					"description": desc,
 					"inputSchema": map[string]any{"json": schema},
 				},
@@ -568,4 +583,98 @@ func firstNonEmptyStr(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// normalizeKiroAlternation enforces strict user/assistant alternation in the
+// Kiro history. CodeWhisperer rejects histories that:
+//   - start with an assistant turn
+//   - have consecutive assistant turns
+//   - have consecutive user turns (beyond what merging already handles)
+//
+// The function drops leading assistant turns, merges consecutive assistant
+// turns, and ensures the sequence is [user, assistant, user, assistant, ...].
+func normalizeKiroAlternation(history []map[string]any) []map[string]any {
+	if len(history) == 0 {
+		return history
+	}
+
+	// Classify each entry.
+	isUser := func(h map[string]any) bool {
+		_, ok := h["userInputMessage"]
+		return ok
+	}
+
+	// Phase 1: drop leading assistant turns — history must start with user.
+	for len(history) > 0 && !isUser(history[0]) {
+		history = history[1:]
+	}
+
+	// Phase 2: enforce alternation. Merge consecutive same-role entries.
+	var out []map[string]any
+	for _, h := range history {
+		if len(out) == 0 {
+			out = append(out, h)
+			continue
+		}
+		prevIsUser := isUser(out[len(out)-1])
+		curIsUser := isUser(h)
+
+		if prevIsUser == curIsUser {
+			// Same role in a row — merge into previous.
+			if curIsUser {
+				prev, _ := out[len(out)-1]["userInputMessage"].(map[string]any)
+				cur, _ := h["userInputMessage"].(map[string]any)
+				if prev != nil && cur != nil {
+					prev["content"] = prev["content"].(string) + "\n\n" + cur["content"].(string)
+					mergeKiroUIMContext(prev, cur)
+				}
+			} else {
+				prev, _ := out[len(out)-1]["assistantResponseMessage"].(map[string]any)
+				cur, _ := h["assistantResponseMessage"].(map[string]any)
+				if prev != nil && cur != nil {
+					prev["content"] = prev["content"].(string) + "\n\n" + cur["content"].(string)
+					// Merge toolUses from consecutive assistant turns.
+					if curTU, ok := cur["toolUses"].([]map[string]any); ok && len(curTU) > 0 {
+						prevTU, _ := prev["toolUses"].([]map[string]any)
+						prev["toolUses"] = append(prevTU, curTU...)
+					}
+				}
+			}
+			continue
+		}
+		out = append(out, h)
+	}
+
+	return out
+}
+
+// sanitizeKiroToolName coerces a tool name into CodeWhisperer's accepted
+// format. The validator requires names matching ^[a-zA-Z][a-zA-Z0-9_]{0,63}$;
+// MCP tools (e.g. "mcp__server__tool") and other clients can send names with
+// dots, hyphens, or lengths beyond 64, which makes Kiro reject the whole
+// request with "Improperly formed request" (HTTP 400). Invalid characters are
+// replaced with underscores, a leading letter is ensured, and the result is
+// truncated to 64 characters.
+func sanitizeKiroToolName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	// Ensure the name starts with a letter.
+	if out == "" {
+		out = "tool"
+	} else if c := out[0]; !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') {
+		out = "t_" + out
+	}
+	// Truncate to the 64-character limit.
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
 }

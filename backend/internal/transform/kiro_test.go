@@ -231,3 +231,171 @@ func TestKiro_RenderRequest_ReconcilesOrphanedToolResults(t *testing.T) {
 		t.Errorf("orphaned tool result content should be salvaged as text: %q", collected.String())
 	}
 }
+
+// CodeWhisperer rejects tool names that don't match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$
+// with 400 "Improperly formed request". MCP tool names (dots, hyphens, long)
+// must be coerced into the accepted shape, consistently across the tool spec
+// and the tool_use reference in assistant history.
+func TestKiro_RenderRequest_SanitizesToolNames(t *testing.T) {
+	longName := strings.Repeat("a", 80)
+	req := &core.ChatRequest{
+		Model: "claude-sonnet-4.5",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "go"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c1", Name: "mcp__server__do-thing", Arguments: json.RawMessage(`{"x":1}`)}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "again"}}},
+		},
+		Tools: []core.Tool{
+			{Name: "mcp__server__do-thing", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)},
+			{Name: longName, Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)},
+			{Name: "123start", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+
+	// Collect every tool name from the tool spec and from history toolUses.
+	var names []string
+	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	if ctx, ok := cm["userInputMessageContext"].(map[string]any); ok {
+		for _, tt := range ctx["tools"].([]any) {
+			spec := tt.(map[string]any)["toolSpecification"].(map[string]any)
+			names = append(names, spec["name"].(string))
+		}
+	}
+	for _, h := range cs["history"].([]any) {
+		if arm, ok := h.(map[string]any)["assistantResponseMessage"].(map[string]any); ok {
+			if tus, ok := arm["toolUses"].([]any); ok {
+				for _, tu := range tus {
+					names = append(names, tu.(map[string]any)["name"].(string))
+				}
+			}
+		}
+	}
+
+	if len(names) == 0 {
+		t.Fatal("expected sanitized tool names in payload")
+	}
+	for _, n := range names {
+		if !isValidKiroToolName(n) {
+			t.Errorf("tool name %q is not a valid CodeWhisperer name", n)
+		}
+	}
+
+	// The MCP-style name must appear identically in both the spec and the
+	// toolUse reference, so the call still resolves.
+	sanitized := sanitizeKiroToolName("mcp__server__do-thing")
+	specHas, useHas := false, false
+	for _, tt := range cm["userInputMessageContext"].(map[string]any)["tools"].([]any) {
+		if tt.(map[string]any)["toolSpecification"].(map[string]any)["name"] == sanitized {
+			specHas = true
+		}
+	}
+	for _, h := range cs["history"].([]any) {
+		if arm, ok := h.(map[string]any)["assistantResponseMessage"].(map[string]any); ok {
+			for _, tu := range arm["toolUses"].([]any) {
+				if tu.(map[string]any)["name"] == sanitized {
+					useHas = true
+				}
+			}
+		}
+	}
+	if !specHas || !useHas {
+		t.Errorf("sanitized MCP name %q must match in spec (%v) and toolUse (%v)", sanitized, specHas, useHas)
+	}
+}
+
+// A tool call with empty arguments must serialize input as an object {}, never
+// null — CodeWhisperer rejects a null input with 400.
+func TestKiro_RenderRequest_EmptyToolInputIsObject(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "claude-sonnet-4.5",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "go"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "c1", Name: "ping", Arguments: nil}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "again"}}},
+		},
+		Tools: []core.Tool{{Name: "ping", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+	found := false
+	for _, h := range cs["history"].([]any) {
+		if arm, ok := h.(map[string]any)["assistantResponseMessage"].(map[string]any); ok {
+			if tus, ok := arm["toolUses"].([]any); ok {
+				for _, tu := range tus {
+					input := tu.(map[string]any)["input"]
+					if input == nil {
+						t.Errorf("tool input must be an object, got null")
+					}
+					if _, ok := input.(map[string]any); !ok {
+						t.Errorf("tool input must be an object, got %T", input)
+					}
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a toolUse with input in history")
+	}
+}
+
+func TestSanitizeKiroToolName(t *testing.T) {
+	cases := map[string]string{
+		"Read":                 "Read",
+		"mcp__server__do":      "mcp__server__do",
+		"do-thing":             "do_thing",
+		"weird.name":           "weird_name",
+		"123abc":               "t_123abc",
+		"":                     "tool",
+		strings.Repeat("x", 80): strings.Repeat("x", 64),
+	}
+	for in, want := range cases {
+		if got := sanitizeKiroToolName(in); got != want {
+			t.Errorf("sanitizeKiroToolName(%q) = %q, want %q", in, got, want)
+		}
+		if got := sanitizeKiroToolName(in); !isValidKiroToolName(got) {
+			t.Errorf("sanitizeKiroToolName(%q) = %q is not a valid name", in, got)
+		}
+	}
+}
+
+// isValidKiroToolName reports whether a name matches CodeWhisperer's accepted
+// format ^[a-zA-Z][a-zA-Z0-9_]{0,63}$. Test helper.
+func isValidKiroToolName(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for i, r := range s {
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 && !isLetter {
+			return false
+		}
+		if !isLetter && !isDigit && r != '_' {
+			return false
+		}
+	}
+	return true
+}
