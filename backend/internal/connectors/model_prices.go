@@ -52,6 +52,72 @@ func ModelPricingTable() []ModelPrice {
 	out = append(out, minimaxModelPrices()...)
 	out = append(out, glmModelPrices()...)
 	out = append(out, mimoModelPrices()...)
+	out = append(out, kiroModelPrices()...)
+	return out
+}
+
+// kiroModelPrices returns estimated per-million-token rates for the Kiro
+// provider. Kiro itself is subscription/credit-based rather than per-token, so
+// these are retail-equivalent estimates of the underlying model (e.g. Claude
+// Sonnet/Opus), surfaced so usage statistics can display an approximate cost.
+//
+// The recorded model ID is the client-facing string with synthetic suffixes
+// intact (-thinking, -agentic, -thinking-agentic), so each base model is
+// expanded into all four variants at the same rate.
+func kiroModelPrices() []ModelPrice {
+	// base holds one logical model and its rate; variants are generated below.
+	type base struct {
+		model           string
+		inputPerM       float64
+		outputPerM      float64
+		cachedInputPerM float64
+		cacheWritePerM  float64
+		reasoningPerM   float64
+	}
+	const (
+		sonnetIn, sonnetOut, sonnetCached, sonnetWrite = 3.0, 15.0, 0.375, 3.75
+		opusIn, opusOut, opusCached, opusWrite         = 15.0, 75.0, 1.875, 18.75
+	)
+	bases := []base{
+		// Claude Sonnet family (current + announced versions).
+		{"claude-sonnet-4.5", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
+		{"claude-sonnet-4.6", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
+		{"claude-sonnet-4.7", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
+		{"claude-sonnet-4.8", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
+		// Claude Opus family.
+		{"claude-opus-4.6", opusIn, opusOut, opusCached, opusWrite, 0},
+		{"claude-opus-4.7", opusIn, opusOut, opusCached, opusWrite, 0},
+		{"claude-opus-4.8", opusIn, opusOut, opusCached, opusWrite, 0},
+		// Claude Haiku family.
+		{"claude-haiku-4.5", 0.8, 4.0, 0.08, 1.0, 0},
+		// Non-Claude models exposed by Kiro (estimated from underlying provider).
+		{"deepseek-3.2", 0.27, 1.1, 0.07, 0.27, 0},
+		{"glm-5", 0.6, 2.2, 0, 0, 0},
+		{"MiniMax-M2.5", 0.3, 1.1, 0, 0, 0},
+		{"qwen3-coder-next", 0.3, 1.2, 0, 0, 0},
+	}
+	// Suffix variants share the base rate. "auto" maps to Sonnet 4.5 as a
+	// neutral default since Kiro picks the model server-side.
+	suffixes := []string{"", "-thinking", "-agentic", "-thinking-agentic"}
+
+	var out []ModelPrice
+	add := func(model string, in, outp, cached, write, reason float64) {
+		for _, sfx := range suffixes {
+			out = append(out, ModelPrice{
+				Provider: "kiro", Model: model + sfx,
+				InputPerM: in, OutputPerM: outp,
+				CachedInputPerM: cached, CacheWritePerM: write, ReasoningPerM: reason,
+			})
+		}
+	}
+	for _, b := range bases {
+		add(b.model, b.inputPerM, b.outputPerM, b.cachedInputPerM, b.cacheWritePerM, b.reasoningPerM)
+	}
+	// "auto" only exposes base + -thinking variants in the catalog.
+	out = append(out,
+		ModelPrice{Provider: "kiro", Model: "auto", InputPerM: sonnetIn, OutputPerM: sonnetOut, CachedInputPerM: sonnetCached, CacheWritePerM: sonnetWrite},
+		ModelPrice{Provider: "kiro", Model: "auto-thinking", InputPerM: sonnetIn, OutputPerM: sonnetOut, CachedInputPerM: sonnetCached, CacheWritePerM: sonnetWrite},
+	)
 	return out
 }
 
