@@ -28,6 +28,7 @@ type oaiRequest struct {
 	Stop        []string      `json:"stop,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
 	StreamOpts  *oaiStreamOpt `json:"stream_options,omitempty"`
+	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
 }
 
 type oaiStreamOpt struct {
@@ -259,6 +260,7 @@ func (OpenAICodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 		Stop:        req.Stop,
 		Stream:      req.Stream,
 		ToolChoice:  req.ToolChoice,
+		ResponseFormat: req.ResponseFormat,
 	}
 	// Note: stream_options with include_usage is intentionally omitted. Many
 	// OpenAI-compatible providers (MiMo, Volcengine, etc.) reject this field

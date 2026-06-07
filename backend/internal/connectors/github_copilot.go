@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,11 +32,19 @@ type GitHubCopilot struct {
 	id          string
 	defaultBase string
 	codec       transform.OpenAICodec
+	// responsesCodec translates between the OpenAI Chat dialect and the
+	// Responses dialect for codex-style models that Copilot only serves on
+	// /responses (e.g. gpt-5-codex).
+	responsesCodec transform.OpenAIResponsesCodec
+	// codexModels caches models discovered to require the /responses endpoint,
+	// so subsequent calls skip the /chat/completions probe. Guarded by mu.
+	mu          sync.RWMutex
+	codexModels map[string]bool
 }
 
 // NewGitHubCopilot builds a GitHub Copilot connector.
 func NewGitHubCopilot(id, defaultBaseURL string) *GitHubCopilot {
-	return &GitHubCopilot{id: id, defaultBase: defaultBaseURL}
+	return &GitHubCopilot{id: id, defaultBase: defaultBaseURL, codexModels: map[string]bool{}}
 }
 
 func (c *GitHubCopilot) ID() string            { return c.id }
@@ -134,8 +143,14 @@ func (c *GitHubCopilot) transformBody(model string, body []byte) []byte {
 	return out
 }
 
-// Chat performs a non-streaming Copilot completion.
+// Chat performs a non-streaming Copilot completion. Codex-style models that
+// Copilot only exposes on /responses are routed there (directly when cached,
+// or after a /chat/completions 400 that signals the model needs /responses).
 func (c *GitHubCopilot) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
+	if c.knowsResponses(req.Model) && c.supportsResponsesEndpoint(req.Model) {
+		return c.chatViaResponses(ctx, req, creds)
+	}
+
 	req.Stream = false
 	body, err := c.codec.RenderRequest(req)
 	if err != nil {
@@ -145,6 +160,10 @@ func (c *GitHubCopilot) Chat(ctx context.Context, req *core.ChatRequest, creds c
 
 	respBody, err := doJSON(ctx, c.id, req.Model, c.endpoint(creds), body, c.headers(creds, false))
 	if err != nil {
+		if c.supportsResponsesEndpoint(req.Model) && isResponsesEscalation(err) {
+			c.markResponses(req.Model)
+			return c.chatViaResponses(ctx, req, creds)
+		}
 		return nil, err
 	}
 
@@ -155,8 +174,15 @@ func (c *GitHubCopilot) Chat(ctx context.Context, req *core.ChatRequest, creds c
 	return resp, nil
 }
 
-// Stream performs a streaming Copilot completion.
+// Stream performs a streaming Copilot completion. Codex-style models cached as
+// /responses-only are streamed through the Responses endpoint. A first-token
+// 400 escalation is not possible mid-stream, so the cache (populated by Chat or
+// a prior stream attempt) is what routes streams to /responses.
 func (c *GitHubCopilot) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
+	if c.knowsResponses(req.Model) && c.supportsResponsesEndpoint(req.Model) {
+		return c.streamViaResponses(ctx, req, creds, cfg)
+	}
+
 	req.Stream = true
 	body, err := c.codec.RenderRequest(req)
 	if err != nil {
@@ -166,6 +192,12 @@ func (c *GitHubCopilot) Stream(ctx context.Context, req *core.ChatRequest, creds
 
 	resp, err := openStream(ctx, c.id, req.Model, c.endpoint(creds), body, c.headers(creds, true))
 	if err != nil {
+		// Escalate to /responses when the chat/completions endpoint reports the
+		// model is only served there, then cache for subsequent calls.
+		if c.supportsResponsesEndpoint(req.Model) && isResponsesEscalation(err) {
+			c.markResponses(req.Model)
+			return c.streamViaResponses(ctx, req, creds, cfg)
+		}
 		return nil, err
 	}
 
@@ -190,6 +222,131 @@ func (c *GitHubCopilot) Stream(ctx context.Context, req *core.ChatRequest, creds
 				continue
 			}
 			chunks, perr := c.codec.ParseStreamLine([]byte(payload), req.Model)
+			if perr != nil {
+				continue
+			}
+			for _, ch := range chunks {
+				if !ttftReported && isMeaningfulChunk(ch) && cfg.OnFirstChunk != nil {
+					ttftReported = true
+					cfg.OnFirstChunk(time.Since(streamStart))
+				}
+				select {
+				case out <- ch:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			out <- core.StreamChunk{
+				Type: core.ChunkError,
+				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+			}
+		}
+	}()
+	return out, nil
+}
+
+// ---- /responses endpoint routing -------------------------------------------
+
+// responsesURL returns the Copilot /responses endpoint, derived from the chat
+// base by swapping the trailing /chat/completions (or appending /responses).
+func (c *GitHubCopilot) responsesURL(creds core.Credentials) string {
+	base := c.baseURL(creds)
+	base = strings.TrimSuffix(base, "/chat/completions")
+	return joinURL(base, "responses")
+}
+
+// supportsResponsesEndpoint reports whether a model can be served by Copilot's
+// /responses endpoint. It only serves OpenAI (gpt/codex) models — Gemini and
+// Claude reject with a 400 "does not support Responses API", so they must never
+// be escalated there.
+func (c *GitHubCopilot) supportsResponsesEndpoint(model string) bool {
+	m := strings.ToLower(model)
+	return !strings.Contains(m, "gemini") && !strings.Contains(m, "claude")
+}
+
+func (c *GitHubCopilot) knowsResponses(model string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.codexModels[model]
+}
+
+func (c *GitHubCopilot) markResponses(model string) {
+	c.mu.Lock()
+	c.codexModels[model] = true
+	c.mu.Unlock()
+}
+
+// isResponsesEscalation reports whether a /chat/completions error indicates the
+// model must be served via /responses instead. Copilot returns a 400 whose body
+// mentions the model is not accessible via /chat/completions or is unsupported.
+func isResponsesEscalation(err error) bool {
+	pe := core.AsProviderError(err)
+	if pe.StatusCode != 400 {
+		return false
+	}
+	msg := strings.ToLower(pe.Message)
+	return strings.Contains(msg, "not accessible via the /chat/completions endpoint") ||
+		strings.Contains(msg, "the requested model is not supported")
+}
+
+// chatViaResponses runs a non-streaming completion through the /responses
+// endpoint, translating the request and response between dialects.
+func (c *GitHubCopilot) chatViaResponses(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
+	req.Stream = false
+	body, err := c.responsesCodec.RenderRequest(req)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+	}
+
+	respBody, err := doJSON(ctx, c.id, req.Model, c.responsesURL(creds), body, c.headers(creds, false))
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.responsesCodec.ParseResponse(respBody, req.Model)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+	}
+	return resp, nil
+}
+
+// streamViaResponses streams a completion through the /responses endpoint,
+// parsing the typed Responses SSE event stream into canonical chunks.
+func (c *GitHubCopilot) streamViaResponses(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
+	req.Stream = true
+	body, err := c.responsesCodec.RenderRequest(req)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+	}
+
+	resp, err := openStream(ctx, c.id, req.Model, c.responsesURL(creds), body, c.headers(creds, true))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan core.StreamChunk, 16)
+	go func() {
+		defer close(out)
+		defer resp.Body.Close()
+
+		streamStart := time.Now()
+		ttftReported := false
+
+		scanner := sseScanner(resp.Body)
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			payload, ok := parseSSEData(scanner.Text())
+			if !ok {
+				continue
+			}
+			chunks, perr := c.responsesCodec.ParseStreamLine([]byte(payload), req.Model)
 			if perr != nil {
 				continue
 			}

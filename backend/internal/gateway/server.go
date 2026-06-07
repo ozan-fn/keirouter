@@ -199,6 +199,9 @@ func (s *Server) routes() chi.Router {
 		r.Use(s.authMiddleware)
 		r.Post("/v1/chat/completions", s.handleOpenAIChat)
 		r.Post("/v1/messages", s.handleAnthropicMessages)
+		// Anthropic clients (Claude Code) call count_tokens before each turn to
+		// size context. Served locally — not all upstreams expose it.
+		r.Post("/v1/messages/count_tokens", s.handleAnthropicCountTokens)
 
 		// OpenAI Responses API surface (Codex and Responses-native clients).
 		r.Post("/v1/responses", s.handleOpenAIResponses)

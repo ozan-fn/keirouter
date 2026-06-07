@@ -46,12 +46,12 @@ func (c *Kiro) baseURL(creds core.Credentials) string {
 // headers builds the AWS SDK + CodeWhisperer headers Kiro expects.
 func (c *Kiro) headers(creds core.Credentials) map[string]string {
 	h := map[string]string{
-		"Accept":                 "application/vnd.amazon.eventstream",
-		"X-Amz-Target":           "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
-		"User-Agent":             "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
-		"X-Amz-User-Agent":       "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
-		"Amz-Sdk-Request":        "attempt=1; max=3",
-		"Amz-Sdk-Invocation-Id":  uuid.NewString(),
+		"Accept":                "application/vnd.amazon.eventstream",
+		"X-Amz-Target":          "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
+		"User-Agent":            "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+		"X-Amz-User-Agent":      "aws-sdk-js/3.0.0 kiro-ide/1.0.0",
+		"Amz-Sdk-Request":       "attempt=1; max=3",
+		"Amz-Sdk-Invocation-Id": uuid.NewString(),
 	}
 	if creds.AccessToken != "" {
 		h["Authorization"] = bearer(creds.AccessToken)
@@ -87,11 +87,11 @@ func (c *Kiro) Validate(ctx context.Context, creds core.Credentials) error {
 
 // kiroModelEntry is the shape of one model in the ListAvailableModels response.
 type kiroModelEntry struct {
-	ModelID      string `json:"modelId"`
-	ModelName    string `json:"modelName"`
-	Description  string `json:"description"`
+	ModelID        string  `json:"modelId"`
+	ModelName      string  `json:"modelName"`
+	Description    string  `json:"description"`
 	RateMultiplier float64 `json:"rateMultiplier"`
-	TokenLimits  struct {
+	TokenLimits    struct {
 		MaxInputTokens int `json:"maxInputTokens"`
 	} `json:"tokenLimits"`
 }
@@ -261,13 +261,13 @@ func isAuthError(err error) bool {
 // kiroQuotaBreakdown mirrors the JSON shape of one usageBreakdownList entry.
 // The precision fields can be either a bare number or an object {value, precision}.
 type kiroQuotaBreakdown struct {
-	ResourceType             string          `json:"resourceType"`
+	ResourceType              string          `json:"resourceType"`
 	CurrentUsageWithPrecision json.RawMessage `json:"currentUsageWithPrecision"`
 	UsageLimitWithPrecision   json.RawMessage `json:"usageLimitWithPrecision"`
-	FreeTrialInfo           *struct {
+	FreeTrialInfo             *struct {
 		CurrentUsageWithPrecision json.RawMessage `json:"currentUsageWithPrecision"`
 		UsageLimitWithPrecision   json.RawMessage `json:"usageLimitWithPrecision"`
-		FreeTrialExpiry          string          `json:"freeTrialExpiry"`
+		FreeTrialExpiry           string          `json:"freeTrialExpiry"`
 	} `json:"freeTrialInfo"`
 }
 
@@ -487,6 +487,13 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 		seenTools := map[string]bool{}
 		hasTool := false
 
+		// Kiro does not always emit a metricsEvent/usageEvent frame (varies by
+		// model and backend). Track whether real usage arrived and how much
+		// text we streamed so we can synthesize an estimate at EOF — otherwise
+		// the request bills upstream credit but records zero tokens locally.
+		usageSeen := false
+		outputChars := 0
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -509,6 +516,12 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 			}
 
 			for _, ch := range kiroFrameToChunks(frame, seenTools, &hasTool) {
+				if ch.Type == core.ChunkUsage {
+					usageSeen = true
+				}
+				if ch.Type == core.ChunkText || ch.Type == core.ChunkThinking {
+					outputChars += len(ch.Delta)
+				}
 				if !ttftReported && isMeaningfulChunk(ch) && cfg.OnFirstChunk != nil {
 					ttftReported = true
 					cfg.OnFirstChunk(time.Since(streamStart))
@@ -520,8 +533,62 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 				}
 			}
 		}
+
+		if !usageSeen {
+			if u := estimateKiroUsage(req, outputChars); u != nil {
+				select {
+				case out <- core.StreamChunk{Type: core.ChunkUsage, Usage: u}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
 	}()
 	return out, nil
+}
+
+// estimateKiroUsage produces a best-effort token estimate for a Kiro response
+// when the upstream omits token accounting. It approximates ~4 characters per
+// token over the rendered request input and the streamed output. The result is marked
+// Estimated so downstream consumers can distinguish it from exact counts.
+func estimateKiroUsage(req *core.ChatRequest, outputChars int) *core.Usage {
+	inputChars := 0
+	if req != nil {
+		if req.System != "" {
+			inputChars += len(req.System)
+		}
+		for _, m := range req.Messages {
+			for _, part := range m.Content {
+				inputChars += len(part.Text)
+				if part.ToolCall != nil {
+					inputChars += len(part.ToolCall.Arguments)
+				}
+				if part.ToolResult != nil {
+					inputChars += len(part.ToolResult.Content)
+				}
+			}
+		}
+	}
+	prompt := charsToTokens(inputChars)
+	completion := charsToTokens(outputChars)
+	if prompt == 0 && completion == 0 {
+		return nil
+	}
+	return &core.Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      prompt + completion,
+	}
+}
+
+// charsToTokens converts a character count to an approximate token count using
+// the common ~4 chars/token rule, rounding up so any non-empty text counts as
+// at least one token.
+func charsToTokens(chars int) int {
+	if chars <= 0 {
+		return 0
+	}
+	return (chars + 3) / 4
 }
 
 // kiroFrameToChunks maps one decoded Kiro eventstream frame to canonical chunks.
@@ -557,31 +624,44 @@ func kiroFrameToChunks(frame *eventStreamFrame, seenTools map[string]bool, hasTo
 		}
 		chunks = append(chunks, core.StreamChunk{Type: core.ChunkFinish, FinishReason: reason})
 
-	case "metricsEvent":
-		var p struct {
-			InputTokens  int `json:"inputTokens"`
-			OutputTokens int `json:"outputTokens"`
-		}
-		// metrics may be nested under metricsEvent.
-		raw := frame.payload
-		var wrap map[string]json.RawMessage
-		if json.Unmarshal(frame.payload, &wrap) == nil {
-			if m, ok := wrap["metricsEvent"]; ok {
-				raw = m
-			}
-		}
-		if json.Unmarshal(raw, &p) == nil && (p.InputTokens > 0 || p.OutputTokens > 0) {
-			chunks = append(chunks, core.StreamChunk{
-				Type: core.ChunkUsage,
-				Usage: &core.Usage{
-					PromptTokens:     p.InputTokens,
-					CompletionTokens: p.OutputTokens,
-					TotalTokens:      p.InputTokens + p.OutputTokens,
-				},
-			})
+	case "metricsEvent", "usageEvent":
+		// Kiro emits token accounting under two event names depending on the
+		// model and region: "metricsEvent" (CodeWhisperer) and "usageEvent"
+		// (newer social/token-plan backends). Both carry inputTokens/
+		// outputTokens, optionally nested under a key matching the event name.
+		if u := parseKiroUsage(eventType, frame.payload); u != nil {
+			chunks = append(chunks, core.StreamChunk{Type: core.ChunkUsage, Usage: u})
 		}
 	}
 	return chunks
+}
+
+// parseKiroUsage extracts token usage from a metricsEvent/usageEvent payload.
+// The counts may sit at the top level or be nested under a key matching the
+// event type. Returns nil when no usable counts are present.
+func parseKiroUsage(eventType string, payload []byte) *core.Usage {
+	var p struct {
+		InputTokens  int `json:"inputTokens"`
+		OutputTokens int `json:"outputTokens"`
+	}
+	raw := payload
+	var wrap map[string]json.RawMessage
+	if json.Unmarshal(payload, &wrap) == nil {
+		if m, ok := wrap[eventType]; ok {
+			raw = m
+		}
+	}
+	if json.Unmarshal(raw, &p) != nil {
+		return nil
+	}
+	if p.InputTokens <= 0 && p.OutputTokens <= 0 {
+		return nil
+	}
+	return &core.Usage{
+		PromptTokens:     p.InputTokens,
+		CompletionTokens: p.OutputTokens,
+		TotalTokens:      p.InputTokens + p.OutputTokens,
+	}
 }
 
 func extractKiroReasoning(payload []byte) string {

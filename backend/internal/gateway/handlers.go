@@ -57,6 +57,68 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	s.handleChat(w, r, core.DialectAnthropic)
 }
 
+// handleAnthropicCountTokens serves /v1/messages/count_tokens. Anthropic
+// clients (notably Claude Code) call this before each /v1/messages turn to size
+// the context window. We do not forward it upstream — most OpenAI-dialect
+// providers (e.g. Xiaomi MiMo) have no equivalent endpoint and would return 405
+// — so we parse the request locally and return a heuristic estimate in the
+// Anthropic response shape: {"input_tokens": N}. The estimate uses the common
+// ~4 chars/token rule, which is accurate enough for client-side budgeting.
+func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	codec, err := s.codecs.Codec(core.DialectAnthropic)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "unsupported dialect")
+		return
+	}
+	req, err := codec.ParseRequest(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+
+	resp := struct {
+		InputTokens int `json:"input_tokens"`
+	}{InputTokens: estimateInputTokens(req)}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// estimateInputTokens approximates the prompt token count for a request using
+// the ~4 chars/token heuristic over system text, message content, tool-call
+// arguments, and tool results.
+func estimateInputTokens(req *core.ChatRequest) int {
+	if req == nil {
+		return 0
+	}
+	chars := len(req.System)
+	for _, m := range req.Messages {
+		for _, part := range m.Content {
+			chars += len(part.Text)
+			if part.ToolCall != nil {
+				chars += len(part.ToolCall.Arguments)
+			}
+			if part.ToolResult != nil {
+				chars += len(part.ToolResult.Content)
+			}
+		}
+	}
+	for _, t := range req.Tools {
+		chars += len(t.Name) + len(t.Description) + len(t.Parameters)
+	}
+	if chars <= 0 {
+		return 0
+	}
+	return (chars + 3) / 4
+}
+
 // handleOpenAIResponses serves /v1/responses in the OpenAI Responses dialect
 // (Codex and Responses-native clients).
 func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {

@@ -21,7 +21,12 @@ import {
 // defaultRedirectURI is the OAuth callback the provider redirects to after sign-in.
 // The backend intercepts this path, exchanges the code, and redirects to a
 // frontend callback page that notifies this tab via postMessage.
-const defaultRedirectURI = "http://localhost:20180/oauth/callback";
+//
+// We use the literal IPv4 loopback (127.0.0.1) rather than "localhost" because
+// the gateway binds to 127.0.0.1 (IPv4 only). On Windows, "localhost" often
+// resolves to the IPv6 ::1 first, so a callback to http://localhost would hit a
+// closed IPv6 port and the OAuth flow would hang after account selection.
+const defaultRedirectURI = "http://127.0.0.1:20180/oauth/callback";
 
 function redirectURIForProvider(provider: OAuthProvider): string {
   if (provider.fixed_port && provider.callback_path) {

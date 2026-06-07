@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -219,12 +220,21 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger) (*App, erro
 // gracefully.
 func (a *App) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
-	go func() {
-		a.log.Info("KeiRouter listening", "addr", a.cfg.Addr(), "db", a.cfg.Database.Driver)
-		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-	}()
+
+	listeners, err := a.loopbackListeners()
+	if err != nil {
+		return err
+	}
+
+	for _, ln := range listeners {
+		ln := ln
+		go func() {
+			a.log.Info("KeiRouter listening", "addr", ln.Addr().String(), "db", a.cfg.Database.Driver)
+			if serveErr := a.server.Serve(ln); serveErr != nil && serveErr != http.ErrServerClosed {
+				errCh <- serveErr
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -238,6 +248,46 @@ func (a *App) Run(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// loopbackListeners opens the TCP listeners the server serves on. When the
+// configured host is a loopback name ("localhost"), it binds both 127.0.0.1
+// and ::1 so callbacks resolve regardless of whether the OS prefers IPv4 or
+// IPv6. This matters on Windows, where "localhost" usually resolves to ::1
+// first — a single 127.0.0.1 listener would leave OAuth callbacks to
+// http://localhost hanging. For any explicit address, a single listener on
+// that address is used.
+func (a *App) loopbackListeners() ([]net.Listener, error) {
+	host := a.cfg.Server.Host
+	port := a.cfg.Server.Port
+
+	if host == "localhost" {
+		var lns []net.Listener
+		for _, ip := range []string{"127.0.0.1", "::1"} {
+			addr := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				// ::1 may be unavailable on hosts with IPv6 disabled. Tolerate
+				// that as long as at least one listener came up.
+				if ip == "::1" && len(lns) > 0 {
+					a.log.Warn("IPv6 loopback unavailable; serving IPv4 only", "err", err)
+					continue
+				}
+				for _, opened := range lns {
+					_ = opened.Close()
+				}
+				return nil, fmt.Errorf("app: listen %s: %w", addr, err)
+			}
+			lns = append(lns, ln)
+		}
+		return lns, nil
+	}
+
+	ln, err := net.Listen("tcp", a.cfg.Addr())
+	if err != nil {
+		return nil, fmt.Errorf("app: listen %s: %w", a.cfg.Addr(), err)
+	}
+	return []net.Listener{ln}, nil
 }
 
 // resolveDataDir returns the configured data directory, creating it if needed.
