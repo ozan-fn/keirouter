@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database, Clock,
   ArrowUpCircle, CheckCircle2, ExternalLink,
-  Gauge,
+  Gauge, Eye, EyeOff, KeyRound, Download, Upload, ShieldCheck, Info,
 } from "lucide-react";
 import { api, type EndpointSettings } from "../lib/api";
 import { PageHeader } from "../components/Layout";
@@ -11,7 +11,7 @@ import { useUpdateInfo } from "../components/UpdateNotification";
 import { useToast } from "../components/Toast";
 import {
   Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner, Button, Input, Field,
-  SettingsSection,
+  SettingsSection, Modal,
 } from "../components/ui";
 
 // Caveman compression maps to a Gentle / Balanced / Strong segmented control.
@@ -433,23 +433,101 @@ function NetworkSettings({
   );
 }
 
+function PassphraseInput({
+  id,
+  value,
+  onChange,
+  show,
+  onToggleShow,
+  placeholder,
+  autoFocus,
+  ariaInvalid,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  show: boolean;
+  onToggleShow: () => void;
+  placeholder?: string;
+  autoFocus?: boolean;
+  ariaInvalid?: boolean;
+}) {
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        type={show ? "text" : "password"}
+        value={value}
+        autoFocus={autoFocus}
+        autoComplete="new-password"
+        spellCheck={false}
+        placeholder={placeholder}
+        aria-invalid={ariaInvalid}
+        onChange={(e) => onChange(e.target.value)}
+        className="pr-11"
+      />
+      <button
+        type="button"
+        onClick={onToggleShow}
+        aria-label={show ? "Hide passphrase" : "Show passphrase"}
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:text-[var(--text)]"
+      >
+        {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </button>
+    </div>
+  );
+}
+
+function strengthOf(pass: string): { label: string; tone: "muted" | "weak" | "ok" | "strong"; pct: number } {
+  if (!pass) return { label: "No passphrase — local backup", tone: "muted", pct: 0 };
+  let score = 0;
+  if (pass.length >= 8) score++;
+  if (pass.length >= 14) score++;
+  if (/[A-Z]/.test(pass) && /[a-z]/.test(pass)) score++;
+  if (/\d/.test(pass)) score++;
+  if (/[^A-Za-z0-9]/.test(pass)) score++;
+  if (score <= 2) return { label: "Weak — short or simple", tone: "weak", pct: 33 };
+  if (score <= 3) return { label: "OK — could be stronger", tone: "ok", pct: 66 };
+  return { label: "Strong", tone: "strong", pct: 100 };
+}
+
 function DatabaseSettings() {
   const toast = useToast();
   const importRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
 
-  const handleExport = async () => {
-    // A portable backup re-keys credentials to a passphrase so it can be
-    // restored on another machine (different master key). Empty = local backup
-    // that only opens on this install's master key.
-    const passphrase = window.prompt(
-      "Optional passphrase for a PORTABLE backup (re-keys credentials so they can be restored on another machine).\n\nLeave blank for a local backup tied to this machine's master key.",
-      "",
-    );
-    // prompt returns null when cancelled.
-    if (passphrase === null) return;
-    const pass = passphrase.trim();
+  // Export modal state
+  const [exportOpen, setExportOpen] = useState(false);
+  const [usePortable, setUsePortable] = useState(false);
+  const [exportPass, setExportPass] = useState("");
+  const [exportConfirm, setExportConfirm] = useState("");
+  const [showExportPass, setShowExportPass] = useState(false);
 
+  // Import modal state
+  const [importOpen, setImportOpen] = useState(false);
+  const [pendingPayload, setPendingPayload] = useState<unknown>(null);
+  const [importPass, setImportPass] = useState("");
+  const [showImportPass, setShowImportPass] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const resetExport = () => {
+    setExportOpen(false);
+    setUsePortable(false);
+    setExportPass("");
+    setExportConfirm("");
+    setShowExportPass(false);
+  };
+
+  const resetImport = () => {
+    setImportOpen(false);
+    setPendingPayload(null);
+    setImportPass("");
+    setShowImportPass(false);
+    setImportError(null);
+    if (importRef.current) importRef.current.value = "";
+  };
+
+  const downloadBackup = async (pass: string | undefined) => {
     setLoading(true);
     try {
       const data = await api.exportDatabase(pass || undefined);
@@ -470,6 +548,7 @@ function DatabaseSettings() {
           ? "Portable backup saved. Keep the passphrase safe — it is required to import on another machine."
           : "Local backup saved. It only restores on this machine's master key.",
       );
+      resetExport();
     } catch (e) {
       toast.error("Export failed", (e as Error).message);
     } finally {
@@ -477,65 +556,262 @@ function DatabaseSettings() {
     }
   };
 
-  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleExportSubmit = () => {
+    if (usePortable) {
+      const p = exportPass.trim();
+      if (!p) return;
+      if (p !== exportConfirm.trim()) return;
+      void downloadBackup(p);
+    } else {
+      void downloadBackup(undefined);
+    }
+  };
+
+  const handleFilePicked = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    setLoading(true);
     try {
       const raw = await file.text();
       const payload = JSON.parse(raw);
 
-      // Portable backups carry credentials re-keyed to a passphrase; prompt for it.
-      let pass: string | undefined;
-      if (payload && payload.portable === true) {
-        const entered = window.prompt(
-          "This is a portable backup. Enter the passphrase used when it was exported:",
-          "",
-        );
-        if (entered === null) {
-          setLoading(false);
-          if (importRef.current) importRef.current.value = "";
-          return;
-        }
-        pass = entered.trim();
+      if (payload && (payload as { portable?: boolean }).portable === true) {
+        setPendingPayload(payload);
+        setImportPass("");
+        setShowImportPass(false);
+        setImportError(null);
+        setImportOpen(true);
+        return;
       }
 
-      const result = await api.importDatabase(payload, pass);
+      setLoading(true);
+      const result = await api.importDatabase(payload);
       toast.success("Import complete", `${result.imported} records restored. Existing data was merged or updated.`);
+      if (importRef.current) importRef.current.value = "";
     } catch (e) {
       toast.error("Import failed", (e as Error).message);
-    } finally {
       if (importRef.current) importRef.current.value = "";
+    } finally {
       setLoading(false);
     }
   };
 
+  const submitImportWithPass = async () => {
+    const p = importPass.trim();
+    if (!p) {
+      setImportError("Passphrase required for portable backups.");
+      return;
+    }
+    setImportError(null);
+    setLoading(true);
+    try {
+      const result = await api.importDatabase(pendingPayload, p);
+      toast.success("Import complete", `${result.imported} records restored. Existing data was merged or updated.`);
+      resetImport();
+    } catch (e) {
+      setImportError((e as Error).message || "Import failed. Wrong passphrase?");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportStrength = strengthOf(exportPass);
+  const exportMismatch =
+    usePortable && exportConfirm.length > 0 && exportPass !== exportConfirm;
+  const exportDisabled =
+    loading ||
+    (usePortable && (!exportPass.trim() || exportPass !== exportConfirm));
+
   return (
-    <Card>
-      <SectionHeader
-        title="Database"
-        description="Export or import your KeiRouter configuration."
-        icon={Database}
-      />
-      <div className="flex items-center gap-3 border-t border-[var(--border)] px-6 py-4">
-        <Button variant="ghost" onClick={handleExport} disabled={loading}>
-          <Database className="h-4 w-4" />
-          Download Backup
-        </Button>
-        <Button variant="ghost" onClick={() => importRef.current?.click()} disabled={loading}>
-          <Database className="h-4 w-4" />
-          Import Backup
-        </Button>
-        <input
-          ref={importRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={handleImport}
+    <>
+      <Card>
+        <SectionHeader
+          title="Database"
+          description="Export or import your KeiRouter configuration."
+          icon={Database}
         />
-      </div>
-    </Card>
+        <div className="flex flex-wrap items-center gap-3 border-t border-[var(--border)] px-6 py-4">
+          <Button variant="ghost" onClick={() => setExportOpen(true)} disabled={loading}>
+            <Download className="h-4 w-4" />
+            Download Backup
+          </Button>
+          <Button variant="ghost" onClick={() => importRef.current?.click()} disabled={loading}>
+            <Upload className="h-4 w-4" />
+            Import Backup
+          </Button>
+          <input
+            ref={importRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={handleFilePicked}
+          />
+        </div>
+      </Card>
+
+      <Modal
+        open={exportOpen}
+        onClose={() => (loading ? null : resetExport())}
+        title="Download backup"
+        subtitle="Choose how credentials are encrypted in the export file."
+        maxWidth="max-w-md"
+      >
+        <div className="max-h-[55vh] space-y-5 overflow-y-auto px-6 py-5">
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--border)] px-4 py-3 transition-colors hover:bg-ink-50 dark:hover:bg-ink-900/40">
+              <input
+                type="radio"
+                name="export-mode"
+                checked={!usePortable}
+                onChange={() => setUsePortable(false)}
+                className="mt-1 h-4 w-4 accent-secondary-600"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2 text-sm font-medium text-[var(--text)]">
+                  <ShieldCheck className="h-4 w-4 text-accent-600 dark:text-accent-300" />
+                  Local backup
+                </div>
+                <p className="mt-0.5 text-xs leading-relaxed text-[var(--text-muted)]">
+                  Tied to this machine's master key. Only restores on this install. No passphrase needed.
+                </p>
+              </div>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[var(--border)] px-4 py-3 transition-colors hover:bg-ink-50 dark:hover:bg-ink-900/40">
+              <input
+                type="radio"
+                name="export-mode"
+                checked={usePortable}
+                onChange={() => setUsePortable(true)}
+                className="mt-1 h-4 w-4 accent-secondary-600"
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-2 text-sm font-medium text-[var(--text)]">
+                  <KeyRound className="h-4 w-4 text-secondary-600 dark:text-secondary-300" />
+                  Portable backup
+                </div>
+                <p className="mt-0.5 text-xs leading-relaxed text-[var(--text-muted)]">
+                  Re-keys credentials to a passphrase so you can restore on another machine.
+                </p>
+              </div>
+            </label>
+          </div>
+
+          {usePortable && (
+            <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-4">
+              <Field label="Passphrase">
+                <PassphraseInput
+                  id="export-pass"
+                  value={exportPass}
+                  onChange={setExportPass}
+                  show={showExportPass}
+                  onToggleShow={() => setShowExportPass((s) => !s)}
+                  placeholder="At least 8 characters"
+                  autoFocus
+                />
+                <div className="mt-2">
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        exportStrength.tone === "strong"
+                          ? "bg-accent-500"
+                          : exportStrength.tone === "ok"
+                            ? "bg-amber-500"
+                            : exportStrength.tone === "weak"
+                              ? "bg-[color:var(--color-danger)]"
+                              : "bg-transparent"
+                      }`}
+                      style={{ width: `${exportStrength.pct}%` }}
+                    />
+                  </div>
+                  <p className="mt-1 text-[11px] font-medium text-[var(--text-muted)]">
+                    {exportStrength.label}
+                  </p>
+                </div>
+              </Field>
+
+              <Field label="Confirm passphrase">
+                <PassphraseInput
+                  id="export-confirm"
+                  value={exportConfirm}
+                  onChange={setExportConfirm}
+                  show={showExportPass}
+                  onToggleShow={() => setShowExportPass((s) => !s)}
+                  placeholder="Re-enter passphrase"
+                  ariaInvalid={exportMismatch}
+                />
+                {exportMismatch && (
+                  <p className="mt-1 text-xs text-[color:var(--color-danger)]">
+                    Passphrases do not match.
+                  </p>
+                )}
+              </Field>
+
+              <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>Store this passphrase safely. Without it the backup cannot be restored — there is no recovery.</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
+          <Button variant="ghost" onClick={resetExport} disabled={loading}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleExportSubmit} disabled={exportDisabled}>
+            <Download className="h-4 w-4" />
+            {loading ? "Preparing…" : "Download"}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={importOpen}
+        onClose={() => (loading ? null : resetImport())}
+        title="Portable backup detected"
+        subtitle="Enter the passphrase that was used when this backup was exported."
+      >
+        <div className="space-y-4 px-6 py-5">
+          <Field label="Passphrase">
+            <PassphraseInput
+              id="import-pass"
+              value={importPass}
+              onChange={(v) => {
+                setImportPass(v);
+                if (importError) setImportError(null);
+              }}
+              show={showImportPass}
+              onToggleShow={() => setShowImportPass((s) => !s)}
+              placeholder="Passphrase from export"
+              autoFocus
+              ariaInvalid={!!importError}
+            />
+          </Field>
+
+          {importError && <ErrorBanner message={importError} />}
+
+          <div className="flex items-start gap-2 rounded-lg bg-ink-100 px-3 py-2 text-xs text-[var(--text-muted)] dark:bg-ink-800/60">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>Existing data is merged or updated. The import will not delete records that aren't in the backup.</span>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
+          <Button variant="ghost" onClick={resetImport} disabled={loading}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={submitImportWithPass}
+            disabled={loading || !importPass.trim()}
+          >
+            <Upload className="h-4 w-4" />
+            {loading ? "Importing…" : "Restore"}
+          </Button>
+        </div>
+      </Modal>
+    </>
   );
 }
 

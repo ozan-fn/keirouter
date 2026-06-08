@@ -299,6 +299,7 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 		default: // user, system
 			var text strings.Builder
 			var images []map[string]any
+			var toolResults []map[string]any
 			for _, p := range m.Content {
 				switch p.Type {
 				case core.PartText:
@@ -314,9 +315,25 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 							"source": map[string]any{"bytes": p.Media.Data},
 						})
 					}
+				case core.PartToolResult:
+					// Anthropic-dialect clients (e.g. Claude Code) carry tool
+					// results as tool_result blocks inside a user message, so they
+					// arrive here as a RoleUser message with a PartToolResult —
+					// not as a RoleTool message. Without this branch the result is
+					// silently dropped, orphaning the assistant's matching toolUse
+					// and making CodeWhisperer reject the conversation with
+					// "Improperly formed request" (HTTP 400). Mirror the RoleTool
+					// case so both dialects produce the same Kiro toolResults.
+					if p.ToolResult != nil {
+						toolResults = append(toolResults, map[string]any{
+							"toolUseId": p.ToolResult.CallID,
+							"status":    "success",
+							"content":   []map[string]any{{"text": p.ToolResult.Content}},
+						})
+					}
 				}
 			}
-			flushUser(text.String(), nil, images)
+			flushUser(text.String(), toolResults, images)
 		}
 	}
 
@@ -365,10 +382,7 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
-			schema := sanitizeKiroToolSchema(rawToAny(t.Parameters))
-			if schema == nil {
-				schema = map[string]any{"type": "object", "properties": map[string]any{}, "required": []any{}}
-			}
+			schema := normalizeKiroToolSchema(rawToAny(t.Parameters))
 			desc := t.Description
 			if strings.TrimSpace(desc) == "" {
 				desc = "Tool: " + t.Name
@@ -726,68 +740,22 @@ func sanitizeKiroToolName(name string) string {
 	return out
 }
 
-// kiroSchemaAllowedKeys is the set of JSON-Schema keywords CodeWhisperer's
-// toolSpecification.inputSchema.json validator accepts. Anything outside this
-// set (meta keys like "$schema"/"$ref", combinators like "anyOf"/"oneOf"/
-// "allOf"/"const", and constraints like "format"/"propertyNames"/
-// "additionalProperties"/"exclusiveMinimum"/"maximum"/"minLength") makes Kiro
-// reject the whole request with "Improperly formed request" (HTTP 400).
-var kiroSchemaAllowedKeys = map[string]bool{
-	"type":        true,
-	"description":  true,
-	"enum":         true,
-	"properties":   true,
-	"required":     true,
-	"items":        true,
-}
-
-// sanitizeKiroToolSchema rebuilds a tool parameter schema as the minimal,
-// CodeWhisperer-conformant subset. Clients like Claude Code emit full
-// JSON-Schema draft documents (with "$schema", "additionalProperties": {},
-// "anyOf", "const", "format", "propertyNames", numeric bounds, etc.); Kiro's
-// validator accepts only a plain constrained schema and rejects the entire
-// request — for EVERY model, since the tool spec is shared — when any
-// unsupported keyword is present. Rather than denylist each offending construct
-// (a moving target), this keeps only the allowlisted keywords and recurses into
-// "properties" and "items". A node left empty after filtering (e.g. a property
-// described solely by "anyOf") becomes an unconstrained {}, which is valid.
-func sanitizeKiroToolSchema(v any) any {
+// normalizeKiroToolSchema prepares a tool parameter schema for Kiro,
+// openai-to-kiro translator (the reference implementation known to
+// work against the Kiro/CodeWhisperer upstream). Kiro accepts the client's
+// JSON-Schema as-is — including "$schema", "additionalProperties", "anyOf" and
+// other draft keywords — so the schema is passed through unchanged; the only
+// requirement is that a "required" array is present (default to empty when the
+// client omitted it). An empty or absent schema becomes a minimal object
+// schema. Aggressively stripping keywords was tried and is unnecessary: it
+// diverges from the proven-good shape and provides no benefit.
+func normalizeKiroToolSchema(v any) map[string]any {
 	node, ok := v.(map[string]any)
-	if !ok {
-		// Non-object schema fragment (rare at this position) — pass through.
-		return v
+	if !ok || len(node) == 0 {
+		return map[string]any{"type": "object", "properties": map[string]any{}, "required": []any{}}
 	}
-	out := make(map[string]any, len(node))
-	for k, val := range node {
-		if !kiroSchemaAllowedKeys[k] {
-			continue
-		}
-		switch k {
-		case "properties":
-			// Recurse into each named property's subschema.
-			if props, ok := val.(map[string]any); ok {
-				cleaned := make(map[string]any, len(props))
-				for name, sub := range props {
-					cleaned[name] = sanitizeKiroToolSchema(sub)
-				}
-				out[k] = cleaned
-			}
-		case "items":
-			// items may be a single schema or an array of schemas.
-			switch items := val.(type) {
-			case map[string]any:
-				out[k] = sanitizeKiroToolSchema(items)
-			case []any:
-				arr := make([]any, 0, len(items))
-				for _, it := range items {
-					arr = append(arr, sanitizeKiroToolSchema(it))
-				}
-				out[k] = arr
-			}
-		default:
-			// type/description/enum/required: copy verbatim.
-			out[k] = val
-		}
+	if _, has := node["required"]; !has {
+		node["required"] = []any{}
 	}
-	return out
+	return node
 }

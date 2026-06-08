@@ -232,6 +232,102 @@ func TestKiro_RenderRequest_ReconcilesOrphanedToolResults(t *testing.T) {
 	}
 }
 
+// Claude Code (Anthropic dialect) carries tool results as tool_result blocks
+// inside a user message, so after parsing they arrive as a RoleUser message
+// holding a PartToolResult — not as a RoleTool message. buildKiroHistory must
+// still surface those into Kiro toolResults; otherwise the result is dropped,
+// the assistant's matching toolUse is orphaned, and CodeWhisperer rejects the
+// conversation with "Improperly formed request" (HTTP 400). This reproduces the
+// exact shape that 400s only on Claude Code and not on OpenAI-dialect tools.
+func TestKiro_RenderRequest_UserEmbeddedToolResult(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "claude-opus-4.8-thinking",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "list files"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "calling tool"},
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call_1", Name: "ls", Arguments: json.RawMessage(`{"path":"."}`)}},
+			}},
+			// Anthropic shape: tool_result lives inside a USER message, not a tool role.
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: "call_1", Content: "a.go\nb.go"}},
+			}},
+		},
+		Tools: []core.Tool{{Name: "ls", Description: "list", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+
+	// Collect every toolResult across history + currentMessage.
+	var resultIDs []string
+	collect := func(uim map[string]any) {
+		ctx, ok := uim["userInputMessageContext"].(map[string]any)
+		if !ok {
+			return
+		}
+		trs, ok := ctx["toolResults"].([]any)
+		if !ok {
+			return
+		}
+		for _, tr := range trs {
+			if id, _ := tr.(map[string]any)["toolUseId"].(string); id != "" {
+				resultIDs = append(resultIDs, id)
+			}
+		}
+	}
+	for _, h := range cs["history"].([]any) {
+		if uim, ok := h.(map[string]any)["userInputMessage"].(map[string]any); ok {
+			collect(uim)
+		}
+	}
+	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	collect(cm)
+
+	// The tool result must survive as a structured toolResult referencing the
+	// assistant's toolUse — proving it was not dropped.
+	found := false
+	for _, id := range resultIDs {
+		if id == "call_1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tool_result inside user message must surface as a Kiro toolResult for call_1; got %v\npayload: %s", resultIDs, body)
+	}
+
+	// The assistant toolUse must not be orphaned: its id must have a matching
+	// result somewhere in the payload.
+	var toolUseIDs []string
+	for _, h := range cs["history"].([]any) {
+		if arm, ok := h.(map[string]any)["assistantResponseMessage"].(map[string]any); ok {
+			for _, tu := range asAnySlice(arm["toolUses"]) {
+				if id, _ := tu.(map[string]any)["toolUseId"].(string); id != "" {
+					toolUseIDs = append(toolUseIDs, id)
+				}
+			}
+		}
+	}
+	for _, tuID := range toolUseIDs {
+		matched := false
+		for _, rID := range resultIDs {
+			if rID == tuID {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("assistant toolUse %q has no matching toolResult — orphaned, will 400", tuID)
+		}
+	}
+}
+
 // CodeWhisperer rejects tool names that don't match ^[a-zA-Z][a-zA-Z0-9_]{0,63}$
 // with 400 "Improperly formed request". MCP tool names (dots, hyphens, long)
 // must be coerced into the accepted shape, consistently across the tool spec
@@ -534,13 +630,13 @@ func stripTimeContext(s string) string {
 	return s[:start] + s[start+end+1:]
 }
 
-// TestKiro_RenderRequest_SanitizesToolSchema reproduces the real failure: Claude
-// Code sends tool parameter schemas as full JSON-Schema draft documents with a
-// "$schema" meta key and object-valued "additionalProperties". CodeWhisperer's
-// inputSchema.json validator rejects both, returning "Improperly formed request"
-// (HTTP 400) for EVERY model. The rendered payload must carry no "$"-prefixed
-// schema keys and only boolean additionalProperties.
-func TestKiro_RenderRequest_SanitizesToolSchema(t *testing.T) {
+// TestKiro_RenderRequest_NormalizesToolSchema verifies the tool schema is passed
+// through to Kiro as-is (matching 9router's proven-good translator), with only a
+// "required" array guaranteed present. Kiro accepts full JSON-Schema draft
+// documents, so client keywords like "$schema" and "additionalProperties" are
+// preserved rather than stripped — stripping diverged from the working shape and
+// was unnecessary.
+func TestKiro_RenderRequest_NormalizesToolSchema(t *testing.T) {
 	req := &core.ChatRequest{
 		Model: "claude-opus-4.8-thinking",
 		Messages: []core.Message{
@@ -553,21 +649,14 @@ func TestKiro_RenderRequest_SanitizesToolSchema(t *testing.T) {
 				Parameters: json.RawMessage(`{
 					"$schema":"https://json-schema.org/draft/2020-12/schema",
 					"additionalProperties":false,
-					"properties":{},
+					"properties":{"x":{"type":"string"}},
 					"type":"object"
 				}`),
 			},
 			{
-				Name:        "ExitPlanMode",
-				Description: "exit",
-				Parameters: json.RawMessage(`{
-					"$schema":"https://json-schema.org/draft/2020-12/schema",
-					"additionalProperties":{},
-					"properties":{
-						"nested":{"type":"object","additionalProperties":{"type":"string"}}
-					},
-					"type":"object"
-				}`),
+				Name:        "EmptySchema",
+				Description: "no params",
+				Parameters:  nil,
 			},
 		},
 	}
@@ -576,41 +665,10 @@ func TestKiro_RenderRequest_SanitizesToolSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No "$schema" (or any "$"-prefixed meta key) may survive anywhere.
-	raw := string(body)
-	if strings.Contains(raw, `"$schema"`) {
-		t.Errorf("rendered payload must not contain $schema: %s", raw)
-	}
-
-	// Every additionalProperties value must be a boolean, never an object.
 	var env map[string]any
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatal(err)
 	}
-	var checkAdditional func(v any)
-	checkAdditional = func(v any) {
-		switch node := v.(type) {
-		case map[string]any:
-			for k, val := range node {
-				if k == "additionalProperties" {
-					if _, ok := val.(bool); !ok {
-						t.Errorf("additionalProperties must be bool, got %T (%v)", val, val)
-					}
-				}
-				if strings.HasPrefix(k, "$") {
-					t.Errorf("schema meta key %q must be stripped", k)
-				}
-				checkAdditional(val)
-			}
-		case []any:
-			for _, e := range node {
-				checkAdditional(e)
-			}
-		}
-	}
-	checkAdditional(env)
-
-	// The tools array must still be present and well formed.
 	cs := env["conversationState"].(map[string]any)
 	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
 	ctx := cm["userInputMessageContext"].(map[string]any)
@@ -618,12 +676,32 @@ func TestKiro_RenderRequest_SanitizesToolSchema(t *testing.T) {
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
-	for _, tt := range tools {
-		spec := tt.(map[string]any)["toolSpecification"].(map[string]any)
-		js := spec["inputSchema"].(map[string]any)["json"].(map[string]any)
-		if js["type"] != "object" {
-			t.Errorf("tool schema should preserve type=object, got %v", js["type"])
-		}
+
+	schemaOf := func(i int) map[string]any {
+		spec := tools[i].(map[string]any)["toolSpecification"].(map[string]any)
+		return spec["inputSchema"].(map[string]any)["json"].(map[string]any)
+	}
+
+	// First tool: client schema preserved verbatim, including $schema, and a
+	// required array is present.
+	s0 := schemaOf(0)
+	if s0["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
+		t.Errorf("client $schema should be preserved, got %v", s0["$schema"])
+	}
+	if s0["type"] != "object" {
+		t.Errorf("type should be preserved, got %v", s0["type"])
+	}
+	if _, ok := s0["required"]; !ok {
+		t.Errorf("required array should be present, got %v", s0)
+	}
+
+	// Second tool: empty/absent schema becomes a minimal object schema.
+	s1 := schemaOf(1)
+	if s1["type"] != "object" {
+		t.Errorf("empty schema should default to type=object, got %v", s1["type"])
+	}
+	if _, ok := s1["required"]; !ok {
+		t.Errorf("empty schema should carry required array, got %v", s1)
 	}
 }
 
