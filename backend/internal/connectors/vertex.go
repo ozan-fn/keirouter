@@ -2,6 +2,8 @@ package connectors
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -107,6 +109,35 @@ func (c *Vertex) headers(bearerTok string) map[string]string {
 		h["Authorization"] = bearer(bearerTok)
 	}
 	return h
+}
+
+// Validate resolves the credential (minting a token from a service-account JSON
+// when supplied) and lists models to confirm it is accepted. A 401/403 means
+// the key or service account is rejected.
+func (c *Vertex) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.APIKey == "" && creds.AccessToken == "" {
+		return fmt.Errorf("validation failed for %s: no API key or access token", c.id)
+	}
+	bearerTok, rawKey, projectID, location, err := c.resolve(ctx, creds)
+	if err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+
+	base := strings.TrimRight(c.baseURL(creds), "/")
+	var listURL string
+	if bearerTok != "" && projectID != "" {
+		listURL = base + "/v1/projects/" + projectID + "/locations/" + location +
+			"/publishers/google/models"
+	} else {
+		listURL = base + "/v1/publishers/google/models"
+		if rawKey != "" {
+			listURL += "?key=" + url.QueryEscape(rawKey)
+		}
+	}
+	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", listURL, nil, c.headers(bearerTok)); err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 // Chat performs a non-streaming Vertex generateContent call.

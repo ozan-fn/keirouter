@@ -2,8 +2,10 @@ package connectors
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -54,6 +56,21 @@ func hasResponsesSuffix(u string) bool {
 		return false
 	}
 	return u[len(u)-len(suf):] == suf
+}
+
+// Validate probes the upstream by listing models. The base usually points at
+// ".../responses", so the models endpoint is derived by trimming that suffix
+// and appending "/models". A 401/403 means the key/token is rejected.
+func (c *OpenAIResponses) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.APIKey == "" && creds.AccessToken == "" {
+		return fmt.Errorf("validation failed for %s: no API key or access token", c.id)
+	}
+	base := strings.TrimRight(c.baseURL(creds), "/")
+	base = strings.TrimSuffix(base, "/responses")
+	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", base+"/models", nil, c.headers(creds)); err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 func (c *OpenAIResponses) headers(creds core.Credentials) map[string]string {

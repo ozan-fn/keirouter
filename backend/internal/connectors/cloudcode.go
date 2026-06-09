@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -100,6 +101,16 @@ func (c *CloudCode) headers(creds core.Credentials, stream bool) map[string]stri
 		h["X-Goog-Api-Client"] = geminiCLIAPIClient
 	}
 	return mergeHeaders(h, creds.Headers)
+}
+
+// Validate confirms an OAuth access token is present. CloudCode endpoints only
+// expose a generate path (no cheap models/userinfo probe) and a live probe
+// would consume quota, so this is a presence check.
+func (c *CloudCode) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.AccessToken == "" {
+		return fmt.Errorf("validation failed for %s: no access token", c.id)
+	}
+	return nil
 }
 
 // wrapRequest renders the canonical request to the inner Gemini body, then wraps

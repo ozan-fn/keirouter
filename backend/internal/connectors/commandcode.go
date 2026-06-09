@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -44,6 +45,16 @@ func (c *CommandCode) headers(creds core.Credentials) map[string]string {
 		h["Authorization"] = bearer(creds.APIKey)
 	}
 	return mergeHeaders(h, creds.Headers)
+}
+
+// Validate confirms a credential is present. Command Code only exposes a
+// generate endpoint (no cheap models/userinfo probe), so this is a presence
+// check: a live probe would consume quota.
+func (c *CommandCode) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.AccessToken == "" && creds.APIKey == "" {
+		return fmt.Errorf("validation failed for %s: no access token or API key", c.id)
+	}
+	return nil
 }
 
 // Chat performs a non-streaming generate call.

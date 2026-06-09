@@ -2,9 +2,11 @@ package connectors
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -57,6 +59,19 @@ func (c *Gemini) headers(creds core.Credentials) map[string]string {
 func (c *Gemini) modelURL(creds core.Credentials, model, action string) string {
 	base := c.baseURL(creds)
 	return joinURL(base, "models/"+url.PathEscape(model)+":"+action)
+}
+
+// Validate probes the upstream by listing models (GET /models), confirming the
+// API key or OAuth token is accepted. A 401/403 means the credential is bad.
+func (c *Gemini) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.APIKey == "" && creds.AccessToken == "" {
+		return fmt.Errorf("validation failed for %s: no API key or access token", c.id)
+	}
+	base := strings.TrimRight(c.baseURL(creds), "/")
+	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", base+"/models", nil, c.headers(creds)); err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 // Chat performs a non-streaming generateContent call.

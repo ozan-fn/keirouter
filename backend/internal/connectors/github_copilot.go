@@ -3,6 +3,8 @@ package connectors
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -63,6 +65,19 @@ func (c *GitHubCopilot) endpoint(creds core.Credentials) string {
 		return base
 	}
 	return joinURL(base, "chat/completions")
+}
+
+// Validate confirms the Copilot bearer token is accepted by listing models. A
+// 401/403 means the token is missing, expired, or revoked.
+func (c *GitHubCopilot) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.AccessToken == "" && creds.APIKey == "" {
+		return fmt.Errorf("validation failed for %s: no access token", c.id)
+	}
+	base := strings.TrimSuffix(c.baseURL(creds), "/chat/completions")
+	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", joinURL(base, "models"), nil, c.headers(creds, false)); err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 func (c *GitHubCopilot) headers(creds core.Credentials, stream bool) map[string]string {

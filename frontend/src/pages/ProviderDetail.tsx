@@ -98,6 +98,22 @@ export function ProviderDetailPage() {
   const [modelPage, setModelPage] = useState(1);
   const MODELS_PER_PAGE = 12;
 
+  // Multi-select state for bulk enable/disable. Holds the ids of selected
+  // models; selection persists across pagination and search changes.
+  const [selectedModelIds, setSelectedModelIds] = useState<Set<string>>(new Set());
+
+  const toggleModelSelection = (id: string) => {
+    setSelectedModelIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
   const filteredModels = useMemo(() => {
     if (!models.data?.models) return [];
     if (!modelSearchQuery.trim()) return models.data.models;
@@ -357,25 +373,63 @@ export function ProviderDetailPage() {
                   className="pl-9 h-8 text-sm"
                 />
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--text-muted)]">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+                    checked={filteredModels.length > 0 && filteredModels.every((m) => selectedModelIds.has(m.id))}
+                    ref={(el) => {
+                      if (el) {
+                        const someSelected = filteredModels.some((m) => selectedModelIds.has(m.id));
+                        const allSelected = filteredModels.length > 0 && filteredModels.every((m) => selectedModelIds.has(m.id));
+                        el.indeterminate = someSelected && !allSelected;
+                      }
+                    }}
+                    onChange={(e) => {
+                      setSelectedModelIds((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) {
+                          filteredModels.forEach((m) => next.add(m.id));
+                        } else {
+                          filteredModels.forEach((m) => next.delete(m.id));
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                  Select all
+                </label>
+                {selectedModelIds.size > 0 && (
+                  <span className="text-xs text-[var(--text-muted)]">{selectedModelIds.size} selected</span>
+                )}
                 <Button
                   variant="ghost"
                   className="h-8 px-3 text-xs"
-                  onClick={() => enableModelsMut.mutate(paginatedModels.map((m) => m.id))}
-                  disabled={enableModelsMut.isPending || paginatedModels.length === 0}
+                  onClick={() => enableModelsMut.mutate([...selectedModelIds])}
+                  disabled={enableModelsMut.isPending || selectedModelIds.size === 0}
                 >
                   <ToggleRight className="h-3.5 w-3.5 text-accent-500" />
-                  Enable page
+                  Enable
                 </Button>
                 <Button
                   variant="ghost"
                   className="h-8 px-3 text-xs"
-                  onClick={() => disableModelsMut.mutate(paginatedModels.map((m) => m.id))}
-                  disabled={disableModelsMut.isPending || paginatedModels.length === 0}
+                  onClick={() => disableModelsMut.mutate([...selectedModelIds])}
+                  disabled={disableModelsMut.isPending || selectedModelIds.size === 0}
                 >
                   <ToggleLeft className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-                  Disable page
+                  Disable
                 </Button>
+                {selectedModelIds.size > 0 && (
+                  <Button
+                    variant="ghost"
+                    className="h-8 px-2 text-xs"
+                    onClick={() => setSelectedModelIds(new Set())}
+                  >
+                    Clear
+                  </Button>
+                )}
               </div>
             </div>
             {filteredModels.length === 0 ? (
@@ -390,6 +444,8 @@ export function ProviderDetailPage() {
                     model={m}
                     provider={provider}
                     disabled={disabledModelIds.has(m.id)}
+                    selected={selectedModelIds.has(m.id)}
+                    onToggleSelect={() => toggleModelSelection(m.id)}
                     onToggleDisable={() => {
                       if (disabledModelIds.has(m.id)) {
                         enableModelsMut.mutate([m.id]);
@@ -1276,11 +1332,15 @@ function ModelCell({
   model,
   provider,
   disabled,
+  selected,
+  onToggleSelect,
   onToggleDisable,
 }: {
   model: { id: string; name: string; kind: string };
   provider: Provider;
   disabled?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
   onToggleDisable?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -1293,9 +1353,18 @@ function ModelCell({
   };
 
   return (
-    <div className={`group relative flex flex-col justify-between bg-[var(--bg-elevated)] p-4 transition-all hover:bg-[var(--bg-subtle)] ${disabled ? "opacity-50 grayscale" : ""}`}>
+    <div className={`group relative flex flex-col justify-between bg-[var(--bg-elevated)] p-4 transition-all hover:bg-[var(--bg-subtle)] ${disabled ? "opacity-50 grayscale" : ""} ${selected ? "ring-1 ring-inset ring-accent-500/60" : ""}`}>
       <div className="mb-3 flex items-start justify-between">
         <div className="flex items-center gap-2">
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+              checked={!!selected}
+              onChange={onToggleSelect}
+              title="Select model"
+            />
+          )}
           <div className={`h-1.5 w-1.5 rounded-full ${disabled ? "bg-ink-400 dark:bg-ink-600" : "bg-accent-500 shadow-[0_0_8px_var(--color-accent-500)]"}`} />
           <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             {model.kind || "Model"}

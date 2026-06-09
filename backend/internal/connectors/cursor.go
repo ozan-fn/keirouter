@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -50,6 +51,16 @@ func (c *Cursor) baseURL(creds core.Credentials) string {
 
 func (c *Cursor) url(creds core.Credentials) string {
 	return strings.TrimRight(c.baseURL(creds), "/") + c.chatPath
+}
+
+// Validate confirms a token is present. Cursor speaks a Connect-RPC protobuf
+// transport with no cheap probe endpoint, so only token presence can be
+// checked without issuing a billable chat request.
+func (c *Cursor) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.AccessToken == "" && creds.APIKey == "" {
+		return fmt.Errorf("validation failed for %s: no access token", c.id)
+	}
+	return nil
 }
 
 // headers builds the Cursor Connect-RPC + checksum header set. machine_id and

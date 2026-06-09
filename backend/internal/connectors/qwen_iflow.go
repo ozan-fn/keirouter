@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -109,6 +110,20 @@ func (c *Qwen) transformBody(body []byte, stream bool) []byte {
 		return body
 	}
 	return out
+}
+
+// Validate confirms the Qwen token is accepted by listing models on the
+// token-bound host. A 401/403 means the credential is rejected.
+func (c *Qwen) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.APIKey == "" && creds.AccessToken == "" {
+		return fmt.Errorf("validation failed for %s: no API key or access token", c.id)
+	}
+	endpoint := c.endpoint(creds)
+	modelsURL := strings.TrimSuffix(endpoint, "/chat/completions") + "/models"
+	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", modelsURL, nil, c.headers(creds, false)); err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 func (c *Qwen) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
@@ -247,6 +262,20 @@ func (c *IFlow) transformBody(body []byte, stream bool) []byte {
 		return body
 	}
 	return out
+}
+
+// Validate confirms the iFlow credential is accepted by listing models. A
+// 401/403 means the key/token is rejected.
+func (c *IFlow) Validate(ctx context.Context, creds core.Credentials) error {
+	if creds.APIKey == "" && creds.AccessToken == "" {
+		return fmt.Errorf("validation failed for %s: no API key or access token", c.id)
+	}
+	endpoint := c.endpoint(creds)
+	modelsURL := strings.TrimSuffix(endpoint, "/chat/completions") + "/models"
+	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", modelsURL, nil, c.headers(creds, false)); err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	return nil
 }
 
 func (c *IFlow) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
