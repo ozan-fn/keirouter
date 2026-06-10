@@ -6,6 +6,90 @@ import { api, type Provider, type Account } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { Card, CardHeader, Badge, Spinner, EmptyState, StatusDot } from "../components/ui";
 
+// Popularity ranking for default sort order (lower = more popular).
+const POPULARITY: Record<string, number> = {
+  // Tier 1 — mega platforms
+  openai: 1,
+  anthropic: 2,
+  claude: 3,
+  gemini: 4,
+  deepseek: 5,
+  // Tier 2 — major LLM providers
+  xai: 10,
+  mistral: 11,
+  groq: 12,
+  cohere: 13,
+  perplexity: 14,
+  together: 15,
+  fireworks: 16,
+  openrouter: 17,
+  // Tier 3 — popular regional / coding
+  qwen: 20,
+  kimi: 21,
+  glm: 22,
+  minimax: 23,
+  "volcengine-ark": 24,
+  deepinfra: 25,
+  cerebras: 26,
+  sambanova: 27,
+  nvidia: 28,
+  // Tier 4 — coding tools / wrappers
+  cursor: 30,
+  codex: 31,
+  github: 32,
+  cline: 33,
+  kiro: 34,
+  "gemini-cli": 35,
+  commandcode: 36,
+  "kimi-coding": 37,
+  // Tier 5 — cloud platforms
+  azure: 40,
+  vertex: 41,
+  "vertex-partner": 42,
+  "cloudflare-ai": 43,
+  "aws-polly": 44,
+  "vercel-ai-gateway": 45,
+  // Tier 6 — self-hosted / local
+  ollama: 50,
+  "ollama-local": 51,
+  // Tier 7 — media / speech
+  elevenlabs: 60,
+  deepgram: 61,
+  assemblyai: 62,
+  cartesia: 63,
+  "stability-ai": 64,
+  "black-forest-labs": 65,
+  runwayml: 66,
+  // Tier 8 — search / embeddings / utility
+  "voyage-ai": 70,
+  "jina-ai": 71,
+  "jina-reader": 72,
+  tavily: 73,
+  "brave-search": 74,
+  exa: 75,
+  serper: 76,
+  firecrawl: 77,
+  // Tier 9 — niche / smaller
+  huggingface: 80,
+  siliconflow: 81,
+  hyperbolic: 82,
+  nebius: 83,
+  ai21: 84,
+  reka: 85,
+  baseten: 86,
+  modal: 87,
+  lepton: 88,
+};
+const DEFAULT_RANK = 999;
+
+function sortByPopularity<T extends { id: string }>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    const ra = POPULARITY[a.id] ?? DEFAULT_RANK;
+    const rb = POPULARITY[b.id] ?? DEFAULT_RANK;
+    return ra - rb;
+  });
+}
+
 // kindFilters are the service-kind tabs shown above the provider grid.
 const kindFilters = [
   { id: "all", label: "All" },
@@ -51,8 +135,8 @@ export function ProvidersPage() {
       });
   }, [providers.data, filter, searchQuery]);
 
-  const connected = visible.filter((p) => accountsByProvider.has(p.id));
-  const available = visible.filter((p) => !accountsByProvider.has(p.id));
+  const connected = sortByPopularity(visible.filter((p) => accountsByProvider.has(p.id)));
+  const available = sortByPopularity(visible.filter((p) => !accountsByProvider.has(p.id)));
 
   return (
     <>

@@ -15,7 +15,6 @@ import {
   Spinner,
   EmptyState,
   ErrorBanner,
-  SegmentedControl,
 } from "../components/ui";
 
 // redirectURIForProvider returns the OAuth callback the provider redirects to
@@ -262,8 +261,24 @@ export function ProviderDetailPage() {
     if (idx < 0) return;
     const target = direction === "up" ? idx - 1 : idx + 1;
     if (target < 0 || target >= sortedAccounts.length) return;
-    const newPriority = sortedAccounts[target].priority;
-    updateAccount.mutate({ id: accId, patch: { priority: newPriority } });
+    const swapFrom = sortedAccounts[idx];
+    const swapTo = sortedAccounts[target];
+    // Optimistically swap priorities in the query cache for instant UI.
+    qc.setQueryData<{ accounts: Account[] }>(["accounts"], (old) => {
+      if (!old) return old;
+      return {
+        accounts: old.accounts.map((a) => {
+          if (a.id === swapFrom.id) return { ...a, priority: swapTo.priority };
+          if (a.id === swapTo.id) return { ...a, priority: swapFrom.priority };
+          return a;
+        }),
+      };
+    });
+    // Persist both swaps to backend, refetch on settle.
+    updateAccount.mutate({ id: swapFrom.id, patch: { priority: swapTo.priority } });
+    updateAccount.mutate({ id: swapTo.id, patch: { priority: swapFrom.priority } }, {
+      onSettled: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+    });
   };
 
   if (providers.isLoading) return <Spinner />;
@@ -353,6 +368,13 @@ export function ProviderDetailPage() {
               </div>
             }
           />
+          {routing.data && (
+            <RoutingControls
+              settings={routing.data}
+              saving={updateRouting.isPending}
+              onUpdate={(patch) => updateRouting.mutate(patch)}
+            />
+          )}
           {accounts.isLoading ? (
             <Spinner />
           ) : !myAccounts.length ? (
@@ -381,14 +403,6 @@ export function ProviderDetailPage() {
             </div>
           )}
         </Card>
-
-        <ProviderRoutingCard
-          settings={routing.data}
-          accountCount={myAccounts.length}
-          loading={routing.isLoading}
-          saving={updateRouting.isPending}
-          onUpdate={(patch) => updateRouting.mutate(patch)}
-        />
 
         {/* Available Models */}
         {models.data?.models && models.data.models.length > 0 && (
@@ -570,16 +584,12 @@ const routingDescriptions: Record<string, string> = {
   "smart-round-robin": "Cycles new conversations, then keeps each conversation on the same account.",
 };
 
-function ProviderRoutingCard({
+function RoutingControls({
   settings,
-  accountCount,
-  loading,
   saving,
   onUpdate,
 }: {
-  settings?: ProviderRoutingSettings;
-  accountCount: number;
-  loading: boolean;
+  settings: ProviderRoutingSettings;
   saving: boolean;
   onUpdate: (patch: Partial<ProviderRoutingSettings>) => void;
 }) {
@@ -589,34 +599,28 @@ function ProviderRoutingCard({
   const rotatesAccounts = mode === "round-robin" || mode === "smart-round-robin";
 
   return (
-    <Card>
-      <CardHeader
-        title="Account routing"
-        description={`${accountCount} account${accountCount === 1 ? "" : "s"} available for this provider.`}
-        action={<Route className="h-4 w-4 text-[var(--text-muted)]" />}
-      />
-      {loading ? (
-        <Spinner />
-      ) : (
-        <div className="divide-y divide-[var(--border)]">
-          <div className="flex flex-col gap-3 px-6 py-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">Strategy</p>
-              <p className="mt-0.5 text-xs text-[var(--text-muted)]">{routingDescriptions[mode] || routingDescriptions.inherit}</p>
-            </div>
-            <SegmentedControl
-              value={mode}
-              onChange={(value) => onUpdate({ routing_strategy: value })}
-              options={routingOptions}
-            />
-          </div>
+    <div className="border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Route className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+          <span className="text-xs font-medium text-[var(--text-muted)]">Routing</span>
+        </div>
+        <select
+          value={mode}
+          disabled={saving}
+          onChange={(e) => onUpdate({ routing_strategy: e.target.value })}
+          className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 text-xs text-[var(--text)] outline-none focus:border-[var(--color-accent-500)] focus:ring-1 focus:ring-[var(--color-accent-500)]/30"
+        >
+          {routingOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
 
-          {rotatesAccounts && (
-            <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
-              <div>
-                <p className="text-sm font-medium">Sticky limit</p>
-                <p className="mt-0.5 text-xs text-[var(--text-muted)]">Calls before a new session can move to the next account.</p>
-              </div>
+        {rotatesAccounts && (
+          <>
+            <span className="text-[var(--border)]">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[var(--text-muted)]">Sticky</span>
               <Input
                 type="number"
                 min={1}
@@ -624,17 +628,17 @@ function ProviderRoutingCard({
                 value={stickyLimit}
                 disabled={saving}
                 onChange={(e) => onUpdate({ sticky_limit: parseInt(e.target.value, 10) || 1 })}
-                className="w-24 text-center"
+                className="h-7 w-16 text-center text-xs"
               />
             </div>
-          )}
+          </>
+        )}
 
-          {mode === "smart-round-robin" && (
-            <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
-              <div>
-                <p className="text-sm font-medium">Conversation affinity TTL</p>
-                <p className="mt-0.5 text-xs text-[var(--text-muted)]">Hours to keep a conversation pinned to its selected account.</p>
-              </div>
+        {mode === "smart-round-robin" && (
+          <>
+            <span className="text-[var(--border)]">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-[var(--text-muted)]">Affinity TTL</span>
               <Input
                 type="number"
                 min={1}
@@ -642,13 +646,14 @@ function ProviderRoutingCard({
                 value={ttlHours}
                 disabled={saving}
                 onChange={(e) => onUpdate({ affinity_ttl_minutes: (parseInt(e.target.value, 10) || 1) * 60 })}
-                className="w-24 text-center"
+                className="h-7 w-16 text-center text-xs"
               />
+              <span className="text-xs text-[var(--text-muted)]">h</span>
             </div>
-          )}
-        </div>
-      )}
-    </Card>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -678,8 +683,21 @@ function AccountRow({
   disabledByBatch?: boolean;
 }) {
   const testing = testResult?.status === "testing";
-  const [editPriority, setEditPriority] = useState(false);
-  const [priorityVal, setPriorityVal] = useState(String(a.priority));
+  const [localPriority, setLocalPriority] = useState(a.priority);
+  const priorityRef = useRef(a.priority);
+
+  // Keep local priority in sync when account data changes from server.
+  if (a.priority !== priorityRef.current) {
+    priorityRef.current = a.priority;
+    setLocalPriority(a.priority);
+  }
+
+  const commitPriority = () => {
+    const val = localPriority;
+    if (!isNaN(val) && val >= 0 && val !== a.priority) {
+      onUpdateProxy({ priority: val });
+    }
+  };
 
   const quota = useQuery({
     queryKey: ["account-quota", a.id],
@@ -690,14 +708,6 @@ function AccountRow({
 
   const hasQuota = quota.data?.supported && quota.data?.quotas && quota.data.quotas.length > 0;
   const boundPool = pools.find((p) => p.id === a.proxy_pool_id);
-
-  const savePriority = () => {
-    const val = parseInt(priorityVal, 10);
-    if (!isNaN(val) && val !== a.priority) {
-      onUpdateProxy({ priority: val });
-    }
-    setEditPriority(false);
-  };
 
   return (
     <div className={`px-4 py-3 ${a.disabled ? "opacity-60" : ""}`}>
@@ -761,34 +771,26 @@ function AccountRow({
         {/* Priority */}
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] text-[var(--text-muted)]">Priority:</span>
-          {editPriority ? (
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                value={priorityVal}
-                onChange={(e) => setPriorityVal(e.target.value)}
-                onBlur={savePriority}
-                onKeyDown={(e) => e.key === "Enter" && savePriority()}
-                className="h-6 w-14 rounded border border-accent-500 bg-[var(--bg)] px-1.5 text-xs text-center focus:outline-none"
-                autoFocus
-                min={0}
-                max={999}
-              />
-            </div>
-          ) : (
-            <button onClick={() => { setEditPriority(true); setPriorityVal(String(a.priority)); }}
-              className="flex h-6 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-subtle)] px-2 text-xs font-medium hover:border-accent-500/40 hover:bg-[var(--bg-elevated)]">
-              {a.priority}
-              <ArrowUp className="h-3 w-3 text-[var(--text-muted)]" />
-            </button>
-          )}
-          <div className="flex items-center gap-0.5">
+          <div className="inline-flex items-center overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-subtle)]">
             <button onClick={onMoveUp} disabled={index === 0}
-              className="rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] disabled:opacity-20">
+              className="flex h-6 w-6 items-center justify-center text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
               <ArrowUp className="h-3 w-3" />
             </button>
+            <input
+              type="number"
+              value={localPriority}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                if (!isNaN(val) && val >= 0) setLocalPriority(val);
+              }}
+              onBlur={commitPriority}
+              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              className="h-6 w-10 border-x border-[var(--border)] bg-transparent text-center text-xs font-medium text-[var(--text)] focus:outline-none focus:bg-[var(--bg)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              min={0}
+              max={999}
+            />
             <button onClick={onMoveDown} disabled={index === total - 1}
-              className="rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] disabled:opacity-20">
+              className="flex h-6 w-6 items-center justify-center text-[var(--text-muted)] hover:bg-[var(--bg-elevated)] disabled:opacity-25 disabled:cursor-not-allowed transition-colors">
               <ArrowDown className="h-3 w-3" />
             </button>
           </div>

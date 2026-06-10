@@ -7,6 +7,8 @@ import {
   Palette,
 } from "lucide-react";
 import { api, type EndpointSettings, type BrandingSettings } from "../lib/api";
+import { PALETTES, getPalette, getPaletteScales } from "../lib/palettes";
+import { applyShadeScale, generateShades } from "../lib/color-utils";
 import { PageHeader } from "../components/Layout";
 import { useUpdateInfo } from "../components/UpdateNotification";
 import { useToast } from "../components/Toast";
@@ -575,6 +577,82 @@ function ImageUploadField({
   );
 }
 
+function ColorPaletteField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  return (
+    <div className="px-6 py-5">
+      <p className="text-xs font-medium text-[var(--text-muted)] mb-1">Color Theme</p>
+      <p className="text-xs text-[var(--text-muted)] mb-3">
+        Choose a color palette for the entire dashboard. This changes the accent and highlight colors across all UI elements.
+      </p>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
+        {PALETTES.map((palette) => {
+          const selected = palette.id === value;
+          const accentScale = generateShades(palette.accent);
+          const secondaryScale = generateShades(palette.secondary);
+          return (
+            <button
+              key={palette.id}
+              type="button"
+              onClick={() => onChange(palette.id)}
+              className={`group relative flex flex-col items-center gap-2 rounded-xl border-2 p-3 transition-all ${
+                selected
+                  ? "border-[var(--text)] bg-[var(--bg-elevated)] shadow-[var(--shadow-pop)]"
+                  : "border-[var(--border)] bg-[var(--bg-subtle)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)]"
+              }`}
+            >
+              {/* Color swatches */}
+              <div className="flex items-center gap-1.5">
+                <div className="flex -space-x-1">
+                  {[accentScale[100], accentScale[300], accentScale[500], accentScale[700], accentScale[900]].map(
+                    (color, i) => (
+                      <div
+                        key={i}
+                        className="h-4 w-4 rounded-full border border-white/50 first:rounded-l-full last:rounded-r-full"
+                        style={{ backgroundColor: color }}
+                      />
+                    ),
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="flex -space-x-1">
+                  {[secondaryScale[100], secondaryScale[300], secondaryScale[500], secondaryScale[700], secondaryScale[900]].map(
+                    (color, i) => (
+                      <div
+                        key={i}
+                        className="h-4 w-4 rounded-full border border-white/50 first:rounded-l-full last:rounded-r-full"
+                        style={{ backgroundColor: color }}
+                      />
+                    ),
+                  )}
+                </div>
+              </div>
+              {/* Label */}
+              <span className={`text-[11px] font-medium leading-tight text-center ${
+                selected ? "text-[var(--text)]" : "text-[var(--text-muted)]"
+              }`}>
+                {palette.name}
+              </span>
+              {/* Selected checkmark */}
+              {selected && (
+                <div className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg)]">
+                  <CheckCircle2 className="h-3 w-3" />
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function BrandingTab() {
   const qc = useQueryClient();
   const toast = useToast();
@@ -661,6 +739,19 @@ function BrandingTab() {
             />
           </div>
         </div>
+
+        {/* Color palette */}
+        <ColorPaletteField
+          value={local.color_palette || "sage-terra"}
+          onChange={(id) => {
+            update({ color_palette: id });
+            // Live preview: apply palette immediately to <html>
+            const root = document.documentElement;
+            const scales = getPaletteScales(id);
+            applyShadeScale(root, "accent", scales.accent);
+            applyShadeScale(root, "secondary", scales.secondary);
+          }}
+        />
 
         {/* Preview */}
         <div className="px-6 py-5">

@@ -1,12 +1,15 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, fetchPortalBranding, type BrandingSettings } from "../lib/api";
+import { getPaletteScales } from "../lib/palettes";
+import { applyShadeScale } from "../lib/color-utils";
 
 const DEFAULT_BRANDING: BrandingSettings = {
   name: "KeiRouter",
   logo_url: "",
   favicon_url: "",
   tagline: "",
+  color_palette: "sage-terra",
 };
 
 interface BrandingContextValue {
@@ -38,7 +41,7 @@ export function AdminBrandingProvider({ children }: { children: ReactNode }) {
   const logoSrc = branding.logo_url || "/keirouter-logo.png";
   const faviconSrc = branding.favicon_url || "/keirouter-favicon.png";
 
-  // Update document title and favicon dynamically
+  // Update document title, favicon, and color palette dynamically
   useEffect(() => {
     if (branding.name) {
       document.title = branding.name;
@@ -52,7 +55,13 @@ export function AdminBrandingProvider({ children }: { children: ReactNode }) {
       }
       link.href = branding.favicon_url;
     }
-  }, [branding.name, branding.favicon_url]);
+    // Apply color palette as CSS custom properties on <html>
+    const root = document.documentElement;
+    const paletteId = branding.color_palette || "sage-terra";
+    const scales = getPaletteScales(paletteId);
+    applyShadeScale(root, "accent", scales.accent);
+    applyShadeScale(root, "secondary", scales.secondary);
+  }, [branding.name, branding.favicon_url, branding.color_palette]);
 
   return (
     <BrandingContext.Provider value={{ branding, logoSrc, faviconSrc, isLoading }}>
@@ -88,7 +97,13 @@ export function PortalBrandingProvider({ children }: { children: ReactNode }) {
       }
       link.href = branding.favicon_url;
     }
-  }, [branding.name, branding.favicon_url]);
+    // Apply color palette as CSS custom properties on <html>
+    const root = document.documentElement;
+    const paletteId = branding.color_palette || "sage-terra";
+    const scales = getPaletteScales(paletteId);
+    applyShadeScale(root, "accent", scales.accent);
+    applyShadeScale(root, "secondary", scales.secondary);
+  }, [branding.name, branding.favicon_url, branding.color_palette]);
 
   return (
     <BrandingContext.Provider value={{ branding, logoSrc, faviconSrc, isLoading }}>

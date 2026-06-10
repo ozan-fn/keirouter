@@ -3,6 +3,32 @@
 KeiRouter can run as a local binary, a single Docker container with SQLite, or a
 container plus Postgres for team/VPS deployments.
 
+## Quick Start (Pre-built Docker Image)
+
+Pull and run the latest public image from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/mydisha/keirouter:latest
+
+# Run with docker compose (recommended)
+docker compose up -d
+```
+
+Or run directly with Docker:
+
+```bash
+docker run -d \
+  --name keirouter \
+  -p 20180:20180 \
+  -v keirouter-data:/data \
+  ghcr.io/mydisha/keirouter:latest
+```
+
+Available tags:
+- `ghcr.io/mydisha/keirouter:latest` — latest stable from `main`
+- `ghcr.io/mydisha/keirouter:1.2.3` — specific version
+- `ghcr.io/mydisha/keirouter:sha-abc1234` — pinned to a commit
+
 ## Local Development (One-Liner)
 
 Run this single command — it clones, installs deps, and starts everything:

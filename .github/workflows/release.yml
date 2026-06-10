@@ -82,6 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           ref: main
 
       - name: Download all artifacts
@@ -96,10 +97,50 @@ jobs:
           sha256sum *.tar.gz > checksums.txt
           cat checksums.txt
 
+      - name: Generate changelog
+        id: changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+
+      - name: Update CHANGELOG.md
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          NEW_ENTRY=$(cat CHANGES.md)
+
+          # Prepend the new release entry after the header
+          {
+            echo "# Changelog"
+            echo ""
+            echo "All notable changes to this project will be documented in this file."
+            echo ""
+            echo "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),"
+            echo "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)."
+            echo ""
+            echo "${NEW_ENTRY}"
+            # Append existing entries (skip the header lines)
+            if [ -f CHANGELOG.md ]; then
+              tail -n +8 CHANGELOG.md
+            fi
+          } > CHANGELOG.new
+          mv CHANGELOG.new CHANGELOG.md
+          echo "CHANGELOG.md updated for ${VERSION}"
+          head -20 CHANGELOG.md
+
+      - name: Commit CHANGELOG.md
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: main
+          commit_message: "docs: update CHANGELOG.md for ${{ github.ref_name }}"
+          file_pattern: CHANGELOG.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: CHANGES.md
           files: |
             artifacts/*.tar.gz
             artifacts/checksums.txt
