@@ -1,5 +1,5 @@
 import { Scissors } from "lucide-react";
-import type { TokenSavings, UsageInsights } from "../lib/api";
+import type { ClientSaving, TokenSavings, UsageInsights } from "../lib/api";
 import { SavingsCardShareButton } from "./SavingsCard";
 
 function fmtNum(n: number): string {
@@ -14,12 +14,45 @@ function fmtBytes(n: number): string {
   return `${n} B`;
 }
 
+function fmtUSD(n: number): string {
+  if (n > 0 && n < 0.01) return "<$0.01";
+  return `$${n.toFixed(2)}`;
+}
+
+// prettyClient turns an internal client label into a readable name. Generic
+// labels (any client detected from a User-Agent) pass through title-cased.
+function prettyClient(id: string): string {
+  if (!id || id === "unknown") return "Unknown";
+  const known: Record<string, string> = {
+    "claude-code": "Claude Code",
+    "kilo-code": "Kilo Code",
+    "roo-code": "Roo Code",
+    cursor: "Cursor",
+    codex: "Codex",
+    cline: "Cline",
+    copilot: "Copilot",
+    opencode: "OpenCode",
+    droid: "Droid",
+    aider: "Aider",
+  };
+  if (known[id]) return known[id];
+  return id
+    .replace(/[-_.]+/g, " ")
+    .replace(/\bsdk\b/i, "SDK")
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
 export function TokenSavingsBreakdown({ savings, totalRequests, insights, period }: { savings: TokenSavings; totalRequests: number; insights: UsageInsights; period: string }) {
   const rules = savings.rules || [];
   const maxBytes = Math.max(...rules.map((r) => r.bytes_saved), 1);
   const totalCavemanPct = totalRequests > 0 ? ((savings.caveman_requests / totalRequests) * 100).toFixed(1) : "0";
   const totalTersePct = totalRequests > 0 ? ((savings.terse_requests / totalRequests) * 100).toFixed(0) : "0";
   const hasSavings = savings.slim_bytes_saved > 0 || savings.caveman_requests > 0 || savings.terse_requests > 0 || rules.length > 0;
+  // Prefer the backend's blended USD estimate; fall back to a rough $3/M rate
+  // for older payloads that predate the usd_saved field.
+  const usdSaved = savings.usd_saved ?? (savings.slim_tokens_saved / 1_000_000) * 3;
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] shadow-sm overflow-hidden">
@@ -79,6 +112,7 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
             ))
           )}
         </div>
+        <ClientBreakdown clients={savings.by_client || []} />
         <div className="mt-6 flex items-center justify-between border-t border-[var(--border)] pt-4">
           <div className="flex flex-col">
             <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">Total Savings</span>
@@ -86,9 +120,51 @@ export function TokenSavingsBreakdown({ savings, totalRequests, insights, period
           </div>
           <div className="flex flex-col text-right">
             <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">Est. Value Saved</span>
-            <span className="text-lg font-light text-[var(--text)] tabular-nums">${((savings.slim_tokens_saved / 1_000_000) * 3).toFixed(4)}</span>
+            <span className="text-lg font-light text-[var(--text)] tabular-nums">{fmtUSD(usdSaved)}</span>
+            <span className="text-[10px] font-medium text-[var(--text-muted)]">estimated</span>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ClientBreakdown shows which clients benefited from optimization, attributing
+// token and estimated dollar savings to each. Generic across any client — it
+// renders whatever the backend reports, never locked to specific tools.
+function ClientBreakdown({ clients }: { clients: ClientSaving[] }) {
+  if (clients.length === 0) return null;
+  const maxTokens = Math.max(...clients.map((c) => c.tokens_saved), 1);
+  return (
+    <div className="mt-6 border-t border-[var(--border)] pt-4">
+      <div className="mb-3 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
+        Savings by Client
+      </div>
+      <div className="space-y-3">
+        {clients.map((c) => (
+          <div key={c.client} className="flex items-center gap-4">
+            <div className="w-32 shrink-0 truncate text-xs font-medium text-[var(--text)]" title={prettyClient(c.client)}>
+              {prettyClient(c.client)}
+            </div>
+            <div className="flex-1">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                <div
+                  className="h-full rounded-full bg-[var(--text)] transition-all"
+                  style={{ width: `${Math.max(2, (c.tokens_saved / maxTokens) * 100)}%` }}
+                />
+              </div>
+            </div>
+            <div className="w-20 text-right text-[10px] font-medium uppercase tabular-nums text-[var(--text-muted)]">
+              {fmtNum(c.tokens_saved)} tok
+            </div>
+            <div className="w-16 text-right text-xs font-medium tabular-nums text-[var(--text)]">
+              {fmtUSD(c.usd_saved)}
+            </div>
+            <div className="w-12 text-right text-[10px] font-medium tabular-nums text-[var(--text-muted)]">
+              {c.requests}×
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

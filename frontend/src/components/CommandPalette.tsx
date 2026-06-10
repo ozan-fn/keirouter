@@ -62,7 +62,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       { id: "nav-media", label: "Media", icon: Image, section: "Connections", action: () => go("/media"), keywords: ["image", "video", "tts", "stt"] },
       { id: "nav-proxy-pools", label: "Proxy Pools", icon: Waypoints, section: "Connections", action: () => go("/proxy-pools"), keywords: ["proxy", "residential", "egress"] },
       { id: "nav-usage", label: "Usage", icon: BarChart3, section: "Cost & Analytics", action: () => go("/usage"), keywords: ["analytics", "stats", "tokens"] },
-      { id: "nav-budgets", label: "Budgets", icon: Wallet, section: "Cost & Analytics", action: () => go("/budgets"), keywords: ["cost", "limit", "spend"] },
+      { id: "nav-plans", label: "Plans", icon: Wallet, section: "Cost & Analytics", action: () => go("/plans"), keywords: ["cost", "limit", "spend", "budget"] },
       { id: "nav-quota", label: "Quota Tracker", icon: Clock, section: "Cost & Analytics", action: () => go("/quota"), keywords: ["limits", "upstream"] },
       { id: "nav-settings", label: "Token Saving", icon: Zap, section: "Cost & Analytics", action: () => go("/settings"), keywords: ["rtk", "caveman", "terse", "cache"] },
       { id: "nav-keys", label: "API Keys", icon: Key, section: "Developer", action: () => go("/keys"), keywords: ["auth", "token", "secret"] },

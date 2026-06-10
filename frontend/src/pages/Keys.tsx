@@ -98,7 +98,7 @@ export function KeysPage() {
       const parts = [];
       if (data.budget && data.budget.limit_micros > 0) parts.push(`$${(data.budget.limit_micros / 1_000_000).toFixed(2)}`);
       if (data.budget && data.budget.limit_tokens > 0) parts.push(`${(data.budget.limit_tokens / 1_000_000).toFixed(0)}M tokens`);
-      const budgetMsg = parts.length > 0 ? ` Budget attached: ${parts.join(" + ")} / ${data.budget?.period}.` : "";
+      const budgetMsg = parts.length > 0 ? ` Plan attached: ${parts.join(" + ")} / ${data.budget?.period}.` : "";
       const modelMsg = data.allowed_models?.length ? ` Models: ${data.allowed_models.join(", ")}.` : "";
       toast.success("Key created", `Copy the key below — it won't be shown again.${budgetMsg}${modelMsg}`);
     },
@@ -189,7 +189,7 @@ export function KeysPage() {
           step === 1
             ? "Name your key so you can identify it later."
             : step === 2
-              ? "Optionally set budget limits and model restrictions."
+              ? "Optionally set spend limits and model restrictions."
               : undefined
         }
       >
@@ -377,7 +377,7 @@ function StepName({
   );
 }
 
-/* ── Step 2: Budget (optional) ──────────────────────────────────── */
+/* ── Step 2: Limits (optional) ──────────────────────────────────── */
 
 function StepBudget({
   budgetLimit,
@@ -419,10 +419,10 @@ function StepBudget({
       {isFirstKey && (
         <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 dark:border-accent-800 dark:bg-accent-950/30">
           <p className="text-sm font-medium text-accent-800 dark:text-accent-200">
-            Set a budget to control spending
+            Set limits to control spending
           </p>
           <p className="mt-0.5 text-xs text-accent-700 dark:text-accent-300">
-            This is your first key. Adding a budget now prevents surprise bills.
+            This is your first key. Adding a plan now prevents surprise bills.
           </p>
         </div>
       )}
@@ -560,7 +560,7 @@ function StepSuccess({
 
       {created.budget && (
         <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
-          <p className="text-xs font-medium text-[var(--text-muted)]">Budget attached</p>
+          <p className="text-xs font-medium text-[var(--text-muted)]">Plan attached</p>
           <p className="mt-0.5 text-sm">
             {created.budget.limit_micros > 0 && `$${(created.budget.limit_micros / 1_000_000).toFixed(2)}`}
             {created.budget.limit_micros > 0 && created.budget.limit_tokens > 0 && " + "}

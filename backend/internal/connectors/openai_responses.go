@@ -67,7 +67,13 @@ func (c *OpenAIResponses) Validate(ctx context.Context, creds core.Credentials) 
 	}
 	base := strings.TrimRight(c.baseURL(creds), "/")
 	base = strings.TrimSuffix(base, "/responses")
-	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", base+"/models", nil, c.headers(creds)); err != nil {
+	modelsURL := base + "/models"
+	// Codex's ChatGPT backend rejects the models probe without a client_version
+	// query param (mirrors the codex CLI).
+	if c.id == "codex" {
+		modelsURL += "?client_version=1.0.0"
+	}
+	if _, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", modelsURL, nil, c.headers(creds)); err != nil {
 		return fmt.Errorf("validation failed for %s: %w", c.id, err)
 	}
 	return nil

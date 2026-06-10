@@ -107,6 +107,7 @@ type UsageRecord struct {
 	Provider         string
 	Model            string
 	AccountID        string
+	Client           string // detected calling tool (claude-code, codex, ...) or "unknown"
 	PromptTokens     int
 	CompletionTokens int
 	CachedTokens     int

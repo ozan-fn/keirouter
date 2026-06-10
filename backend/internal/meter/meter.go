@@ -58,6 +58,7 @@ type Event struct {
 	Provider  string
 	Model     string
 	AccountID string
+	Client    string // detected calling tool (claude-code, codex, ...) or "unknown"
 	Usage     core.Usage
 	CacheHit  bool
 	Latency   time.Duration
@@ -135,6 +136,7 @@ func (m *Meter) Record(ctx context.Context, ev Event) (int64, error) {
 		Provider:         ev.Provider,
 		Model:            ev.Model,
 		AccountID:        ev.AccountID,
+		Client:           ev.Client,
 		PromptTokens:     ev.Usage.PromptTokens,
 		CompletionTokens: ev.Usage.CompletionTokens,
 		CachedTokens:     ev.Usage.CachedTokens,

@@ -136,6 +136,57 @@ func TestUsageRepo_RecordAndSummarize(t *testing.T) {
 	require.Equal(t, int64(4500), spend)
 }
 
+func TestUsageRepo_SavingsByClient(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	records := []UsageRecord{
+		// claude-code: two requests with RTK savings, one also has caveman.
+		{Client: "claude-code", SlimBytesSaved: 4000, SlimTokensSaved: 1000, SlimRules: "git-diff"},
+		{Client: "claude-code", SlimBytesSaved: 2000, SlimTokensSaved: 500, SlimRules: "grep", CavemanActive: true},
+		// codex: one request with RTK savings.
+		{Client: "codex", SlimBytesSaved: 800, SlimTokensSaved: 200, SlimRules: "json"},
+		// no client detected -> grouped under "unknown".
+		{Client: "", SlimBytesSaved: 400, SlimTokensSaved: 100, SlimRules: "log"},
+		// a client that produced no optimization at all.
+		{Client: "curl-script"},
+	}
+	for i, rec := range records {
+		rec.ID = "u" + time.Now().Format("150405.000000000") + string(rune('a'+i))
+		rec.TenantID = DefaultTenantID
+		rec.Provider = "openai"
+		rec.Model = "gpt-4o"
+		rec.CreatedAt = now
+		require.NoError(t, db.Usage().Record(ctx, rec))
+		time.Sleep(time.Millisecond)
+	}
+
+	savings, err := db.Usage().SavingsByClient(ctx, DefaultTenantID, now.Add(-time.Hour))
+	require.NoError(t, err)
+
+	byClient := map[string]ClientSavings{}
+	for _, s := range savings {
+		byClient[s.Client] = s
+	}
+
+	// claude-code aggregates both of its rows.
+	cc := byClient["claude-code"]
+	require.Equal(t, int64(2), cc.Requests)
+	require.Equal(t, int64(6000), cc.SlimBytesSaved)
+	require.Equal(t, int64(1500), cc.SlimTokensSaved)
+	require.Equal(t, int64(1), cc.CavemanRequests)
+
+	require.Equal(t, int64(200), byClient["codex"].SlimTokensSaved)
+
+	// Empty client is reported under "unknown".
+	require.Equal(t, int64(100), byClient["unknown"].SlimTokensSaved)
+
+	// Ordered by tokens saved descending: claude-code first.
+	require.NotEmpty(t, savings)
+	require.Equal(t, "claude-code", savings[0].Client)
+}
+
 func TestSettingsRepo_GetSet(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()

@@ -24,6 +24,18 @@ type reservation struct {
 	micros int64
 }
 
+// budgetCacheEntry caches a ListByScope result with an expiry time.
+type budgetCacheEntry struct {
+	budgets []store.Budget
+	expires time.Time
+}
+
+// budgetCacheTTL is how long cached budget definitions stay valid. Budgets
+// change only on admin CRUD (rare), while the cache is read on every request.
+// A 10-second TTL eliminates per-request DB round-trips for the definition
+// lookup without making admin changes feel sluggish.
+const budgetCacheTTL = 10 * time.Second
+
 // Engine evaluates budgets against recorded usage.
 type Engine struct {
 	budgets *store.BudgetRepo
@@ -33,6 +45,11 @@ type Engine struct {
 	// scope ID. Prevents concurrent requests from overshooting hard limits.
 	mu           sync.Mutex
 	reservations map[string]*reservation // key: scopeID
+
+	// budgetCache caches ListByScope results to avoid a DB round-trip on every
+	// request. Keyed by "scope_kind:scope_id". Invalidated on budget mutations.
+	budgetMu    sync.RWMutex
+	budgetCache map[string]*budgetCacheEntry
 }
 
 // New builds a budget Engine.
@@ -41,6 +58,7 @@ func New(budgets *store.BudgetRepo, usage *store.UsageRepo) *Engine {
 		budgets:      budgets,
 		usage:        usage,
 		reservations: make(map[string]*reservation),
+		budgetCache:  make(map[string]*budgetCacheEntry),
 	}
 }
 
@@ -71,6 +89,53 @@ type Scope struct {
 	APIKeyID  string
 }
 
+// cachedListByScope returns budgets for a scope, using a short-lived in-memory
+// cache to avoid a DB round-trip on every request.
+func (e *Engine) cachedListByScope(ctx context.Context, kind store.BudgetScope, scopeID string) ([]store.Budget, error) {
+	key := string(kind) + ":" + scopeID
+	now := time.Now()
+
+	// Fast path: read lock only.
+	e.budgetMu.RLock()
+	if ent, ok := e.budgetCache[key]; ok && now.Before(ent.expires) {
+		budgets := ent.budgets
+		e.budgetMu.RUnlock()
+		return budgets, nil
+	}
+	e.budgetMu.RUnlock()
+
+	// Slow path: fetch from DB and populate cache.
+	budgets, err := e.budgets.ListByScope(ctx, kind, scopeID)
+	if err != nil {
+		return nil, err
+	}
+
+	e.budgetMu.Lock()
+	e.budgetCache[key] = &budgetCacheEntry{budgets: budgets, expires: now.Add(budgetCacheTTL)}
+	e.budgetMu.Unlock()
+	return budgets, nil
+}
+
+// InvalidateBudgetCache clears the cached budget definitions. Call this after
+// budget CRUD operations so the next request sees fresh data immediately.
+func (e *Engine) InvalidateBudgetCache() {
+	e.budgetMu.Lock()
+	// Clear all entries; budget mutations are infrequent so a full flush is fine.
+	for k := range e.budgetCache {
+		delete(e.budgetCache, k)
+	}
+	e.budgetMu.Unlock()
+}
+
+// InvalidateBudgetCacheForScope clears cached entries for a specific scope kind
+// and ID. More targeted than InvalidateBudgetCache for single-budget changes.
+func (e *Engine) InvalidateBudgetCacheForScope(kind store.BudgetScope, scopeID string) {
+	key := string(kind) + ":" + scopeID
+	e.budgetMu.Lock()
+	delete(e.budgetCache, key)
+	e.budgetMu.Unlock()
+}
+
 // Check evaluates all budgets applicable to a scope and reports whether the
 // request may proceed. It checks key, project, and tenant budgets; the first
 // exhausted hard-cutoff budget blocks the request. Both USD cost and token
@@ -91,7 +156,7 @@ func (e *Engine) Check(ctx context.Context, scope Scope) (Decision, error) {
 		if c.id == "" {
 			continue
 		}
-		budgets, err := e.budgets.ListByScope(ctx, c.kind, c.id)
+		budgets, err := e.cachedListByScope(ctx, c.kind, c.id)
 		if err != nil {
 			return Decision{}, fmt.Errorf("budget: list %s budgets: %w", c.kind, err)
 		}

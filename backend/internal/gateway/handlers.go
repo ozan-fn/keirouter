@@ -658,6 +658,19 @@ func (s *Server) handlePortalKeyUsage(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("key usage: summarize failed", "err", err)
 	}
 
+	// Daily usage series for the portal chart (last 30 days).
+	daily, _ := s.usage.DailyByKey(ctx, key.ID, now.AddDate(0, 0, -30))
+	var dailyOut []map[string]any
+	for _, d := range daily {
+		dailyOut = append(dailyOut, map[string]any{
+			"date":              d.Date,
+			"requests":          d.Requests,
+			"prompt_tokens":     d.PromptTokens,
+			"completion_tokens": d.CompletionTokens,
+			"cost_usd":          float64(d.CostMicros) / 1_000_000,
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"key_id":         key.ID,
 		"key_name":       key.Name,
@@ -669,11 +682,17 @@ func (s *Server) handlePortalKeyUsage(w http.ResponseWriter, r *http.Request) {
 			"total_requests":    summary.TotalRequests,
 			"cost_usd":          float64(summary.CostMicros) / 1_000_000,
 		},
+		"daily": dailyOut,
 	})
 }
 
 // detectClient identifies the calling tool from request headers, used for
-// telemetry and client-specific quirks. Best-effort; empty when unknown.
+// telemetry, savings attribution, and client-specific quirks. Best-effort.
+//
+// Known clients map to stable friendly labels so they aggregate cleanly. Any
+// other client is normalized from its User-Agent product token rather than
+// dropped, so every request is attributable. Falls back to "unknown" when no
+// usable signal exists, so optimization savings are never silently uncounted.
 func detectClient(r *http.Request) string {
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
 	switch {
@@ -683,11 +702,68 @@ func detectClient(r *http.Request) string {
 		return "cursor"
 	case strings.Contains(ua, "codex"):
 		return "codex"
-	case r.Header.Get("x-stainless-lang") != "":
-		return "openai-sdk"
-	default:
+	case strings.Contains(ua, "cline"):
+		return "cline"
+	case strings.Contains(ua, "copilot"):
+		return "copilot"
+	case strings.Contains(ua, "kilo"):
+		return "kilo-code"
+	case strings.Contains(ua, "opencode"):
+		return "opencode"
+	case strings.Contains(ua, "droid"):
+		return "droid"
+	case strings.Contains(ua, "aider"):
+		return "aider"
+	case strings.Contains(ua, "roo"):
+		return "roo-code"
+	}
+	// Generic fallback: derive a clean label from the User-Agent product token
+	// (the text before the first '/' or whitespace), so any client is counted.
+	if label := normalizeClientLabel(ua); label != "" {
+		return label
+	}
+	// SDK callers often omit a descriptive UA but set a stainless language hint.
+	if lang := strings.TrimSpace(r.Header.Get("x-stainless-lang")); lang != "" {
+		return "sdk-" + sanitizeClientToken(strings.ToLower(lang))
+	}
+	return "unknown"
+}
+
+// normalizeClientLabel extracts a stable, lowercase client label from a
+// User-Agent string by taking the leading product token (before '/' or space)
+// and stripping noise. Returns "" when nothing usable remains.
+func normalizeClientLabel(ua string) string {
+	ua = strings.TrimSpace(ua)
+	if ua == "" {
 		return ""
 	}
+	// Take the first product token: "foo-cli/1.2.3 (...)" -> "foo-cli".
+	token := ua
+	if i := strings.IndexAny(token, "/ \t"); i >= 0 {
+		token = token[:i]
+	}
+	token = sanitizeClientToken(token)
+	// Ignore generic HTTP libraries that carry no product identity.
+	switch token {
+	case "", "mozilla", "python-requests", "python", "go-http-client",
+		"node-fetch", "axios", "curl", "okhttp", "java", "undici":
+		return ""
+	}
+	return token
+}
+
+// sanitizeClientToken keeps only [a-z0-9-_.] and trims separators, so labels
+// are safe to store and group on without surprising characters.
+func sanitizeClientToken(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "-_.")
 }
 
 func requestAffinityKey(r *http.Request, body []byte, req *core.ChatRequest) string {

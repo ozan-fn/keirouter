@@ -14,7 +14,7 @@ const ProvidersPage = lazy(() => named(import("./pages/Providers"), "ProvidersPa
 const ProviderDetailPage = lazy(() => named(import("./pages/ProviderDetail"), "ProviderDetailPage"));
 const ChainsPage = lazy(() => named(import("./pages/Chains"), "ChainsPage"));
 const KeysPage = lazy(() => named(import("./pages/Keys"), "KeysPage"));
-const BudgetsPage = lazy(() => named(import("./pages/Budgets"), "BudgetsPage"));
+const PlansPage = lazy(() => named(import("./pages/Budgets"), "BudgetsPage"));
 const SettingsPage = lazy(() => named(import("./pages/Settings"), "SettingsPage"));
 const EndpointsPage = lazy(() => named(import("./pages/Endpoints"), "EndpointsPage"));
 const UsagePage = lazy(() => named(import("./pages/Usage"), "UsagePage"));
@@ -65,7 +65,8 @@ export function App() {
                 <Route path="skills" element={<SkillsPage />} />
                 <Route path="console" element={<ConsoleLogPage />} />
                 <Route path="keys" element={<KeysPage />} />
-                <Route path="budgets" element={<BudgetsPage />} />
+                <Route path="plans" element={<PlansPage />} />
+                <Route path="budgets" element={<PlansPage />} />
                 <Route path="system" element={<SystemPage />} />
                 <Route path="settings" element={<SettingsPage />} />
               </Route>

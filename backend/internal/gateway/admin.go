@@ -112,6 +112,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	// System monitoring (CPU, memory, disk, Go runtime).
 	r.Get("/system", s.adminSystem)
 	r.Get("/system/history", s.adminSystemHistory)
+	r.Get("/system/resources", s.adminSystemResourceHistory)
 }
 
 const adminTenant = store.DefaultTenantID
@@ -385,6 +386,12 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(); err != nil {
 		writeError(w, http.StatusInternalServerError, "transaction commit failed")
 		return
+	}
+
+	// Invalidate the budget definition cache so the next request picks up
+	// the newly-created budget immediately.
+	if hasBudget && s.budgetEngine != nil {
+		s.budgetEngine.InvalidateBudgetCache()
 	}
 
 	resp := map[string]any{
@@ -1028,6 +1035,9 @@ func (s *Server) adminCreateBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": b.ID})
+	if s.budgetEngine != nil {
+		s.budgetEngine.InvalidateBudgetCache()
+	}
 }
 
 func (s *Server) adminDeleteBudget(w http.ResponseWriter, r *http.Request) {
@@ -1036,6 +1046,9 @@ func (s *Server) adminDeleteBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+	if s.budgetEngine != nil {
+		s.budgetEngine.InvalidateBudgetCache()
+	}
 }
 
 func (s *Server) adminUpdateBudget(w http.ResponseWriter, r *http.Request) {
@@ -1103,6 +1116,9 @@ func (s *Server) adminUpdateBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+	if s.budgetEngine != nil {
+		s.budgetEngine.InvalidateBudgetCache()
+	}
 }
 
 func normalizeBudgetPeriod(period string) (string, bool) {
@@ -1675,6 +1691,9 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 					imported++
 				}
 			}
+		}
+		if s.budgetEngine != nil {
+			s.budgetEngine.InvalidateBudgetCache()
 		}
 	}
 

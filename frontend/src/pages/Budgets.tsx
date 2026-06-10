@@ -19,6 +19,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { api, type BudgetStatus, type APIKey } from "../lib/api";
+import { microsToUSD, formatTokens } from "../lib/format";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import { FormattedTokenInput } from "../components/ModelSelect";
@@ -43,17 +44,6 @@ const periods = [
   { value: "monthly", label: "Monthly" },
   { value: "total", label: "All time" },
 ];
-
-function microsToUSD(micros: number): string {
-  return `$${(micros / 1_000_000).toFixed(2)}`;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toString();
-}
 
 function progressColor(pct: number, alertPct: number): string {
   if (pct >= 100) return "bg-red-500";
@@ -100,9 +90,9 @@ export function BudgetsPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["budget-status"] });
       qc.invalidateQueries({ queryKey: ["budgets"] });
-      toast.success("Budget removed", "The spend limit has been deleted. Requests matching this scope are no longer capped.");
+      toast.success("Plan removed", "The plan has been deleted. Requests matching this scope are no longer capped.");
     },
-    onError: (e: Error) => toast.error("Budget removal failed", e.message),
+    onError: (e: Error) => toast.error("Plan removal failed", e.message),
   });
 
   const budgets = status.data?.budgets ?? [];
@@ -111,13 +101,13 @@ export function BudgetsPage() {
   return (
     <>
       <PageHeader
-        title="Budgets"
+        title="Plans"
         icon={Wallet}
-        description="Hard spend caps per key or tenant. Requests are auto-blocked when a budget is exhausted."
+        description="Spend and token limits per key or tenant. Requests are auto-blocked when a plan is exhausted."
         action={
           <Button onClick={() => setShowCreate(true)}>
             <Plus className="h-4 w-4" />
-            New budget
+            New plan
           </Button>
         }
       />
@@ -129,7 +119,7 @@ export function BudgetsPage() {
             <AlertTriangle className="h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
             <div>
               <p className="text-sm font-medium text-red-800 dark:text-red-200">
-                Budget exhausted — requests are being blocked
+                Plan limit reached — requests are being blocked
               </p>
               <p className="text-xs text-red-600 dark:text-red-400">
                 {budgets
@@ -153,7 +143,7 @@ export function BudgetsPage() {
             <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
             <div>
               <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                Budget alert threshold reached
+                Plan alert threshold reached
               </p>
               <p className="text-xs text-amber-600 dark:text-amber-400">
                 {budgets
@@ -179,8 +169,8 @@ export function BudgetsPage() {
       <Modal
         open={showCreate}
         onClose={() => setShowCreate(false)}
-        title="Create budget"
-        subtitle="Set a spending cap for a scope and period."
+        title="Create plan"
+        subtitle="Set spend and token limits for a scope and period."
         maxWidth="max-w-xl"
       >
         <CreateBudgetForm
@@ -193,8 +183,8 @@ export function BudgetsPage() {
       <Modal
         open={!!editingId}
         onClose={() => setEditingId(null)}
-        title="Edit budget"
-        subtitle={editingBudget ? `Editing ${editingBudget.scope_name} ${editingBudget.period} budget` : undefined}
+        title="Edit plan"
+        subtitle={editingBudget ? `Editing ${editingBudget.scope_name} ${editingBudget.period} plan` : undefined}
         maxWidth="max-w-xl"
       >
         {editingBudget && (
@@ -209,7 +199,7 @@ export function BudgetsPage() {
       {/* ── Budget list ────────────────────────────────────────── */}
       <Card>
         <SectionHeader
-          title="Active budgets"
+          title="Active plans"
           description="Spend limits with live usage tracking."
           icon={ShieldCheck}
         />
@@ -219,7 +209,7 @@ export function BudgetsPage() {
           </div>
         ) : budgets.length === 0 ? (
           <div className="px-6 pb-6">
-            <EmptyState title="No budgets set" hint="Spending is unlimited until you add a budget." />
+            <EmptyState title="No plans set" hint="Spending is unlimited until you add a plan." />
           </div>
         ) : (
           <div className="divide-y divide-[var(--border)]">
@@ -229,7 +219,7 @@ export function BudgetsPage() {
                 budget={b}
                 onEdit={() => setEditingId(b.id)}
                 onDelete={() => {
-                  if (confirm(`Remove this ${microsToUSD(b.limit_micros)} ${b.period} budget?`)) {
+                  if (confirm(`Remove this ${microsToUSD(b.limit_micros)} ${b.period} plan?`)) {
                     remove.mutate(b.id);
                   }
                 }}
@@ -352,10 +342,10 @@ function BudgetRow({
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1.5">
-          <Button variant="ghost" onClick={onEdit} className="px-2" title="Edit budget">
+          <Button variant="ghost" onClick={onEdit} className="px-2" title="Edit plan">
             <Pencil className="h-4 w-4" />
           </Button>
-          <Button variant="danger" onClick={onDelete} className="px-2" title="Remove budget">
+          <Button variant="danger" onClick={onDelete} className="px-2" title="Remove plan">
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
@@ -538,7 +528,7 @@ function SelectedKeySummary({ keyRecord }: { keyRecord?: APIKey }) {
     return (
       <div className="rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
         <p className="text-sm font-medium">No API key selected</p>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">Pick a key to attach this budget to one credential only.</p>
+        <p className="mt-1 text-xs text-[var(--text-muted)]">Pick a key to attach this plan to one credential only.</p>
       </div>
     );
   }
@@ -650,7 +640,7 @@ function GuardFields({
         <div className="min-w-0">
           <p className="text-sm font-medium">Hard cutoff</p>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-            {hardCutoff ? "Requests stop when the budget is exhausted." : "Usage is tracked without blocking requests."}
+            {hardCutoff ? "Requests stop when the plan is exhausted." : "Usage is tracked without blocking requests."}
           </p>
         </div>
         <Toggle checked={hardCutoff} onChange={setHardCutoff} />
@@ -764,14 +754,14 @@ function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => vo
       if (usdLimit > 0) parts.push(`$${usdLimit.toFixed(2)}`);
       if (tokenLimit > 0) parts.push(`${formatTokens(tokenLimit)} tokens`);
       toast.success(
-        "Budget created",
+        "Plan created",
         `${parts.join(" + ")} ${period} limit set for ${scopeKind === "api_key" ? "API key" : "tenant"}.${hardCutoff ? " Requests will be blocked when exhausted." : ""}`,
       );
       onClose();
     },
     onError: (e: Error) => {
       setError(e.message);
-      toast.error("Budget creation failed", e.message);
+      toast.error("Plan creation failed", e.message);
     },
   });
 
@@ -782,7 +772,7 @@ function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => vo
         e.preventDefault();
         setError("");
         if (scopeKind === "api_key" && !scopeId) {
-          setError("Select an API key before creating this budget.");
+          setError("Select an API key before creating this plan.");
           return;
         }
         if (usdLimit <= 0 && tokenLimit <= 0) {
@@ -798,7 +788,7 @@ function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => vo
         <section className="space-y-3">
           <div>
             <h3 className="text-sm font-semibold text-[var(--text-strong)]">1. Target Scope</h3>
-            <p className="text-xs text-[var(--text-muted)]">Choose the scope this budget applies to.</p>
+            <p className="text-xs text-[var(--text-muted)]">Choose the scope this plan applies to.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <button
@@ -893,7 +883,7 @@ function CreateBudgetForm({ keys, onClose }: { keys: APIKey[]; onClose: () => vo
           Cancel
         </Button>
         <Button type="submit" disabled={create.isPending || !canSubmit}>
-          {create.isPending ? "Creating…" : "Create budget"}
+          {create.isPending ? "Creating…" : "Create plan"}
         </Button>
       </div>
     </form>
@@ -933,14 +923,14 @@ function EditBudgetForm({ budget, onClose }: { budget: BudgetStatus; onClose: ()
       if (usdLimit > 0) parts.push(`$${usdLimit.toFixed(2)}`);
       if (tokenLimit > 0) parts.push(`${formatTokens(tokenLimit)} tokens`);
       toast.success(
-        "Budget updated",
+        "Plan updated",
         `Limit changed to ${parts.join(" + ")} ${period}. ${hardCutoff ? "Hard cutoff is active." : "Advisory mode — requests won't be blocked."}`,
       );
       onClose();
     },
     onError: (e: Error) => {
       setError(e.message);
-      toast.error("Budget update failed", e.message);
+      toast.error("Plan update failed", e.message);
     },
   });
 
@@ -963,7 +953,7 @@ function EditBudgetForm({ budget, onClose }: { budget: BudgetStatus; onClose: ()
         <section className="space-y-3">
           <div>
             <h3 className="text-sm font-semibold text-[var(--text-strong)]">1. Target Scope</h3>
-            <p className="text-xs text-[var(--text-muted)]">The scope this budget applies to (immutable).</p>
+            <p className="text-xs text-[var(--text-muted)]">The scope this plan applies to (immutable).</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">

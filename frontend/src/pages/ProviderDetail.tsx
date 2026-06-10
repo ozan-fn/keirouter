@@ -18,25 +18,15 @@ import {
   SegmentedControl,
 } from "../components/ui";
 
-// isLocalhostHost reports whether the dashboard is being viewed on a loopback
-// host. On localhost the OAuth popup can redirect straight back to the gateway's
-// own callback handler; on a public host (tunnel/production) the provider's
-// loopback redirect can't reach the gateway, so we fall back to manual paste.
-function isLocalhostHost(): boolean {
-  const h = window.location.hostname;
-  return h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
-}
-
 // redirectURIForProvider returns the OAuth callback the provider redirects to
 // after sign-in.
 //
 // We always use a localhost loopback redirect. Providers that use desktop /
 // installed-app OAuth clients (Google for gemini-cli & antigravity, etc.) only
 // whitelist loopback redirect URIs — a public dashboard URL would be rejected
-// with redirect_uri_mismatch. On localhost the gateway's own callback handler
-// catches the redirect; on a public host the redirect lands on the user's local
-// machine (nothing listening), and the user copies the resulting URL into the
-// manual-paste field instead.
+// with redirect_uri_mismatch. When the gateway is co-located with the browser
+// the gateway's loopback callback catches the redirect and notifies the dash via
+// postMessage; otherwise the user falls back to pasting the resulting URL.
 //
 // Fixed-port providers (Codex, xAI) mirror their CLI's loopback flow and require
 // an exact http://host:port/path redirect their OAuth client whitelists.
@@ -1212,14 +1202,12 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
       const res = await api.oauthAuthorize(provider.provider, redirectURIForProvider(provider));
       stateRef.current = res.state;
       window.open(res.authorize_url, "_blank", "popup,width=560,height=760");
-      // On a public host the loopback callback can't reach the gateway, so the
-      // user must copy the resulting URL back. On localhost the gateway catches
-      // the redirect and notifies us via postMessage.
-      if (isLocalhostHost()) {
-        setWaiting(true);
-      } else {
-        setManual(true);
-      }
+      // Always attempt the seamless flow. Whenever the gateway is co-located
+      // with the browser, its loopback callback catches the redirect and
+      // notifies us via postMessage — regardless of the dashboard's hostname.
+      // Manual paste stays available as a one-click fallback for truly remote
+      // setups where the loopback can't reach the gateway.
+      setWaiting(true);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -1312,6 +1300,13 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
             Complete the sign-in in the other tab. This will close
             automatically.
           </p>
+          <button
+            type="button"
+            onClick={() => { setWaiting(false); setManual(true); }}
+            className="text-xs text-[var(--text-muted)] underline underline-offset-2 hover:text-[var(--text)]"
+          >
+            Stuck? Enter the code manually
+          </button>
         </div>
       )}
       {error && <p className="text-xs text-[color:var(--color-danger)]">{error}</p>}

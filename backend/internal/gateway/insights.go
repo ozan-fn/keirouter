@@ -182,6 +182,39 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Estimated USD saved by input-side compression. The slimmer removes input
+	// bytes before the upstream call, so the saved tokens are never priced
+	// directly. We approximate by valuing them at a blended input rate derived
+	// from the period's own usage (cost-weighted across providers/models), which
+	// keeps the estimate grounded in what this tenant actually pays. This is an
+	// estimate, surfaced as such in the UI.
+	blendedInputPerToken := blendedInputRate(sum)
+	usdPerToken := func(tokens int64) float64 {
+		return float64(tokens) * blendedInputPerToken
+	}
+
+	// Per-client savings attribution. Generic across any client (claude-code,
+	// codex, cline, ...) — never locked to a specific tool. Clients with no
+	// detected identity are grouped under "unknown".
+	clientSavings, _ := s.usage.SavingsByClient(ctx, adminTenant, since)
+	byClient := make([]map[string]any, 0, len(clientSavings))
+	for _, cs := range clientSavings {
+		// Skip clients that produced no optimization at all, so the breakdown
+		// shows only where optimization actually helped.
+		if cs.SlimTokensSaved == 0 && cs.CavemanRequests == 0 && cs.TerseRequests == 0 {
+			continue
+		}
+		byClient = append(byClient, map[string]any{
+			"client":           cs.Client,
+			"requests":         cs.Requests,
+			"bytes_saved":      cs.SlimBytesSaved,
+			"tokens_saved":     cs.SlimTokensSaved,
+			"usd_saved":        usdPerToken(cs.SlimTokensSaved),
+			"caveman_requests": cs.CavemanRequests,
+			"terse_requests":   cs.TerseRequests,
+		})
+	}
+
 	writeJSONCached(w, s.insightsCache, cacheKey, map[string]any{
 		"summary": map[string]any{
 			"total_requests":     sum.TotalRequests,
@@ -201,13 +234,32 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 			"slim_tokens_saved": sum.SlimTokensSaved,
 			"caveman_requests":  sum.CavemanRequests,
 			"terse_requests":    sum.TerseRequests,
+			"usd_saved":         usdPerToken(sum.SlimTokensSaved),
+			"usd_saved_estimate": true,
 			"rules":             rules,
+			"by_client":         byClient,
 		},
 		"providers": providers,
 		"recent":    recentRows,
 		"series":    series,
 		"busiest":   busiest,
 	})
+}
+
+// blendedInputRate estimates the USD cost of a single input token for the
+// period, derived from the tenant's own spend. It divides total spend by total
+// tokens (prompt + completion) to get an average price per token. This is a
+// deliberately conservative blended figure: savings happen on the input side,
+// but pricing varies by provider/model and isn't stored per saved token, so a
+// spend-weighted average grounds the estimate in what the tenant actually paid.
+// Returns 0 when there is no usage to derive a rate from.
+func blendedInputRate(sum store.Summary) float64 {
+	totalTokens := sum.PromptTokens + sum.CompletionTokens
+	if totalTokens <= 0 || sum.CostMicros <= 0 {
+		return 0
+	}
+	usd := float64(sum.CostMicros) / 1_000_000
+	return usd / float64(totalTokens)
 }
 
 // adminModelUsage returns per-provider+model aggregate usage for the granular

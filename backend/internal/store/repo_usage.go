@@ -17,15 +17,15 @@ func (db *DB) Usage() *UsageRepo { return &UsageRepo{db: db} }
 func (r *UsageRepo) Record(ctx context.Context, u UsageRecord) error {
 	q := r.db.rebind(`
 		INSERT INTO usage_records
-			(id, tenant_id, project_id, api_key_id, provider, model, account_id,
+			(id, tenant_id, project_id, api_key_id, provider, model, account_id, client,
 			 prompt_tokens, completion_tokens, cached_tokens, cache_write_tokens,
 			 cost_micros, cache_hit, latency_ms, ttft_ms,
 			 slim_bytes_saved, slim_tokens_saved, slim_rules, caveman_active, terse_active,
 			 created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err := r.db.sql.ExecContext(ctx, q,
 		u.ID, u.TenantID, nullString(u.ProjectID), nullString(u.APIKeyID),
-		u.Provider, u.Model, nullString(u.AccountID),
+		u.Provider, u.Model, nullString(u.AccountID), u.Client,
 		u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.CacheWriteTokens,
 		u.CostMicros, boolToInt(u.CacheHit), u.LatencyMS, u.TTFTMS,
 		u.SlimBytesSaved, u.SlimTokensSaved, u.SlimRules, boolToInt(u.CavemanActive), boolToInt(u.TerseActive),
@@ -416,6 +416,46 @@ func (r *UsageRepo) Timeline(ctx context.Context, tenantID string, since time.Ti
 	return out, rows.Err()
 }
 
+// DailyPoint represents one day of usage for a specific API key.
+type DailyPoint struct {
+	Date             string  `json:"date"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	CostMicros       int64   `json:"cost_micros"`
+}
+
+// DailyByKey returns per-day usage breakdown for a specific API key since the
+// given time. Used by the customer portal to show usage trends.
+func (r *UsageRepo) DailyByKey(ctx context.Context, keyID string, since time.Time) ([]DailyPoint, error) {
+	q := r.db.rebind(`
+		SELECT
+			DATE(created_at) as day,
+			COUNT(*),
+			COALESCE(SUM(prompt_tokens), 0),
+			COALESCE(SUM(completion_tokens), 0),
+			COALESCE(SUM(cost_micros), 0)
+		FROM usage_records
+		WHERE api_key_id = ? AND created_at >= ?
+		GROUP BY day
+		ORDER BY day ASC`)
+	rows, err := r.db.sql.QueryContext(ctx, q, keyID, formatTime(since))
+	if err != nil {
+		return nil, fmt.Errorf("store: daily usage by key: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DailyPoint
+	for rows.Next() {
+		var dp DailyPoint
+		if err := rows.Scan(&dp.Date, &dp.Requests, &dp.PromptTokens, &dp.CompletionTokens, &dp.CostMicros); err != nil {
+			return nil, err
+		}
+		out = append(out, dp)
+	}
+	return out, rows.Err()
+}
+
 // RuleSavings aggregates savings per RTK slimmer rule.
 type RuleSavings struct {
 	Rule       string
@@ -470,6 +510,53 @@ func (r *UsageRepo) SavingsByRule(ctx context.Context, tenantID string, since ti
 		return out[i].BytesSaved > out[j].BytesSaved
 	})
 	return out, nil
+}
+
+// ClientSavings aggregates token-saving optimization results per calling
+// client (claude-code, codex, cline, ...). It answers "which tools benefit
+// from optimization, and by how much" without locking attribution to any
+// specific tool — every client that produces savings appears here.
+type ClientSavings struct {
+	Client          string
+	Requests        int64 // requests from this client in the window
+	SlimBytesSaved  int64 // bytes saved by RTK slimmer
+	SlimTokensSaved int64 // estimated tokens saved by RTK (bytes/4)
+	CavemanRequests int64 // requests where caveman was active
+	TerseRequests   int64 // requests where terse was active
+}
+
+// SavingsByClient returns per-client optimization savings for a tenant since
+// the given time, ordered by tokens saved (most impactful first). Records with
+// no detected client are grouped under "unknown".
+func (r *UsageRepo) SavingsByClient(ctx context.Context, tenantID string, since time.Time) ([]ClientSavings, error) {
+	q := r.db.rebind(`
+		SELECT
+			CASE WHEN client IS NULL OR client = '' THEN 'unknown' ELSE client END AS client,
+			COUNT(*),
+			COALESCE(SUM(slim_bytes_saved), 0),
+			COALESCE(SUM(slim_tokens_saved), 0),
+			COALESCE(SUM(caveman_active), 0),
+			COALESCE(SUM(terse_active), 0)
+		FROM usage_records
+		WHERE tenant_id = ? AND created_at >= ?
+		GROUP BY client
+		ORDER BY COALESCE(SUM(slim_tokens_saved), 0) DESC`)
+	rows, err := r.db.sql.QueryContext(ctx, q, tenantID, formatTime(since))
+	if err != nil {
+		return nil, fmt.Errorf("store: savings by client: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ClientSavings
+	for rows.Next() {
+		var c ClientSavings
+		if err := rows.Scan(&c.Client, &c.Requests, &c.SlimBytesSaved,
+			&c.SlimTokensSaved, &c.CavemanRequests, &c.TerseRequests); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // splitRules splits a comma-separated rule string into individual names,

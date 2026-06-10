@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip } from "recharts";
 import { api, type UsageInsights, type RecentActivity, type ProviderUsage } from "../lib/api";
+import { microsToUSD } from "../lib/format";
 import { PageHeader } from "../components/Layout";
 import { Card, SectionHeader, Spinner, StatCard, ErrorCard } from "../components/ui";
 
@@ -43,18 +44,18 @@ export function OverviewPage() {
 
   return (
     <>
-      {/* ── Budget alerts ────────────────────────────────────────── */}
+      {/* ── Plan alerts ──────────────────────────────────────────── */}
       {blocked.length > 0 && (
         <div className="mb-6 flex items-center gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3 dark:border-red-800 dark:bg-red-950/30">
           <AlertTriangle className="h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
           <div className="flex-1">
-            <p className="text-sm font-medium text-red-800 dark:text-red-200">Budget exhausted — requests blocked</p>
+            <p className="text-sm font-medium text-red-800 dark:text-red-200">Plan limit reached — requests blocked</p>
             <p className="text-xs text-red-600 dark:text-red-400">
               {blocked.map((b) => `${b.scope_name} (${microsToUSD(b.limit_micros)} ${b.period})`).join(", ")}
             </p>
           </div>
           <a
-            href="/budgets"
+            href="/plans"
             className="shrink-0 rounded-lg bg-red-100 px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-200 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-900/60"
           >
             Manage
@@ -65,13 +66,13 @@ export function OverviewPage() {
         <div className="mb-6 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/30">
           <Wallet className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="flex-1">
-            <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Budget alert</p>
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Plan alert</p>
             <p className="text-xs text-amber-600 dark:text-amber-400">
               {warnings.map((b) => `${b.scope_name}: ${b.pct_used.toFixed(0)}% used`).join(", ")}
             </p>
           </div>
           <a
-            href="/budgets"
+            href="/plans"
             className="shrink-0 rounded-lg bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
           >
             Manage
@@ -435,10 +436,6 @@ function RecentActivityTable({ recent, providers }: { recent: RecentActivity[], 
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
-
-function microsToUSD(micros: number): string {
-  return `$${(micros / 1_000_000).toFixed(2)}`;
-}
 
 function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

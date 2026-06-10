@@ -737,7 +737,7 @@ function APIKeys() {
         title={step === 3 ? "Key created" : "Create API key"}
         subtitle={
           step === 1 ? "Name your key so you can identify it later."
-            : step === 2 ? "Optionally set budget limits and model restrictions."
+            : step === 2 ? "Optionally set spend limits and model restrictions."
             : undefined
         }
       >
@@ -761,8 +761,8 @@ function APIKeys() {
           <div className="space-y-4 px-6 py-5">
             {(keys.data?.keys?.length ?? 0) === 0 && (
               <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 dark:border-accent-800 dark:bg-accent-950/30">
-                <p className="text-sm font-medium text-accent-800 dark:text-accent-200">Set a budget to control spending</p>
-                <p className="mt-0.5 text-xs text-accent-700 dark:text-accent-300">This is your first key. Adding a budget now prevents surprise bills.</p>
+                <p className="text-sm font-medium text-accent-800 dark:text-accent-200">Set limits to control spending</p>
+                <p className="mt-0.5 text-xs text-accent-700 dark:text-accent-300">This is your first key. Adding a plan now prevents surprise bills.</p>
               </div>
             )}
             <div className="flex gap-3">
@@ -800,7 +800,7 @@ function APIKeys() {
             </div>
             {created.budget && (
               <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-3">
-                <p className="text-xs font-medium text-[var(--text-muted)]">Budget attached</p>
+                <p className="text-xs font-medium text-[var(--text-muted)]">Plan attached</p>
                 <p className="mt-0.5 text-sm">
                   {created.budget.limit_micros > 0 && `$${(created.budget.limit_micros / 1_000_000).toFixed(2)}`}
                   {created.budget.limit_micros > 0 && created.budget.limit_tokens > 0 && " + "}

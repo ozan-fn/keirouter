@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback, memo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ScrollText,
   Trash2,
@@ -57,6 +58,8 @@ const LEVELS: LogLevel[] = ["DEBUG", "INFO", "WARN", "ERROR"];
 
 const MAX_LINES = 500;
 
+const ROW_HEIGHT = 24; // approximate px per row (leading-[1.6] ~ 20.8px + 3px*2 padding)
+
 // ── Parsing ──────────────────────────────────────────────────────────────────
 
 // Matches [HH:MM:SS.mmm] [LEVEL] message
@@ -71,6 +74,85 @@ function parseLine(raw: string): ParsedLine {
   return { raw, time: "", level: "LOG", message: raw };
 }
 
+// ── Memoized log row ─────────────────────────────────────────────────────────
+
+const LogRow = memo(function LogRow({
+  line,
+  index,
+}: {
+  line: ParsedLine;
+  index: number;
+}) {
+  return (
+    <div
+      className={`flex border-b border-l-2 border-[var(--border)]/40 transition-colors hover:bg-[var(--bg-subtle)] ${LEVEL_BORDER[line.level]}`}
+      style={{ minHeight: ROW_HEIGHT }}
+    >
+      {/* Line number */}
+      <div className="w-[3.5rem] shrink-0 select-none px-3 py-[3px] text-right text-[11px] text-[var(--text-muted)]/50">
+        {index + 1}
+      </div>
+      {/* Timestamp */}
+      <div className="w-[6.5rem] shrink-0 px-2 py-[3px] whitespace-nowrap text-[var(--text-muted)]">
+        {line.time || "\u00A0"}
+      </div>
+      {/* Level badge */}
+      <div className="w-[3.5rem] shrink-0 px-1 py-[3px]">
+        {line.level !== "LOG" && (
+          <span
+            className={`inline-block rounded px-1.5 text-[11px] font-bold leading-normal ${LEVEL_TEXT[line.level]} ${LEVEL_BG[line.level]}`}
+          >
+            {line.level}
+          </span>
+        )}
+      </div>
+      {/* Message */}
+      <div className="min-w-0 flex-1 px-2 py-[3px] break-all text-[var(--text)]">
+        <HighlightMessage message={line.message} />
+      </div>
+    </div>
+  );
+});
+
+// ── Message highlighting ─────────────────────────────────────────────────────
+
+// Highlights key=value pairs and important tokens in the message
+const HighlightMessage = memo(function HighlightMessage({
+  message,
+}: {
+  message: string;
+}) {
+  // Split on key=value patterns and highlight them
+  const parts = message.split(/(\b\w+=\S+)/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.includes("=") && /^\w+=\S+$/.test(part)) {
+          const eqIdx = part.indexOf("=");
+          const key = part.slice(0, eqIdx);
+          const val = part.slice(eqIdx + 1);
+          return (
+            <span key={i}>
+              <span className="text-[var(--text-muted)]">{key}</span>
+              <span className="text-[var(--text-muted)]/60">=</span>
+              <span className="font-medium text-[var(--text)]">{val}</span>
+            </span>
+          );
+        }
+        // Dim arrows and decorative symbols
+        if (/^[→✔✖▶└─\s]+$/.test(part)) {
+          return (
+            <span key={i} className="text-[var(--text-muted)]/60">
+              {part}
+            </span>
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
+});
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function ConsoleLogPage() {
@@ -83,8 +165,8 @@ export function ConsoleLogPage() {
   );
   const [autoScroll, setAutoScroll] = useState(true);
   const [copied, setCopied] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isAutoScrolling = useRef(false);
 
   // ── SSE stream ───────────────────────────────────────────────────────────
 
@@ -111,21 +193,6 @@ export function ConsoleLogPage() {
     es.onerror = () => setConnected(false);
 
     return () => es.close();
-  }, []);
-
-  // ── Auto-scroll ──────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!autoScroll || !bottomRef.current) return;
-    bottomRef.current.scrollIntoView({ block: "end" });
-  }, [logs, autoScroll]);
-
-  // Detect manual scroll-up to pause auto-scroll
-  const handleScroll = useCallback(() => {
-    if (!logRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = logRef.current;
-    const atBottom = scrollHeight - scrollTop - clientHeight < 40;
-    setAutoScroll(atBottom);
   }, []);
 
   // ── Filtering ────────────────────────────────────────────────────────────
@@ -159,6 +226,38 @@ export function ConsoleLogPage() {
     for (const l of parsed) counts[l.level]++;
     return counts;
   }, [parsed]);
+
+  // ── Virtualizer ──────────────────────────────────────────────────────────
+
+  const virtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 20,
+  });
+
+  // ── Auto-scroll ──────────────────────────────────────────────────────────
+
+  // When filtered list grows and autoScroll is on, scroll to the end
+  useEffect(() => {
+    if (!autoScroll || filtered.length === 0) return;
+    isAutoScrolling.current = true;
+    virtualizer.scrollToIndex(filtered.length - 1, { align: "end" });
+    // Small delay to let the scroll settle before re-enabling manual detection
+    const t = setTimeout(() => {
+      isAutoScrolling.current = false;
+    }, 50);
+    return () => clearTimeout(t);
+  }, [filtered.length, autoScroll, virtualizer]);
+
+  // Detect manual scroll-up to pause auto-scroll
+  const handleScroll = useCallback(() => {
+    if (isAutoScrolling.current) return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    setAutoScroll(atBottom);
+  }, []);
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
@@ -195,7 +294,9 @@ export function ConsoleLogPage() {
 
   const scrollToBottom = () => {
     setAutoScroll(true);
-    bottomRef.current?.scrollIntoView({ block: "end" });
+    if (filtered.length > 0) {
+      virtualizer.scrollToIndex(filtered.length - 1, { align: "end" });
+    }
   };
 
   // ── Render ───────────────────────────────────────────────────────────────
@@ -329,25 +430,38 @@ export function ConsoleLogPage() {
           />
         ) : (
           <div
-            ref={logRef}
+            ref={scrollContainerRef}
             onScroll={handleScroll}
             className="overflow-y-auto bg-[var(--bg)] font-mono text-[13px] leading-[1.6]"
             style={{ height: "calc(100vh - 310px)" }}
           >
-            <table className="w-full border-collapse">
-              <colgroup>
-                <col className="w-[3.5rem]" />
-                <col className="w-[6.5rem]" />
-                <col className="w-[3.5rem]" />
-                <col />
-              </colgroup>
-              <tbody>
-                {filtered.map((line, i) => (
-                  <LogRow key={i} line={line} index={i} />
-                ))}
-              </tbody>
-            </table>
-            <div ref={bottomRef} />
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                width: "100%",
+                position: "relative",
+              }}
+            >
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const line = filtered[virtualRow.index];
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <LogRow line={line} index={virtualRow.index} />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -363,74 +477,6 @@ export function ConsoleLogPage() {
           </div>
         )}
       </Card>
-    </>
-  );
-}
-
-// ── Log row ──────────────────────────────────────────────────────────────────
-
-function LogRow({ line, index }: { line: ParsedLine; index: number }) {
-  return (
-    <tr
-      className={`group border-b border-l-2 border-[var(--border)]/40 transition-colors hover:bg-[var(--bg-subtle)] ${LEVEL_BORDER[line.level]}`}
-    >
-      {/* Line number */}
-      <td className="select-none px-3 py-[3px] text-right text-[11px] text-[var(--text-muted)]/50 align-top">
-        {index + 1}
-      </td>
-      {/* Timestamp */}
-      <td className="px-2 py-[3px] text-[var(--text-muted)] align-top whitespace-nowrap">
-        {line.time || " "}
-      </td>
-      {/* Level badge */}
-      <td className="px-1 py-[3px] align-top">
-        {line.level !== "LOG" && (
-          <span
-            className={`inline-block rounded px-1.5 text-[11px] font-bold leading-normal ${LEVEL_TEXT[line.level]} ${LEVEL_BG[line.level]}`}
-          >
-            {line.level}
-          </span>
-        )}
-      </td>
-      {/* Message */}
-      <td className="px-2 py-[3px] align-top break-all text-[var(--text)]">
-        <HighlightMessage message={line.message} />
-      </td>
-    </tr>
-  );
-}
-
-// ── Message highlighting ─────────────────────────────────────────────────────
-
-// Highlights key=value pairs and important tokens in the message
-function HighlightMessage({ message }: { message: string }) {
-  // Split on key=value patterns and highlight them
-  const parts = message.split(/(\b\w+=\S+)/g);
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part.includes("=") && /^\w+=\S+$/.test(part)) {
-          const eqIdx = part.indexOf("=");
-          const key = part.slice(0, eqIdx);
-          const val = part.slice(eqIdx + 1);
-          return (
-            <span key={i}>
-              <span className="text-[var(--text-muted)]">{key}</span>
-              <span className="text-[var(--text-muted)]/60">=</span>
-              <span className="font-medium text-[var(--text)]">{val}</span>
-            </span>
-          );
-        }
-        // Dim arrows and decorative symbols
-        if (/^[→✔✖▶└─\s]+$/.test(part)) {
-          return (
-            <span key={i} className="text-[var(--text-muted)]/60">
-              {part}
-            </span>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
     </>
   );
 }

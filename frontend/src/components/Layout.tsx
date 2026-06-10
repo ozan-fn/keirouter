@@ -58,6 +58,7 @@ const navGroups: NavGroup[] = [
   {
     heading: "Connections",
     items: [
+      { to: "/keys", label: "API Keys", icon: Key },
       { to: "/providers", label: "Providers", icon: Boxes },
       { to: "/media", label: "Media", icon: Image },
       { to: "/proxy-pools", label: "Proxy Pools", icon: Waypoints },
@@ -67,7 +68,7 @@ const navGroups: NavGroup[] = [
     heading: "Cost & Analytics",
     items: [
       { to: "/usage", label: "Usage", icon: BarChart3 },
-      { to: "/budgets", label: "Budgets", icon: Wallet },
+      { to: "/plans", label: "Plans", icon: Wallet },
       { to: "/quota", label: "Quota Tracker", icon: Clock },
       { to: "/system", label: "System", icon: Activity },
       { to: "/settings", label: "Settings", icon: Settings },
@@ -76,7 +77,6 @@ const navGroups: NavGroup[] = [
   {
     heading: "Developer",
     items: [
-      { to: "/keys", label: "API Keys", icon: Key },
       { to: "/console", label: "Console Log", icon: ScrollText },
       { to: "/cli-tools", label: "CLI Tools", icon: TerminalSquare },
     ],
@@ -92,7 +92,8 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/media": "Media",
   "/proxy-pools": "Proxy Pools",
   "/usage": "Usage",
-  "/budgets": "Budgets",
+  "/plans": "Plans",
+  "/budgets": "Plans",
   "/quota": "Quota Tracker",
   "/settings": "Settings",
   "/keys": "API Keys",

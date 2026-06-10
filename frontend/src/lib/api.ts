@@ -222,12 +222,25 @@ export interface RuleSaving {
   tokens_saved: number;
 }
 
+export interface ClientSaving {
+  client: string;
+  requests: number;
+  bytes_saved: number;
+  tokens_saved: number;
+  usd_saved: number;
+  caveman_requests: number;
+  terse_requests: number;
+}
+
 export interface TokenSavings {
   slim_bytes_saved: number;
   slim_tokens_saved: number;
   caveman_requests: number;
   terse_requests: number;
+  usd_saved?: number;
+  usd_saved_estimate?: boolean;
   rules: RuleSaving[];
+  by_client?: ClientSaving[];
 }
 
 export interface ModelUsage {
@@ -427,11 +440,17 @@ export interface SystemSnapshot {
   gc_pause_last_ms: number;
   gc_cycles: number;
   open_fds: number;
+  net_conns: number;
   uptime_s: number;
   pid: number;
   host: string;
   os: string;
   arch: string;
+  // Process-level metrics
+  proc_cpu_pct: number;
+  proc_rss_mb: number;
+  proc_threads: number;
+  proc_open_fds: number;
 }
 
 export interface SystemSample {
@@ -442,6 +461,11 @@ export interface SystemSample {
   heap_mb: number;
   cpu_spike?: boolean;
   mem_spike?: boolean;
+  // Process-level metrics
+  proc_cpu_pct?: number;
+  proc_rss_mb?: number;
+  proc_threads?: number;
+  proc_open_fds?: number;
 }
 
 export interface SystemHistory {
@@ -520,6 +544,13 @@ export interface KeyUsageData {
     total_requests: number;
     cost_usd: number;
   };
+  daily?: {
+    date: string;
+    requests: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cost_usd: number;
+  }[];
 }
 
 /**

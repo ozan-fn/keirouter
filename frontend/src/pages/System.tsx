@@ -3,8 +3,6 @@ import {
   Activity,
   Cpu,
   MemoryStick,
-  HardDrive,
-  Zap,
   Server,
   AlertTriangle,
   RefreshCw,
@@ -21,7 +19,7 @@ import {
 } from "recharts";
 import { api } from "../lib/api";
 import { PageHeader } from "../components/Layout";
-import { Card, SectionHeader, StatCard, Spinner, ErrorCard, Badge } from "../components/ui";
+import { Card, SectionHeader, Spinner, ErrorCard, Badge } from "../components/ui";
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -33,16 +31,6 @@ function formatUptime(seconds: number): string {
   if (h < 24) return `${h}h ${m}m`;
   const d = Math.floor(h / 24);
   return `${d}d ${h % 24}h ${m}m`;
-}
-
-function pctColor(pct: number): "accent" | "warning" | "danger" {
-  if (pct >= 85) return "danger";
-  if (pct >= 60) return "warning";
-  return "accent";
-}
-
-function pctTone(pct: number): "accent" | "warning" | "danger" {
-  return pctColor(pct);
 }
 
 function tsLabel(ts: number): string {
@@ -75,8 +63,8 @@ export function SystemPage() {
     time: tsLabel(pt.ts),
     cpu: +pt.cpu_pct.toFixed(1),
     mem: +pt.mem_pct.toFixed(1),
-    goroutines: pt.goroutines,
-    heap: +pt.heap_mb.toFixed(1),
+    procCpu: +(pt.proc_cpu_pct ?? 0).toFixed(1),
+    procRss: +(pt.proc_rss_mb ?? 0).toFixed(1),
   }));
 
   const spikes = h?.spikes ?? [];
@@ -98,41 +86,52 @@ export function SystemPage() {
         }
       />
 
-      {/* ── Stat cards ───────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-6">
-        <StatCard
-          icon={Cpu}
-          iconTone={pctTone(s.cpu_pct)}
-          label="CPU"
-          value={`${s.cpu_pct.toFixed(1)}%`}
-        />
-        <StatCard
-          icon={MemoryStick}
-          iconTone={pctTone(s.mem_pct)}
-          label="Memory"
-          value={`${s.mem_pct.toFixed(1)}%`}
-          delta={{ text: `${s.mem_used_mb} / ${s.mem_total_mb} MB` }}
-        />
-        <StatCard
-          icon={HardDrive}
-          iconTone={pctTone(s.disk_pct)}
-          label="Disk"
-          value={`${s.disk_pct.toFixed(1)}%`}
-          delta={{ text: `${s.disk_used_gb.toFixed(1)} / ${s.disk_total_gb.toFixed(1)} GB` }}
-        />
-        <StatCard
-          icon={Zap}
+      {/* ── Overview panel ─────────────────────────────────────────── */}
+      <Card className="mb-6">
+        <SectionHeader
+          title="System Overview"
+          description="Host and process resource usage"
+          icon={Server}
           iconTone="accent"
-          label="Goroutines"
-          value={s.goroutines.toLocaleString()}
         />
-      </div>
+        <div className="px-6 pb-5 grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-4">
+          {/* Host column */}
+          <div className="space-y-3">
+            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Host</p>
+            <MetricBar label="CPU" value={s.cpu_pct} unit="%" detail={`${s.cpu_per_core.length} cores`} />
+            <MetricBar label="Memory" value={s.mem_pct} unit="%" detail={`${s.mem_used_mb} / ${s.mem_total_mb} MB`} />
+            <MetricBar label="Disk" value={s.disk_pct} unit="%" detail={`${s.disk_used_gb.toFixed(1)} / ${s.disk_total_gb.toFixed(1)} GB`} />
+            <div className="flex items-center justify-between text-sm pt-1">
+              <span className="text-[var(--text-muted)]">Network Connections</span>
+              <span className="tabular-nums font-medium">{s.net_conns.toLocaleString()}</span>
+            </div>
+          </div>
+          {/* Process column */}
+          <div className="space-y-3">
+            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Process (PID {s.pid})</p>
+            <MetricBar label="CPU" value={s.proc_cpu_pct} unit="%" detail={`Uptime ${formatUptime(s.uptime_s)}`} />
+            <MetricBar label="RSS" value={Math.min((s.proc_rss_mb / s.mem_total_mb) * 100, 100)} unit="%" detail={`${s.proc_rss_mb.toFixed(0)} MB`} />
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-[var(--text-muted)]">Goroutines</span>
+              <span className="tabular-nums font-medium">{s.goroutines.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-[var(--text-muted)]">Threads</span>
+              <span className="tabular-nums font-medium">{s.proc_threads.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-[var(--text-muted)]">Open FDs</span>
+              <span className="tabular-nums font-medium">{s.proc_open_fds.toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+      </Card>
 
-      {/* ── Charts ───────────────────────────────────────────────── */}
+      {/* ── Host charts ──────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 mb-6">
         <MetricChart
-          title="CPU Usage"
-          description="System CPU percentage over time"
+          title="Host CPU"
+          description="System-wide CPU percentage over time"
           icon={Cpu}
           data={chartData}
           dataKey="cpu"
@@ -141,8 +140,8 @@ export function SystemPage() {
           threshold={80}
         />
         <MetricChart
-          title="Memory Usage"
-          description="System memory percentage over time"
+          title="Host Memory"
+          description="System-wide memory percentage over time"
           icon={MemoryStick}
           data={chartData}
           dataKey="mem"
@@ -152,23 +151,25 @@ export function SystemPage() {
         />
       </div>
 
+      {/* ── Process charts ───────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 mb-6">
         <MetricChart
-          title="Goroutines"
-          description="Active goroutine count over time"
-          icon={Zap}
+          title="Process CPU"
+          description="keirouter's own CPU usage over time"
+          icon={Cpu}
           data={chartData}
-          dataKey="goroutines"
-          color="#10b981"
-          unit=""
+          dataKey="procCpu"
+          color="#f59e0b"
+          unit="%"
+          threshold={80}
         />
         <MetricChart
-          title="Heap Memory"
-          description="Go heap allocation in MB over time"
-          icon={Server}
+          title="Process RSS"
+          description="keirouter's resident memory over time"
+          icon={MemoryStick}
           data={chartData}
-          dataKey="heap"
-          color="#8b5cf6"
+          dataKey="procRss"
+          color="#06b6d4"
           unit=" MB"
         />
       </div>
@@ -240,7 +241,9 @@ export function SystemPage() {
               <DetailRow label="GC Cycles" value={s.gc_cycles.toLocaleString()} />
               <DetailRow label="GC Pause (total)" value={`${s.gc_pause_total_ms.toFixed(1)} ms`} />
               <DetailRow label="GC Pause (last)" value={`${s.gc_pause_last_ms.toFixed(2)} ms`} />
-              <DetailRow label="Network Conns" value={s.open_fds.toLocaleString()} />
+              <DetailRow label="Network Conns" value={s.net_conns.toLocaleString()} />
+              <DetailRow label="Process FDs" value={s.proc_open_fds.toLocaleString()} />
+              <DetailRow label="Process Threads" value={s.proc_threads.toLocaleString()} />
             </div>
           </div>
         </Card>
@@ -276,35 +279,38 @@ export function SystemPage() {
             iconTone="accent"
           />
           <div className="px-6 pb-5">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-              {s.cpu_per_core.map((pct, i) => (
-                <div
-                  key={i}
-                  className="flex flex-col items-center rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"
-                >
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
-                    Core {i}
-                  </span>
-                  <span className={`text-lg font-semibold tabular-nums ${
-                    pct >= 85 ? "text-[color:var(--color-danger)]" :
-                    pct >= 60 ? "text-[color:var(--color-warning)]" :
-                    "text-[var(--text)]"
-                  }`}>
-                    {pct.toFixed(0)}%
-                  </span>
-                  {/* mini bar */}
-                  <div className="mt-1.5 h-1.5 w-full rounded-full bg-ink-200 dark:bg-ink-700 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        pct >= 85 ? "bg-[color:var(--color-danger)]" :
-                        pct >= 60 ? "bg-[color:var(--color-warning)]" :
-                        "bg-accent-500"
-                      }`}
-                      style={{ width: `${Math.min(pct, 100)}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
+            {/* Heat strip: compact colored cells, wraps to fill width */}
+            <div className="flex flex-wrap gap-1">
+              {s.cpu_per_core.map((pct, i) => {
+                const bg =
+                  pct >= 85 ? "bg-[color:var(--color-danger)]" :
+                  pct >= 60 ? "bg-[color:var(--color-warning)]" :
+                  pct >= 20 ? "bg-accent-500" :
+                  "bg-ink-200 dark:bg-ink-700";
+                return (
+                  <div
+                    key={i}
+                    title={`Core ${i}: ${pct.toFixed(0)}%`}
+                    className={`h-5 rounded-sm transition-colors duration-300 ${bg}`}
+                    style={{
+                      width: s.cpu_per_core.length <= 16
+                        ? `calc(${100 / 8}% - 4px)`    // ~8 per row for small counts
+                        : s.cpu_per_core.length <= 32
+                        ? `calc(${100 / 16}% - 3px)`   // ~16 per row
+                        : `calc(${100 / 20}% - 3px)`,  // ~20 per row for 40+
+                      minWidth: 8,
+                      opacity: Math.max(0.15, pct / 100),
+                    }}
+                  />
+                );
+              })}
+            </div>
+            {/* Legend */}
+            <div className="flex items-center gap-3 mt-3 text-[11px] text-[var(--text-muted)]">
+              <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-ink-200 dark:bg-ink-700" /> Idle</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent-500" /> 20-60%</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-[color:var(--color-warning)]" /> 60-85%</span>
+              <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-[color:var(--color-danger)]" /> 85%+</span>
             </div>
           </div>
         </Card>
@@ -402,6 +408,28 @@ function MetricChart({
         )}
       </div>
     </Card>
+  );
+}
+
+function MetricBar({ label, value, unit, detail }: { label: string; value: number; unit: string; detail: string }) {
+  const color =
+    value >= 85 ? "var(--color-danger, #ef4444)" :
+    value >= 60 ? "var(--color-warning, #f59e0b)" :
+    "var(--color-accent-500, #6366f1)";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-[var(--text-muted)]">{label}</span>
+        <span className="tabular-nums font-medium">{value.toFixed(1)}{unit}</span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-ink-200 dark:bg-ink-700 overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${Math.min(value, 100)}%`, backgroundColor: color }}
+        />
+      </div>
+      <p className="text-[11px] text-[var(--text-muted)]">{detail}</p>
+    </div>
   );
 }
 

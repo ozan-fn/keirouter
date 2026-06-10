@@ -817,6 +817,7 @@ func (p *Pipeline) recordWithTTFT(ctx context.Context, meta core.RequestMetadata
 		Provider:  attempt.Target.Provider,
 		Model:     attempt.Target.Model,
 		AccountID: attempt.Account.ID,
+		Client:    meta.ClientKind,
 		Usage:     usage,
 		CacheHit:  cacheHit,
 		Latency:   latency,

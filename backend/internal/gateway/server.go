@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/mydisha/keirouter/backend/internal/auth"
+	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/clitools"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
@@ -50,7 +51,9 @@ type Server struct {
 	accounts        *store.AccountRepo
 	pools           *store.ProxyPoolRepo
 	budgets         *store.BudgetRepo
+	budgetEngine    *budget.Engine
 	usage           *store.UsageRepo
+	resources       *store.ResourceRepo
 	settings        *store.SettingsRepo
 	vault           *vault.Vault
 	codecs          *transform.Registry
@@ -88,7 +91,9 @@ type Deps struct {
 	Accounts        *store.AccountRepo
 	Pools           *store.ProxyPoolRepo
 	Budgets         *store.BudgetRepo
+	BudgetEngine    *budget.Engine
 	Usage           *store.UsageRepo
+	Resources       *store.ResourceRepo
 	Settings        *store.SettingsRepo
 	Vault           *vault.Vault
 	Codecs          *transform.Registry
@@ -136,7 +141,9 @@ func New(d Deps) *Server {
 		accounts:        d.Accounts,
 		pools:           d.Pools,
 		budgets:         d.Budgets,
+		budgetEngine:    d.BudgetEngine,
 		usage:           d.Usage,
+		resources:       d.Resources,
 		settings:        d.Settings,
 		vault:           d.Vault,
 		codecs:          d.Codecs,
@@ -157,7 +164,7 @@ func New(d Deps) *Server {
 		insightsCache:   newTTLCache(insightsCacheTTL),
 	}
 	s.router = s.routes()
-	startSystemCollector()
+	startSystemCollector(d.Resources)
 	return s
 }
 
