@@ -12,18 +12,20 @@ const brandingSettingsKey = "branding_settings"
 // BrandingSettings holds configurable branding for the dashboard and portal.
 // When empty, defaults to KeiRouter branding.
 type BrandingSettings struct {
-	Name      string `json:"name"`       // Display name (e.g. "KeiRouter", "Acme AI Gateway")
-	LogoURL   string `json:"logo_url"`   // URL to logo image (SVG/PNG). Empty = default logo.
-	FaviconURL string `json:"favicon_url"` // URL to favicon (PNG/ICO). Empty = default favicon.
-	Tagline   string `json:"tagline"`    // Optional short tagline shown on portal login.
+	Name         string `json:"name"`          // Display name (e.g. "KeiRouter", "Acme AI Gateway")
+	LogoURL      string `json:"logo_url"`      // URL to logo image (SVG/PNG). Empty = default logo.
+	FaviconURL   string `json:"favicon_url"`   // URL to favicon (PNG/ICO). Empty = default favicon.
+	Tagline      string `json:"tagline"`       // Optional short tagline shown on portal login.
+	ColorPalette string `json:"color_palette"` // Color palette identifier (e.g. "sage-terra", "ocean", "midnight").
 }
 
 func defaultBrandingSettings() BrandingSettings {
 	return BrandingSettings{
-		Name:       "KeiRouter",
-		LogoURL:    "",
-		FaviconURL: "",
-		Tagline:    "",
+		Name:         "KeiRouter",
+		LogoURL:      "",
+		FaviconURL:   "",
+		Tagline:      "",
+		ColorPalette: "sage-terra",
 	}
 }
 
@@ -66,10 +68,11 @@ func (s *Server) adminUpdateBranding(w http.ResponseWriter, r *http.Request) {
 	current := s.loadBrandingSettings(r.Context())
 
 	var patch struct {
-		Name       *string `json:"name"`
-		LogoURL    *string `json:"logo_url"`
-		FaviconURL *string `json:"favicon_url"`
-		Tagline    *string `json:"tagline"`
+		Name         *string `json:"name"`
+		LogoURL      *string `json:"logo_url"`
+		FaviconURL   *string `json:"favicon_url"`
+		Tagline      *string `json:"tagline"`
+		ColorPalette *string `json:"color_palette"`
 	}
 	if !decodeJSON(w, r, &patch) {
 		return
@@ -85,6 +88,9 @@ func (s *Server) adminUpdateBranding(w http.ResponseWriter, r *http.Request) {
 	}
 	if patch.Tagline != nil {
 		current.Tagline = *patch.Tagline
+	}
+	if patch.ColorPalette != nil {
+		current.ColorPalette = *patch.ColorPalette
 	}
 
 	raw, err := json.Marshal(current)
