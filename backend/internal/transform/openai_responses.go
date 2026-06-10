@@ -9,19 +9,19 @@ import (
 )
 
 // OpenAIResponsesCodec handles OpenAI's Responses API wire format (/v1/responses),
-// the dialect spoken by Codex. The Responses API differs from Chat Completions:
-// turns live under "input" as typed items (message / function_call /
-// function_call_output / reasoning), the system prompt is carried as
-// "instructions", tools are flat ({type,name,description,parameters}), and the
-// streaming surface is a rich event sequence (response.created →
-// output_item.added → output_text.delta → ... → response.completed) rather than
-// uniform chat.completion.chunk deltas. This mirrors 9router's
-// openai-responses request/response translators.
+// the dialect spoken by Codex and Responses-native clients. The Responses API
+// differs from Chat Completions: turns live under "input" as typed items
+// (message / function_call / function_call_output / reasoning), the system
+// prompt is carried as "instructions", tools are flat
+// ({type,name,description,parameters}), and the streaming surface is a rich
+// event sequence (response.created → output_item.added → output_text.delta →
+// ... → response.completed) rather than uniform chat.completion.chunk deltas.
 type OpenAIResponsesCodec struct{}
 
 func (OpenAIResponsesCodec) Dialect() core.Dialect { return core.DialectOpenAIResponses }
 
-// maxCallIDLen mirrors 9router: the Responses API rejects call_ids over 64 chars.
+// maxCallIDLen is the maximum length of a call_id accepted by the Responses API.
+// Call IDs longer than 64 characters cause 400 errors.
 const maxCallIDLen = 64
 
 func clampCallID(id string) string {
@@ -40,9 +40,32 @@ type respRequest struct {
 	Tools        []respTool      `json:"tools,omitempty"`
 	Stream       bool            `json:"stream"`
 	Store        bool            `json:"store"`
-	Temperature  *float64        `json:"temperature,omitempty"`
-	MaxTokens    *int            `json:"max_tokens,omitempty"`
-	TopP         *float64        `json:"top_p,omitempty"`
+	// Chat Completions parameters accepted on inbound parse for graceful
+	// passthrough through the canonical model, but never rendered outbound —
+	// the Responses API rejects these with 400 "Unsupported parameter".
+	Temperature *float64 `json:"temperature,omitempty"`
+	MaxTokens   *int     `json:"max_tokens,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+}
+
+// responsesAPIAllowlist enumerates the fields that the Responses API (/v1/responses)
+// accepts. Any field not in this set is stripped from the outbound request to
+// prevent 400 "Unsupported parameter" errors from the upstream provider. This
+// guards against Chat Completions fields (max_tokens, temperature, top_p,
+// frequency_penalty, stream_options, user, metadata, etc.) leaking through.
+var responsesAPIAllowlist = map[string]bool{
+	"model":             true,
+	"input":             true,
+	"instructions":      true,
+	"tools":             true,
+	"tool_choice":       true,
+	"stream":            true,
+	"store":             true,
+	"reasoning":         true,
+	"service_tier":      true,
+	"include":           true,
+	"prompt_cache_key":  true,
+	"max_output_tokens": true,
 }
 
 type respTool struct {
@@ -280,15 +303,10 @@ func (OpenAIResponsesCodec) RenderRequest(req *core.ChatRequest) ([]byte, error)
 	} else {
 		out["instructions"] = ""
 	}
-	if req.Temperature != nil {
-		out["temperature"] = *req.Temperature
-	}
-	if req.MaxTokens != nil {
-		out["max_tokens"] = *req.MaxTokens
-	}
-	if req.TopP != nil {
-		out["top_p"] = *req.TopP
-	}
+	// NOTE: temperature, max_tokens, top_p are intentionally NOT included.
+	// These are Chat Completions parameters that the Responses API does not
+	// accept. Sending them causes 400 "Unsupported parameter" errors from
+	// Codex and other Responses-native backends.
 
 	var input []map[string]any
 	for _, m := range req.Messages {
@@ -368,6 +386,15 @@ func (OpenAIResponsesCodec) RenderRequest(req *core.ChatRequest) ([]byte, error)
 			})
 		}
 		out["tools"] = tools
+	}
+
+	// Allowlist filter: strip any field not recognized by the Responses API.
+	// This prevents Chat Completions parameters or client-specific fields from
+	// leaking through and causing 400 "Unsupported parameter" errors.
+	for k := range out {
+		if !responsesAPIAllowlist[k] {
+			delete(out, k)
+		}
 	}
 
 	return json.Marshal(out)

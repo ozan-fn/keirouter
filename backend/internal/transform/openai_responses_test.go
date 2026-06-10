@@ -166,6 +166,92 @@ func TestCrossDialect_OpenAIToResponsesRoundTrip(t *testing.T) {
 	require.Equal(t, "ping", back.Messages[0].TextContent())
 }
 
+func TestResponses_RenderRequest_StripsUnsupportedParams(t *testing.T) {
+	// Simulate a request that arrives with Chat Completions parameters
+	// (max_tokens, temperature, top_p) — these must NOT appear in the
+	// rendered Responses API body.
+	maxTokens := 4096
+	temp := 0.7
+	topP := 0.9
+	req := &core.ChatRequest{
+		Model:       "gpt-5-codex",
+		MaxTokens:   &maxTokens,
+		Temperature: &temp,
+		TopP:        &topP,
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}},
+		},
+	}
+
+	body, err := OpenAIResponsesCodec{}.RenderRequest(req)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+
+	// These Chat Completions parameters must NOT be present.
+	require.NotContains(t, parsed, "max_tokens", "max_tokens must not appear in Responses API body")
+	require.NotContains(t, parsed, "temperature", "temperature must not appear in Responses API body")
+	require.NotContains(t, parsed, "top_p", "top_p must not appear in Responses API body")
+
+	// These Responses API fields MUST be present.
+	require.Contains(t, parsed, "model")
+	require.Contains(t, parsed, "input")
+	require.Contains(t, parsed, "instructions")
+	require.Contains(t, parsed, "stream")
+	require.Contains(t, parsed, "store")
+}
+
+func TestResponses_RenderRequest_AllowlistStripsUnknownFields(t *testing.T) {
+	// Verify the allowlist catches any field that isn't in the Responses API spec.
+	// This is a defense-in-depth test — even if future code accidentally adds
+	// a field to the output map, the allowlist strips it.
+	req := &core.ChatRequest{
+		Model: "gpt-5-codex",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+		},
+	}
+
+	body, err := OpenAIResponsesCodec{}.RenderRequest(req)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+
+	// Every key in the output must be in the allowlist.
+	for k := range parsed {
+		require.True(t, responsesAPIAllowlist[k], "unexpected field %q in Responses API body — add to responsesAPIAllowlist if valid", k)
+	}
+}
+
+func TestResponses_RenderRequest_WithTools(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "gpt-5-codex",
+		Tools: []core.Tool{
+			{Name: "get_weather", Description: "Get weather", Parameters: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`)},
+		},
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "what's the weather?"}}},
+		},
+	}
+
+	body, err := OpenAIResponsesCodec{}.RenderRequest(req)
+	require.NoError(t, err)
+
+	var parsed struct {
+		Tools []struct {
+			Type       string `json:"type"`
+			Name       string `json:"name"`
+			Parameters json.RawMessage `json:"parameters"`
+		} `json:"tools"`
+	}
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	require.Len(t, parsed.Tools, 1)
+	require.Equal(t, "function", parsed.Tools[0].Type)
+	require.Equal(t, "get_weather", parsed.Tools[0].Name)
+}
+
 func toStrings(b [][]byte) []string {
 	out := make([]string, len(b))
 	for i, x := range b {

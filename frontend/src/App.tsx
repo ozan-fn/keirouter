@@ -15,7 +15,7 @@ const ProvidersPage = lazy(() => named(import("./pages/Providers"), "ProvidersPa
 const ProviderDetailPage = lazy(() => named(import("./pages/ProviderDetail"), "ProviderDetailPage"));
 const ChainsPage = lazy(() => named(import("./pages/Chains"), "ChainsPage"));
 const KeysPage = lazy(() => named(import("./pages/Keys"), "KeysPage"));
-const PlansPage = lazy(() => named(import("./pages/Budgets"), "BudgetsPage"));
+const PlansPage = lazy(() => named(import("./pages/Plans"), "PlansPage"));
 const SettingsPage = lazy(() => named(import("./pages/Settings"), "SettingsPage"));
 const EndpointsPage = lazy(() => named(import("./pages/Endpoints"), "EndpointsPage"));
 const UsagePage = lazy(() => named(import("./pages/Usage"), "UsagePage"));

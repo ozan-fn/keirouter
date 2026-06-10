@@ -37,10 +37,10 @@ func (r *APIKeyRepo) CreateOnTx(ctx context.Context, tx *sql.Tx, k APIKey) error
 func (r *APIKeyRepo) insert(ctx context.Context, ex sqlExec, k APIKey) error {
 	q := r.db.rebind(`
 		INSERT INTO api_keys
-			(id, tenant_id, project_id, name, key_hash, lookup_hash, display, scopes, disabled, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			(id, tenant_id, project_id, plan_id, name, key_hash, lookup_hash, display, scopes, disabled, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err := ex.ExecContext(ctx, q,
-		k.ID, k.TenantID, nullString(k.ProjectID), k.Name, k.KeyHash, k.LookupHash,
+		k.ID, k.TenantID, nullString(k.ProjectID), k.PlanID, k.Name, k.KeyHash, k.LookupHash,
 		k.Display, k.Scopes, boolToInt(k.Disabled), formatTime(k.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("store: create api key: %w", err)
@@ -52,7 +52,7 @@ func (r *APIKeyRepo) insert(ctx context.Context, ex sqlExec, k APIKey) error {
 // caller still verifies the argon2 hash against the presented plaintext.
 func (r *APIKeyRepo) FindByLookup(ctx context.Context, lookup string) (APIKey, error) {
 	q := r.db.rebind(`
-		SELECT id, tenant_id, project_id, name, key_hash, lookup_hash, display, scopes, disabled, last_used_at, created_at
+		SELECT id, tenant_id, project_id, plan_id, name, key_hash, lookup_hash, display, scopes, disabled, last_used_at, created_at
 		FROM api_keys WHERE lookup_hash = ?`)
 	return r.scanOne(r.db.sql.QueryRowContext(ctx, q, lookup))
 }
@@ -60,7 +60,7 @@ func (r *APIKeyRepo) FindByLookup(ctx context.Context, lookup string) (APIKey, e
 // Get returns a single API key by id.
 func (r *APIKeyRepo) Get(ctx context.Context, id string) (APIKey, error) {
 	q := r.db.rebind(`
-		SELECT id, tenant_id, project_id, name, key_hash, lookup_hash, display, scopes, disabled, last_used_at, created_at
+		SELECT id, tenant_id, project_id, plan_id, name, key_hash, lookup_hash, display, scopes, disabled, last_used_at, created_at
 		FROM api_keys WHERE id = ?`)
 	return r.scanOne(r.db.sql.QueryRowContext(ctx, q, id))
 }
@@ -68,7 +68,7 @@ func (r *APIKeyRepo) Get(ctx context.Context, id string) (APIKey, error) {
 // List returns all keys for a tenant, newest first.
 func (r *APIKeyRepo) List(ctx context.Context, tenantID string) ([]APIKey, error) {
 	q := r.db.rebind(`
-		SELECT id, tenant_id, project_id, name, key_hash, lookup_hash, display, scopes, disabled, last_used_at, created_at
+		SELECT id, tenant_id, project_id, plan_id, name, key_hash, lookup_hash, display, scopes, disabled, last_used_at, created_at
 		FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC`)
 	rows, err := r.db.sql.QueryContext(ctx, q, tenantID)
 	if err != nil {
@@ -112,11 +112,12 @@ func (r *APIKeyRepo) scanOne(row *sql.Row) (APIKey, error) {
 	var (
 		k          APIKey
 		projectID  sql.NullString
+		planID     sql.NullString
 		lastUsed   sql.NullString
 		disabled   int
 		createdRaw string
 	)
-	err := row.Scan(&k.ID, &k.TenantID, &projectID, &k.Name, &k.KeyHash, &k.LookupHash,
+	err := row.Scan(&k.ID, &k.TenantID, &projectID, &planID, &k.Name, &k.KeyHash, &k.LookupHash,
 		&k.Display, &k.Scopes, &disabled, &lastUsed, &createdRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return APIKey{}, ErrNotFound
@@ -125,6 +126,7 @@ func (r *APIKeyRepo) scanOne(row *sql.Row) (APIKey, error) {
 		return APIKey{}, fmt.Errorf("store: scan api key: %w", err)
 	}
 	k.ProjectID = projectID.String
+	k.PlanID = planID.String
 	k.Disabled = disabled != 0
 	k.CreatedAt = parseTime(createdRaw)
 	if lastUsed.Valid {
@@ -138,16 +140,18 @@ func (r *APIKeyRepo) scanRows(rows *sql.Rows) (APIKey, error) {
 	var (
 		k          APIKey
 		projectID  sql.NullString
+		planID     sql.NullString
 		lastUsed   sql.NullString
 		disabled   int
 		createdRaw string
 	)
-	err := rows.Scan(&k.ID, &k.TenantID, &projectID, &k.Name, &k.KeyHash, &k.LookupHash,
+	err := rows.Scan(&k.ID, &k.TenantID, &projectID, &planID, &k.Name, &k.KeyHash, &k.LookupHash,
 		&k.Display, &k.Scopes, &disabled, &lastUsed, &createdRaw)
 	if err != nil {
 		return APIKey{}, fmt.Errorf("store: scan api key: %w", err)
 	}
 	k.ProjectID = projectID.String
+	k.PlanID = planID.String
 	k.Disabled = disabled != 0
 	k.CreatedAt = parseTime(createdRaw)
 	if lastUsed.Valid {
@@ -155,6 +159,13 @@ func (r *APIKeyRepo) scanRows(rows *sql.Rows) (APIKey, error) {
 		k.LastUsedAt = &t
 	}
 	return k, nil
+}
+
+// SetPlanID updates the plan assignment for a key.
+func (r *APIKeyRepo) SetPlanID(ctx context.Context, id string, planID string) error {
+	q := r.db.rebind(`UPDATE api_keys SET plan_id = ? WHERE id = ?`)
+	_, err := r.db.sql.ExecContext(ctx, q, planID, id)
+	return err
 }
 
 // ---- per-key model access ---------------------------------------------------

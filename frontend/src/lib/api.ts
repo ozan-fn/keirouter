@@ -89,11 +89,28 @@ export interface OAuthPollResult {
   provider?: string;
 }
 
+export interface Plan {
+  id: string;
+  name: string;
+  description: string;
+  limit_micros: number;
+  limit_tokens: number;
+  period: string;
+  alert_pct: number;
+  hard_cutoff: boolean;
+  allowed_models: string[] | null;
+  key_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface APIKey {
   id: string;
   name: string;
   display: string;
   disabled: boolean;
+  plan_id: string;
+  plan_name?: string;
   created_at: string;
   allowed_models?: string[];
 }
@@ -103,6 +120,7 @@ export interface CreatedKey {
   name: string;
   key: string;
   display: string;
+  plan_id: string;
   budget?: {
     id: string;
     scope_kind: string;
@@ -113,6 +131,10 @@ export interface CreatedKey {
     hard_cutoff: boolean;
   };
   allowed_models?: string[];
+  plan?: {
+    id: string;
+    name: string;
+  };
 }
 
 export interface Account {
@@ -628,8 +650,33 @@ export const api = {
   updateProviderRouting: (id: string, patch: Partial<ProviderRoutingSettings>) =>
     request<ProviderRoutingSettings>("POST", `/providers/${id}/routing`, patch),
 
+  listPlans: () => request<{ plans: Plan[] }>("GET", "/plans"),
+  createPlan: (input: {
+    name: string;
+    description?: string;
+    limit_usd?: number;
+    limit_tokens?: number;
+    period?: string;
+    alert_pct?: number;
+    hard_cutoff?: boolean;
+    allowed_models?: string[];
+  }) => request<Plan>("POST", "/plans", input),
+  updatePlan: (id: string, patch: {
+    name?: string;
+    description?: string;
+    limit_usd?: number;
+    limit_tokens?: number;
+    period?: string;
+    alert_pct?: number;
+    hard_cutoff?: boolean;
+    allowed_models?: string[];
+  }) => request<Plan>("PATCH", `/plans/${id}`, patch),
+  deletePlan: (id: string) => request<void>("DELETE", `/plans/${id}`),
+  listPlanKeys: (id: string) => request<{ keys: APIKey[] }>("GET", `/plans/${id}/keys`),
+
   listKeys: () => request<{ keys: APIKey[] }>("GET", "/keys"),
   createKey: (name: string, opts?: {
+    plan_id?: string;
     budget_limit_usd?: number;
     budget_limit_tokens?: number;
     budget_period?: string;

@@ -49,6 +49,12 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Patch("/chains/{id}", s.adminUpdateChain)
 	r.Delete("/chains/{id}", s.adminDeleteChain)
 
+	r.Get("/plans", s.adminListPlans)
+	r.Post("/plans", s.adminCreatePlan)
+	r.Patch("/plans/{id}", s.adminUpdatePlan)
+	r.Delete("/plans/{id}", s.adminDeletePlan)
+	r.Get("/plans/{id}/keys", s.adminListPlanKeys)
+
 	r.Get("/budgets", s.adminListBudgets)
 	r.Get("/budgets/status", s.adminBudgetStatus)
 	r.Post("/budgets", s.adminCreateBudget)
@@ -254,7 +260,13 @@ func (s *Server) adminListKeys(w http.ResponseWriter, r *http.Request) {
 	for _, k := range keys {
 		entry := map[string]any{
 			"id": k.ID, "name": k.Name, "display": k.Display,
-			"disabled": k.Disabled, "created_at": k.CreatedAt,
+			"disabled": k.Disabled, "plan_id": k.PlanID, "created_at": k.CreatedAt,
+		}
+		// Resolve plan name.
+		if k.PlanID != "" {
+			if plan, perr := s.db.Plans().Get(r.Context(), k.PlanID); perr == nil {
+				entry["plan_name"] = plan.Name
+			}
 		}
 		// Attach allowed models (empty = all allowed).
 		if models, merr := s.identity.Keys().GetAllowedModels(r.Context(), k.ID); merr == nil {
@@ -269,14 +281,17 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name      string `json:"name"`
 		ProjectID string `json:"project_id"`
-		// Optional budget fields — when present, a budget is co-created
-		// atomically alongside the key so it is protected from the first request.
+		// Optional plan assignment. When set, the key inherits the plan's
+		// budget rules (unless per-key overrides are also provided).
+		PlanID string `json:"plan_id"`
+		// Optional per-key budget overrides — these take precedence over plan
+		// defaults when the key has a plan assigned.
 		BudgetLimitUSD    *float64 `json:"budget_limit_usd"`
 		BudgetLimitTokens *int64   `json:"budget_limit_tokens"`
 		BudgetPeriod      string   `json:"budget_period"`
 		BudgetAlertPct    *int     `json:"budget_alert_pct"`
 		BudgetHardCutoff  *bool    `json:"budget_hard_cutoff"`
-		// Optional model access restriction.
+		// Optional per-key model access restriction (overrides plan models).
 		AllowedModels []string `json:"allowed_models"`
 	}
 	if !decodeJSON(w, r, &body) {
@@ -295,6 +310,21 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve plan if one was specified.
+	var plan *store.Plan
+	if body.PlanID != "" {
+		p, err := s.db.Plans().Get(r.Context(), body.PlanID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusBadRequest, "plan not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+			return
+		}
+		plan = &p
+	}
+
 	// Generate key material (crypto operations, no DB write yet).
 	issued, err := s.identity.Generate(adminTenant, body.ProjectID, body.Name)
 	if err != nil {
@@ -302,19 +332,29 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasBudget := (body.BudgetLimitUSD != nil && *body.BudgetLimitUSD > 0) ||
-		(body.BudgetLimitTokens != nil && *body.BudgetLimitTokens > 0)
-	hasModels := len(body.AllowedModels) > 0
+	// Set plan_id on the key record.
+	if plan != nil {
+		issued.Record.PlanID = plan.ID
+	}
 
-	if !hasBudget && !hasModels {
-		// Simple path: no budget or model access requested, insert key directly.
+	// Determine effective budget: per-key overrides > plan defaults.
+	hasPerKeyBudget := (body.BudgetLimitUSD != nil && *body.BudgetLimitUSD > 0) ||
+		(body.BudgetLimitTokens != nil && *body.BudgetLimitTokens > 0)
+	hasPlanBudget := plan != nil && (plan.LimitMicros > 0 || plan.LimitTokens > 0)
+	hasBudget := hasPerKeyBudget || hasPlanBudget
+	hasPerKeyModels := len(body.AllowedModels) > 0
+	hasPlanModels := plan != nil && plan.AllowedModels != ""
+	hasModels := hasPerKeyModels || hasPlanModels
+
+	if !hasBudget && !hasModels && plan == nil {
+		// Simple path: no budget, no models, no plan — insert key directly.
 		if err := s.identity.CreateFromIssued(r.Context(), issued); err != nil {
 			writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id": issued.Record.ID, "name": issued.Record.Name,
-			"key": issued.Plaintext, "display": issued.Record.Display,
+			"key": issued.Plaintext, "display": issued.Record.Display, "plan_id": issued.Record.PlanID,
 		})
 		return
 	}
@@ -334,56 +374,81 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 
 	var budgetRec store.Budget
 	if hasBudget {
+		// Resolve effective values: per-key overrides win, then plan, then defaults.
 		hardCutoff := true
+		alertPct := 80
+		period := "monthly"
+		var limitMicros int64
+		var limitTokens int64
+
+		if plan != nil {
+			hardCutoff = plan.HardCutoff
+			alertPct = plan.AlertPct
+			period = plan.Period
+			limitMicros = plan.LimitMicros
+			limitTokens = plan.LimitTokens
+		}
+
+		// Per-key overrides take precedence.
 		if body.BudgetHardCutoff != nil {
 			hardCutoff = *body.BudgetHardCutoff
 		}
-		alertPct := 80
 		if body.BudgetAlertPct != nil {
 			alertPct = *body.BudgetAlertPct
 		}
-		if alertPct < 1 || alertPct > 100 {
-			writeError(w, http.StatusBadRequest, "budget_alert_pct must be between 1 and 100")
-			return
+		if body.BudgetPeriod != "" {
+			if p, ok := normalizeBudgetPeriod(body.BudgetPeriod); ok {
+				period = p
+			}
 		}
-		period, ok := normalizeBudgetPeriod(body.BudgetPeriod)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid budget period")
-			return
-		}
-		var limitMicros int64
-		if body.BudgetLimitUSD != nil {
+		if body.BudgetLimitUSD != nil && *body.BudgetLimitUSD > 0 {
 			limitMicros = int64(*body.BudgetLimitUSD * 1_000_000)
 		}
-		var limitTokens int64
-		if body.BudgetLimitTokens != nil {
+		if body.BudgetLimitTokens != nil && *body.BudgetLimitTokens > 0 {
 			limitTokens = *body.BudgetLimitTokens
 		}
 
-		now := time.Now()
-		budgetRec = store.Budget{
-			ID:          uuid.NewString(),
-			TenantID:    adminTenant,
-			ScopeKind:   store.ScopeAPIKey,
-			ScopeID:     issued.Record.ID,
-			LimitMicros: limitMicros,
-			LimitTokens: limitTokens,
-			Period:      period,
-			AlertPct:    alertPct,
-			HardCutoff:  hardCutoff,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		if err := s.budgets.CreateOnTx(r.Context(), tx, budgetRec); err != nil {
-			writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
-			return
+		if limitMicros <= 0 && limitTokens <= 0 {
+			// Plan had no limits and no per-key overrides — skip budget creation.
+			hasBudget = false
+		} else {
+			if alertPct < 1 || alertPct > 100 {
+				writeError(w, http.StatusBadRequest, "budget_alert_pct must be between 1 and 100")
+				return
+			}
+
+			now := time.Now()
+			budgetRec = store.Budget{
+				ID:          uuid.NewString(),
+				TenantID:    adminTenant,
+				ScopeKind:   store.ScopeAPIKey,
+				ScopeID:     issued.Record.ID,
+				LimitMicros: limitMicros,
+				LimitTokens: limitTokens,
+				Period:      period,
+				AlertPct:    alertPct,
+				HardCutoff:  hardCutoff,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}
+			if err := s.budgets.CreateOnTx(r.Context(), tx, budgetRec); err != nil {
+				writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+				return
+			}
 		}
 	}
 
 	if hasModels {
-		if err := s.identity.Keys().SetAllowedModelsOnTx(r.Context(), tx, issued.Record.ID, body.AllowedModels); err != nil {
-			writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
-			return
+		// Per-key models take precedence over plan models.
+		effectiveModels := body.AllowedModels
+		if !hasPerKeyModels && plan != nil {
+			effectiveModels = store.GetPlanAllowedModels(*plan)
+		}
+		if len(effectiveModels) > 0 {
+			if err := s.identity.Keys().SetAllowedModelsOnTx(r.Context(), tx, issued.Record.ID, effectiveModels); err != nil {
+				writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+				return
+			}
 		}
 	}
 
@@ -400,7 +465,7 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]any{
 		"id": issued.Record.ID, "name": issued.Record.Name,
-		"key": issued.Plaintext, "display": issued.Record.Display,
+		"key": issued.Plaintext, "display": issued.Record.Display, "plan_id": issued.Record.PlanID,
 	}
 	if hasBudget {
 		resp["budget"] = map[string]any{
@@ -409,8 +474,17 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 			"period": budgetRec.Period, "alert_pct": budgetRec.AlertPct, "hard_cutoff": budgetRec.HardCutoff,
 		}
 	}
-	if hasModels {
-		resp["allowed_models"] = body.AllowedModels
+	effectiveModels := body.AllowedModels
+	if !hasPerKeyModels && plan != nil {
+		effectiveModels = store.GetPlanAllowedModels(*plan)
+	}
+	if len(effectiveModels) > 0 {
+		resp["allowed_models"] = effectiveModels
+	}
+	if plan != nil {
+		resp["plan"] = map[string]any{
+			"id": plan.ID, "name": plan.Name,
+		}
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -936,6 +1010,231 @@ func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": existing.ID, "name": existing.Name})
+}
+
+// ---- plans ------------------------------------------------------------------
+
+func (s *Server) adminListPlans(w http.ResponseWriter, r *http.Request) {
+	plans, err := s.db.Plans().List(r.Context(), adminTenant)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+	out := make([]map[string]any, 0, len(plans))
+	for _, p := range plans {
+		keyCount, _ := s.db.Plans().CountKeys(r.Context(), p.ID)
+		out = append(out, map[string]any{
+			"id": p.ID, "name": p.Name, "description": p.Description,
+			"limit_micros": p.LimitMicros, "limit_tokens": p.LimitTokens,
+			"period": p.Period, "alert_pct": p.AlertPct, "hard_cutoff": p.HardCutoff,
+			"allowed_models": store.GetPlanAllowedModels(p),
+			"key_count":      keyCount,
+			"created_at":     p.CreatedAt, "updated_at": p.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plans": out})
+}
+
+func (s *Server) adminCreatePlan(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name          string   `json:"name"`
+		Description   string   `json:"description"`
+		LimitUSD      float64  `json:"limit_usd"`
+		LimitTokens   int64    `json:"limit_tokens"`
+		Period        string   `json:"period"`
+		AlertPct      int      `json:"alert_pct"`
+		HardCutoff    *bool    `json:"hard_cutoff"`
+		AllowedModels []string `json:"allowed_models"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if body.LimitUSD < 0 {
+		writeError(w, http.StatusBadRequest, "limit_usd must not be negative")
+		return
+	}
+	if body.LimitTokens < 0 {
+		writeError(w, http.StatusBadRequest, "limit_tokens must not be negative")
+		return
+	}
+	period, ok := normalizeBudgetPeriod(body.Period)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid period")
+		return
+	}
+	alertPct := defaultInt(body.AlertPct, 80)
+	if alertPct < 1 || alertPct > 100 {
+		writeError(w, http.StatusBadRequest, "alert_pct must be between 1 and 100")
+		return
+	}
+	hardCutoff := true
+	if body.HardCutoff != nil {
+		hardCutoff = *body.HardCutoff
+	}
+
+	now := time.Now()
+	p := store.Plan{
+		ID:            uuid.NewString(),
+		TenantID:      adminTenant,
+		Name:          body.Name,
+		Description:   body.Description,
+		LimitMicros:   int64(body.LimitUSD * 1_000_000),
+		LimitTokens:   body.LimitTokens,
+		Period:        period,
+		AlertPct:      alertPct,
+		HardCutoff:    hardCutoff,
+		AllowedModels: store.SetPlanAllowedModels(body.AllowedModels),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := s.db.Plans().Create(r.Context(), p); err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": p.ID, "name": p.Name, "description": p.Description,
+		"limit_micros": p.LimitMicros, "limit_tokens": p.LimitTokens,
+		"period": p.Period, "alert_pct": p.AlertPct, "hard_cutoff": p.HardCutoff,
+		"allowed_models": store.GetPlanAllowedModels(p),
+	})
+}
+
+func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	existing, err := s.db.Plans().Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "plan not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+
+	var body struct {
+		Name          *string  `json:"name"`
+		Description   *string  `json:"description"`
+		LimitUSD      *float64 `json:"limit_usd"`
+		LimitTokens   *int64   `json:"limit_tokens"`
+		Period        *string  `json:"period"`
+		AlertPct      *int     `json:"alert_pct"`
+		HardCutoff    *bool    `json:"hard_cutoff"`
+		AllowedModels []string `json:"allowed_models"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+
+	if body.Name != nil {
+		if *body.Name == "" {
+			writeError(w, http.StatusBadRequest, "name cannot be empty")
+			return
+		}
+		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
+	}
+	if body.LimitUSD != nil {
+		if *body.LimitUSD < 0 {
+			writeError(w, http.StatusBadRequest, "limit_usd must not be negative")
+			return
+		}
+		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
+	}
+	if body.LimitTokens != nil {
+		if *body.LimitTokens < 0 {
+			writeError(w, http.StatusBadRequest, "limit_tokens must not be negative")
+			return
+		}
+		existing.LimitTokens = *body.LimitTokens
+	}
+	if body.Period != nil {
+		period, ok := normalizeBudgetPeriod(*body.Period)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid period")
+			return
+		}
+		existing.Period = period
+	}
+	if body.AlertPct != nil {
+		if *body.AlertPct < 1 || *body.AlertPct > 100 {
+			writeError(w, http.StatusBadRequest, "alert_pct must be between 1 and 100")
+			return
+		}
+		existing.AlertPct = *body.AlertPct
+	}
+	if body.HardCutoff != nil {
+		existing.HardCutoff = *body.HardCutoff
+	}
+	if body.AllowedModels != nil {
+		existing.AllowedModels = store.SetPlanAllowedModels(body.AllowedModels)
+	}
+	existing.UpdatedAt = time.Now()
+
+	if err := s.db.Plans().Update(r.Context(), existing); err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": existing.ID, "name": existing.Name, "description": existing.Description,
+		"limit_micros": existing.LimitMicros, "limit_tokens": existing.LimitTokens,
+		"period": existing.Period, "alert_pct": existing.AlertPct, "hard_cutoff": existing.HardCutoff,
+		"allowed_models": store.GetPlanAllowedModels(existing),
+	})
+}
+
+func (s *Server) adminDeletePlan(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	keyCount, err := s.db.Plans().CountKeys(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+	if keyCount > 0 {
+		writeError(w, http.StatusConflict, fmt.Sprintf("plan has %d API key(s) assigned — reassign or delete them first", keyCount))
+		return
+	}
+	if err := s.db.Plans().Delete(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) adminListPlanKeys(w http.ResponseWriter, r *http.Request) {
+	planID := chi.URLParam(r, "id")
+	if _, err := s.db.Plans().Get(r.Context(), planID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "plan not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+	keys, err := s.identity.List(r.Context(), adminTenant)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+		return
+	}
+	var out []map[string]any
+	for _, k := range keys {
+		if k.PlanID == planID {
+			entry := map[string]any{
+				"id": k.ID, "name": k.Name, "display": k.Display,
+				"disabled": k.Disabled, "created_at": k.CreatedAt,
+			}
+			if models, merr := s.identity.Keys().GetAllowedModels(r.Context(), k.ID); merr == nil {
+				entry["allowed_models"] = models
+			}
+			out = append(out, entry)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
 }
 
 // ---- budgets ----------------------------------------------------------------
