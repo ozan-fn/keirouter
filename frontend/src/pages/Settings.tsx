@@ -12,10 +12,45 @@ import { useUpdateInfo } from "../components/UpdateNotification";
 import { useToast } from "../components/Toast";
 import {
   Card, SectionHeader, Spinner, Toggle, SegmentedControl, ErrorBanner, Button, Input, Field,
-  SettingsSection, Modal,
+  TabBar, Modal,
 } from "../components/ui";
 
-// Caveman compression maps to a Gentle / Balanced / Strong segmented control.
+// ── Tab definitions ─────────────────────────────────────────────────
+type SettingsTab = "saving" | "routing" | "network" | "branding" | "system";
+
+const settingsTabs = [
+  { value: "saving" as const, label: "Token Saving", icon: Zap },
+  { value: "routing" as const, label: "Routing", icon: Route },
+  { value: "network" as const, label: "Network", icon: Gauge },
+  { value: "branding" as const, label: "Branding", icon: Palette },
+  { value: "system" as const, label: "System", icon: Database },
+];
+
+function useHashTab(defaultTab: SettingsTab): [SettingsTab, (t: SettingsTab) => void] {
+  const validTabs: SettingsTab[] = settingsTabs.map((t) => t.value);
+
+  const readHash = (): SettingsTab => {
+    const hash = window.location.hash.replace("#", "");
+    return validTabs.includes(hash as SettingsTab) ? (hash as SettingsTab) : defaultTab;
+  };
+
+  const [tab, setTabState] = useState<SettingsTab>(readHash);
+
+  useEffect(() => {
+    const onHash = () => setTabState(readHash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const setTab = (t: SettingsTab) => {
+    window.history.replaceState(null, "", `#${t}`);
+    setTabState(t);
+  };
+
+  return [tab, setTab];
+}
+
+// ── Caveman / Terse options ─────────────────────────────────────────
 const cavemanOptions = [
   { value: "lite", label: "Gentle" },
   { value: "full", label: "Balanced" },
@@ -41,11 +76,13 @@ const terseHints: Record<string, string> = {
 const isRoundRobin = (strategy: string) =>
   strategy === "round-robin" || strategy === "round_robin" || strategy === "smart-round-robin" || strategy === "smart_round_robin";
 
+// ── Page ────────────────────────────────────────────────────────────
 export function SettingsPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const settings = useQuery({ queryKey: ["endpoint-settings"], queryFn: () => api.endpointSettings() });
   const [local, setLocal] = useState<EndpointSettings | null>(null);
+  const [tab, setTab] = useHashTab("saving");
 
   useEffect(() => {
     if (settings.data) setLocal(settings.data);
@@ -70,127 +107,112 @@ export function SettingsPage() {
       <PageHeader
         title="Settings"
         icon={Sparkles}
-        description="Configure token saving, routing strategy, network, and more."
+        description="Configure token saving, routing, network, and more."
       />
 
       {settings.isLoading || !local ? (
         <Spinner />
       ) : (
-        <div className="space-y-10">
-          {/* ── Token Saving ───────────────────────────────────────── */}
-          <SettingsSection title="Token Saving" icon={Zap}>
-            <Card>
-              <SectionHeader
-                title="RTK input compression"
-                description="Compresses bulky tool outputs (diffs, greps, listings, build logs) before they reach the model. Saves input tokens. Safe by design — never corrupts content."
-                icon={Zap}
-              />
-              <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
-                <span className="text-sm font-medium">Enable RTK token saver</span>
-                <Toggle checked={local.rtk_enabled} onChange={(v) => update({ rtk_enabled: v })} />
-              </div>
-            </Card>
+        <>
+          <TabBar tabs={settingsTabs} active={tab} onChange={setTab} />
 
-            <Card>
-              <SectionHeader
-                title="Caveman output compression"
-                description="Instructs the model to answer tersely (caveman style) — keeps all technical substance, drops filler. Cuts output tokens 65-75%."
-                icon={MessageSquare}
-              />
-              <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
-                <span className="text-sm font-medium">Enable caveman mode</span>
-                <Toggle checked={local.caveman_enabled} onChange={(v) => update({ caveman_enabled: v, ...(v ? { terse_enabled: false } : {}) })} />
-              </div>
-              {local.caveman_enabled && (
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] px-6 py-4">
-                  <div>
-                    <p className="text-sm font-medium">Compression level</p>
-                    <p className="mt-0.5 text-xs text-[var(--text-muted)]">{cavemanHints[local.caveman_level]}</p>
-                  </div>
-                  <SegmentedControl
-                    value={local.caveman_level}
-                    onChange={(v) => update({ caveman_level: v })}
-                    options={cavemanOptions}
-                  />
-                </div>
-              )}
-            </Card>
+          <div className="mt-6">
+            {tab === "saving" && <SavingTab local={local} update={update} />}
+            {tab === "routing" && <RoutingTab local={local} update={update} />}
+            {tab === "network" && <NetworkTab local={local} update={update} />}
+            {tab === "branding" && <BrandingTab />}
+            {tab === "system" && <SystemTab />}
+          </div>
 
-            <Card>
-              <SectionHeader
-                title="Terse mode (alternative)"
-                description="KeiRouter's own concise-output directive. An alternative to caveman; both inject a system instruction, so pick one."
-                icon={Layers}
-                iconTone="neutral"
-              />
-              <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
-                <span className="text-sm font-medium">Enable terse mode</span>
-                <Toggle checked={local.terse_enabled} onChange={(v) => update({ terse_enabled: v, ...(v ? { caveman_enabled: false } : {}) })} />
-              </div>
-              {local.terse_enabled && (
-                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] px-6 py-4">
-                  <div>
-                    <p className="text-sm font-medium">Terse level</p>
-                    <p className="mt-0.5 text-xs text-[var(--text-muted)]">{terseHints[local.terse_level]}</p>
-                  </div>
-                  <SegmentedControl
-                    value={local.terse_level}
-                    onChange={(v) => update({ terse_level: v })}
-                    options={terseOptions}
-                  />
-                </div>
-              )}
-            </Card>
-          </SettingsSection>
-
-          {/* ── Routing ────────────────────────────────────────────── */}
-          <SettingsSection title="Routing" icon={Route}>
-            <RoutingStrategy local={local} update={update} />
-          </SettingsSection>
-
-          {/* ── Network & Timeouts ─────────────────────────────────── */}
-          <SettingsSection title="Network & Timeouts" icon={Gauge}>
-            <TimeoutSettings local={local} update={update} />
-            <NetworkSettings local={local} update={update} />
-          </SettingsSection>
-
-          {/* ── Observability ──────────────────────────────────────── */}
-          <SettingsSection title="Observability" icon={Monitor}>
-            <Card>
-              <SectionHeader
-                title="Request detail recording"
-                description="Record request details for inspection in the logs view."
-                icon={Monitor}
-              />
-              <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
-                <span className="text-sm font-medium">Enable request detail recording</span>
-                <Toggle
-                  checked={local.observability_enabled !== false}
-                  onChange={(v) => update({ observability_enabled: v })}
-                />
-              </div>
-            </Card>
-          </SettingsSection>
-
-          {/* ── Branding ──────────────────────────────────────────── */}
-          <SettingsSection title="Branding" icon={Palette}>
-            <BrandingSettingsPanel />
-          </SettingsSection>
-
-          {/* ── Data & Updates ─────────────────────────────────────── */}
-          <SettingsSection title="Data & Updates" icon={Database}>
-            <DatabaseSettings />
-            <UpdatesSettings />
-          </SettingsSection>
-
-          {save.isError && <ErrorBanner message={`Failed to save: ${(save.error as Error)?.message ?? "unknown error"}`} />}
-        </div>
+          {save.isError && (
+            <div className="mt-4">
+              <ErrorBanner message={`Failed to save: ${(save.error as Error)?.message ?? "unknown error"}`} />
+            </div>
+          )}
+        </>
       )}
     </>
   );
 }
 
-function RoutingStrategy({
+// ── Token Saving Tab ────────────────────────────────────────────────
+function SavingTab({
+  local,
+  update,
+}: {
+  local: EndpointSettings;
+  update: (patch: Partial<EndpointSettings>) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <Card>
+        <SectionHeader
+          title="RTK input compression"
+          description="Compresses bulky tool outputs (diffs, greps, listings, build logs) before they reach the model. Saves input tokens. Safe by design — never corrupts content."
+          icon={Zap}
+        />
+        <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
+          <span className="text-sm font-medium">Enable RTK token saver</span>
+          <Toggle checked={local.rtk_enabled} onChange={(v) => update({ rtk_enabled: v })} />
+        </div>
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="Caveman output compression"
+          description="Instructs the model to answer tersely (caveman style) — keeps all technical substance, drops filler. Cuts output tokens 65-75%."
+          icon={MessageSquare}
+        />
+        <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
+          <span className="text-sm font-medium">Enable caveman mode</span>
+          <Toggle checked={local.caveman_enabled} onChange={(v) => update({ caveman_enabled: v, ...(v ? { terse_enabled: false } : {}) })} />
+        </div>
+        {local.caveman_enabled && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] px-6 py-4">
+            <div>
+              <p className="text-sm font-medium">Compression level</p>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">{cavemanHints[local.caveman_level]}</p>
+            </div>
+            <SegmentedControl
+              value={local.caveman_level}
+              onChange={(v) => update({ caveman_level: v })}
+              options={cavemanOptions}
+            />
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="Terse mode (alternative)"
+          description="KeiRouter's own concise-output directive. An alternative to caveman; both inject a system instruction, so pick one."
+          icon={Layers}
+          iconTone="neutral"
+        />
+        <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
+          <span className="text-sm font-medium">Enable terse mode</span>
+          <Toggle checked={local.terse_enabled} onChange={(v) => update({ terse_enabled: v, ...(v ? { caveman_enabled: false } : {}) })} />
+        </div>
+        {local.terse_enabled && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] px-6 py-4">
+            <div>
+              <p className="text-sm font-medium">Terse level</p>
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">{terseHints[local.terse_level]}</p>
+            </div>
+            <SegmentedControl
+              value={local.terse_level}
+              onChange={(v) => update({ terse_level: v })}
+              options={terseOptions}
+            />
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ── Routing Tab ─────────────────────────────────────────────────────
+function RoutingTab({
   local,
   update,
 }: {
@@ -276,7 +298,8 @@ function RoutingStrategy({
   );
 }
 
-function TimeoutSettings({
+// ── Network Tab ─────────────────────────────────────────────────────
+function NetworkTab({
   local,
   update,
 }: {
@@ -284,15 +307,16 @@ function TimeoutSettings({
   update: (patch: Partial<EndpointSettings>) => void;
 }) {
   return (
-    <Card>
-      <SectionHeader
-        title="Timeouts"
-        description="Fine-tune upstream connection and streaming timeouts. Increase for slow providers or reasoning models (Deepseek, GLM) that think before streaming."
-        icon={Clock}
-      />
-      <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
-        <div className="px-6 py-4">
-          <Field label="Connect timeout (seconds)">
+    <div className="space-y-4">
+      {/* Timeout grid */}
+      <Card>
+        <SectionHeader
+          title="Timeouts"
+          description="Fine-tune upstream connection and streaming timeouts. Increase for slow providers or reasoning models."
+          icon={Clock}
+        />
+        <div className="grid grid-cols-1 gap-4 border-t border-[var(--border)] px-6 py-5 sm:grid-cols-3">
+          <Field label="Connect timeout (sec)">
             <Input
               type="number"
               min={5}
@@ -303,15 +327,11 @@ function TimeoutSettings({
                 update({ response_header_timeout_ms: sec * 1000 });
               }}
               placeholder="60"
-              className="w-24 text-center"
+              className="text-center"
             />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Max time waiting for upstream to send response headers. Default: 60s. Increase for slow providers.
-            </p>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Default: 60s</p>
           </Field>
-        </div>
-        <div className="px-6 py-4">
-          <Field label="Stream stall timeout (seconds)">
+          <Field label="Stream stall timeout (sec)">
             <Input
               type="number"
               min={10}
@@ -322,15 +342,11 @@ function TimeoutSettings({
                 update({ stream_stall_timeout_ms: sec * 1000 });
               }}
               placeholder="120"
-              className="w-24 text-center"
+              className="text-center"
             />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Abort stream if no data received for this long. Default: 120s. Increase for reasoning models that think before streaming.
-            </p>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Default: 120s</p>
           </Field>
-        </div>
-        <div className="px-6 py-4">
-          <Field label="Request timeout (seconds)">
+          <Field label="Request timeout (sec)">
             <Input
               type="number"
               min={30}
@@ -341,19 +357,36 @@ function TimeoutSettings({
                 update({ request_timeout_ms: sec * 1000 });
               }}
               placeholder="300"
-              className="w-24 text-center"
+              className="text-center"
             />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Upper bound for non-streaming requests. Default: 300s (5 min).
-            </p>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">Default: 300s (5 min)</p>
           </Field>
         </div>
-      </div>
-    </Card>
+      </Card>
+
+      {/* Proxy */}
+      <ProxySettings local={local} update={update} />
+
+      {/* Observability */}
+      <Card>
+        <SectionHeader
+          title="Observability"
+          description="Record request details for inspection in the logs view."
+          icon={Monitor}
+        />
+        <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
+          <span className="text-sm font-medium">Enable request detail recording</span>
+          <Toggle
+            checked={local.observability_enabled !== false}
+            onChange={(v) => update({ observability_enabled: v })}
+          />
+        </div>
+      </Card>
+    </div>
   );
 }
 
-function NetworkSettings({
+function ProxySettings({
   local,
   update,
 }: {
@@ -384,7 +417,7 @@ function NetworkSettings({
   return (
     <Card>
       <SectionHeader
-        title="Network"
+        title="Network Proxy"
         description="Configure outbound proxy for provider requests."
         icon={Wifi}
       />
@@ -403,24 +436,24 @@ function NetworkSettings({
         {local.outbound_proxy_enabled && (
           <>
             <div className="px-6 py-4">
-              <Field label="Proxy URL">
-                <Input
-                  placeholder="http://127.0.0.1:7897"
-                  value={local.outbound_proxy_url}
-                  onChange={(e) => update({ outbound_proxy_url: e.target.value })}
-                />
-                <p className="mt-1 text-xs text-[var(--text-muted)]">Leave empty to inherit existing env proxy (if any).</p>
-              </Field>
-            </div>
-            <div className="px-6 py-4">
-              <Field label="No Proxy">
-                <Input
-                  placeholder="localhost,127.0.0.1"
-                  value={local.outbound_no_proxy}
-                  onChange={(e) => update({ outbound_no_proxy: e.target.value })}
-                />
-                <p className="mt-1 text-xs text-[var(--text-muted)]">Comma-separated hostnames/domains to bypass the proxy.</p>
-              </Field>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label="Proxy URL">
+                  <Input
+                    placeholder="http://127.0.0.1:7897"
+                    value={local.outbound_proxy_url}
+                    onChange={(e) => update({ outbound_proxy_url: e.target.value })}
+                  />
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">Leave empty to inherit env proxy.</p>
+                </Field>
+                <Field label="No Proxy">
+                  <Input
+                    placeholder="localhost,127.0.0.1"
+                    value={local.outbound_no_proxy}
+                    onChange={(e) => update({ outbound_no_proxy: e.target.value })}
+                  />
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">Comma-separated hostnames to bypass.</p>
+                </Field>
+              </div>
             </div>
             <div className="flex items-center gap-3 px-6 py-4">
               <Button variant="ghost" onClick={testProxy} disabled={testing || !local.outbound_proxy_url}>
@@ -438,6 +471,233 @@ function NetworkSettings({
     </Card>
   );
 }
+
+// ── Branding Tab ────────────────────────────────────────────────────
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function ImageUploadField({
+  label,
+  hint,
+  value,
+  onChange,
+  previewClassName,
+  accept,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (dataUrl: string) => void;
+  previewClassName?: string;
+  accept: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleFile = async (file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    const dataUrl = await fileToDataUrl(file);
+    onChange(dataUrl);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) await handleFile(file);
+  };
+
+  const handleInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) await handleFile(file);
+    // Reset so the same file can be re-selected
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  return (
+    <div>
+      <span className="text-xs font-medium text-[var(--text-muted)]">{label}</span>
+      <div className="mt-1.5 flex items-start gap-4">
+        {/* Preview */}
+        <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)]">
+          {value ? (
+            <img src={value} alt={label} className="h-full w-full rounded-xl object-contain p-1" />
+          ) : (
+            <Palette className="h-6 w-6 text-[var(--text-muted)]" />
+          )}
+        </div>
+
+        {/* Drop zone / upload */}
+        <div className="min-w-0 flex-1">
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            onClick={() => inputRef.current?.click()}
+            className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed px-4 py-3 transition-colors ${
+              dragOver
+                ? "border-accent-400 bg-accent-50 dark:bg-accent-900/20"
+                : "border-[var(--border)] hover:border-accent-300 hover:bg-[var(--bg-subtle)]"
+            }`}
+          >
+            <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-muted)]">
+              <Upload className="h-4 w-4" />
+              <span>{value ? "Replace image" : "Upload image"}</span>
+            </div>
+            <p className="text-xs text-[var(--text-muted)]">PNG, SVG, ICO — drag & drop or click</p>
+          </div>
+          {value && (
+            <button
+              type="button"
+              onClick={() => onChange("")}
+              className="mt-1.5 text-xs text-[color:var(--color-danger)] hover:underline"
+            >
+              Remove
+            </button>
+          )}
+          <p className="mt-1 text-xs text-[var(--text-muted)]">{hint}</p>
+          <input
+            ref={inputRef}
+            type="file"
+            accept={accept}
+            className="hidden"
+            onChange={handleInputChange}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BrandingTab() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const branding = useQuery({ queryKey: ["branding"], queryFn: () => api.branding() });
+  const [local, setLocal] = useState<BrandingSettings | null>(null);
+
+  useEffect(() => {
+    if (branding.data) setLocal(branding.data);
+  }, [branding.data]);
+
+  const save = useMutation({
+    mutationFn: (patch: Partial<BrandingSettings>) => api.updateBranding(patch),
+    onSuccess: (data) => {
+      setLocal(data);
+      qc.setQueryData(["branding"], data);
+      qc.invalidateQueries({ queryKey: ["portal-branding"] });
+      toast.success("Branding updated", `Display name set to "${data.name}". Refresh to see changes.`);
+    },
+    onError: (e) => toast.error("Branding save failed", (e as Error).message),
+  });
+
+  const update = (patch: Partial<BrandingSettings>) => {
+    if (local) setLocal({ ...local, ...patch });
+  };
+
+  const handleSave = () => {
+    if (local) save.mutate(local);
+  };
+
+  if (branding.isLoading || !local) return <Spinner />;
+
+  const previewLogo = local.logo_url || "/keirouter-logo.png";
+
+  return (
+    <Card>
+      <SectionHeader
+        title="White-Label Branding"
+        description="Customize the dashboard name, logo, and favicon. Changes apply to both the admin dashboard and the public Usage Dashboard."
+        icon={Palette}
+      />
+      <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
+        {/* Two-column grid: name + tagline */}
+        <div className="px-6 py-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Display Name">
+              <Input
+                value={local.name}
+                onChange={(e) => update({ name: e.target.value })}
+                placeholder="KeiRouter"
+              />
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                Shown in sidebar, tab title, login screen, and Usage Dashboard.
+              </p>
+            </Field>
+            <Field label="Portal Tagline">
+              <Input
+                value={local.tagline}
+                onChange={(e) => update({ tagline: e.target.value })}
+                placeholder="Enter your API Key to view usage."
+              />
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                Optional message on the Usage Dashboard login screen.
+              </p>
+            </Field>
+          </div>
+        </div>
+
+        {/* Image uploads: logo + favicon */}
+        <div className="px-6 py-5">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            <ImageUploadField
+              label="Logo"
+              hint="SVG or PNG recommended. Leave empty for default."
+              value={local.logo_url}
+              onChange={(dataUrl) => update({ logo_url: dataUrl })}
+              accept="image/png,image/svg+xml,image/*"
+            />
+            <ImageUploadField
+              label="Favicon"
+              hint="PNG or ICO recommended. Leave empty for default."
+              value={local.favicon_url}
+              onChange={(dataUrl) => update({ favicon_url: dataUrl })}
+              accept="image/png,image/x-icon,image/*"
+            />
+          </div>
+        </div>
+
+        {/* Preview */}
+        <div className="px-6 py-5">
+          <p className="text-xs font-medium text-[var(--text-muted)] mb-3">Preview</p>
+          <div className="flex items-center gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+            <img src={previewLogo} alt={local.name || "Logo"} className="h-10 w-10 object-contain" />
+            <div>
+              <p className="text-sm font-semibold text-[var(--text)]">{local.name || "KeiRouter"}</p>
+              {local.tagline && <p className="text-xs text-[var(--text-muted)]">{local.tagline}</p>}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-3 px-6 py-4">
+          {save.isError && (
+            <span className="text-xs text-[color:var(--color-danger)]">{(save.error as Error)?.message}</span>
+          )}
+          <Button onClick={handleSave} disabled={save.isPending}>
+            {save.isPending ? "Saving…" : "Save Branding"}
+          </Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ── System Tab ──────────────────────────────────────────────────────
+function SystemTab() {
+  return (
+    <div className="space-y-4">
+      <DatabaseSettings />
+      <UpdatesSettings />
+    </div>
+  );
+}
+
+// ── Sub-components (shared) ─────────────────────────────────────────
 
 function PassphraseInput({
   id,
@@ -502,14 +762,12 @@ function DatabaseSettings() {
   const importRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
 
-  // Export modal state
   const [exportOpen, setExportOpen] = useState(false);
   const [usePortable, setUsePortable] = useState(false);
   const [exportPass, setExportPass] = useState("");
   const [exportConfirm, setExportConfirm] = useState("");
   const [showExportPass, setShowExportPass] = useState(false);
 
-  // Import modal state
   const [importOpen, setImportOpen] = useState(false);
   const [pendingPayload, setPendingPayload] = useState<Record<string, unknown> | null>(null);
   const [importPass, setImportPass] = useState("");
@@ -822,121 +1080,6 @@ function DatabaseSettings() {
         </div>
       </Modal>
     </>
-  );
-}
-
-function BrandingSettingsPanel() {
-  const qc = useQueryClient();
-  const toast = useToast();
-  const branding = useQuery({ queryKey: ["branding"], queryFn: () => api.branding() });
-  const [local, setLocal] = useState<BrandingSettings | null>(null);
-
-  useEffect(() => {
-    if (branding.data) setLocal(branding.data);
-  }, [branding.data]);
-
-  const save = useMutation({
-    mutationFn: (patch: Partial<BrandingSettings>) => api.updateBranding(patch),
-    onSuccess: (data) => {
-      setLocal(data);
-      qc.setQueryData(["branding"], data);
-      qc.invalidateQueries({ queryKey: ["portal-branding"] });
-      toast.success("Branding updated", `Display name set to "${data.name}". Refresh to see changes.`);
-    },
-    onError: (e) => toast.error("Branding save failed", (e as Error).message),
-  });
-
-  const update = (patch: Partial<BrandingSettings>) => {
-    if (local) setLocal({ ...local, ...patch });
-  };
-
-  const handleSave = () => {
-    if (local) save.mutate(local);
-  };
-
-  if (branding.isLoading || !local) return <Spinner />;
-
-  const previewLogo = local.logo_url || "/keirouter-logo.png";
-
-  return (
-    <Card>
-      <SectionHeader
-        title="White-Label Branding"
-        description="Customize the dashboard name, logo, and favicon. Changes apply to both the admin dashboard and the public Usage Dashboard."
-        icon={Palette}
-      />
-      <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
-        <div className="px-6 py-4">
-          <Field label="Display Name">
-            <Input
-              value={local.name}
-              onChange={(e) => update({ name: e.target.value })}
-              placeholder="KeiRouter"
-            />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Shown in the sidebar, browser tab title, login screen, and Usage Dashboard.
-            </p>
-          </Field>
-        </div>
-        <div className="px-6 py-4">
-          <Field label="Logo URL">
-            <Input
-              value={local.logo_url}
-              onChange={(e) => update({ logo_url: e.target.value })}
-              placeholder="https://example.com/logo.svg"
-            />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Public URL to your logo image (SVG, PNG). Leave empty for the default logo.
-            </p>
-          </Field>
-        </div>
-        <div className="px-6 py-4">
-          <Field label="Favicon URL">
-            <Input
-              value={local.favicon_url}
-              onChange={(e) => update({ favicon_url: e.target.value })}
-              placeholder="https://example.com/favicon.png"
-            />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Public URL to a favicon (PNG/ICO). Leave empty for the default favicon.
-            </p>
-          </Field>
-        </div>
-        <div className="px-6 py-4">
-          <Field label="Portal Tagline">
-            <Input
-              value={local.tagline}
-              onChange={(e) => update({ tagline: e.target.value })}
-              placeholder="Enter your API Key to view usage and budget constraints."
-            />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Optional message shown on the Usage Dashboard login screen.
-            </p>
-          </Field>
-        </div>
-
-        {/* Preview */}
-        <div className="px-6 py-4">
-          <p className="text-xs font-medium text-[var(--text-muted)] mb-3">Preview</p>
-          <div className="flex items-center gap-4 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
-            <img src={previewLogo} alt={local.name || "Logo"} className="h-10 w-10 object-contain" />
-            <div>
-              <p className="text-sm font-semibold text-[var(--text)]">{local.name || "KeiRouter"}</p>
-              {local.tagline && <p className="text-xs text-[var(--text-muted)]">{local.tagline}</p>}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-3 px-6 py-4">
-          {save.isError && (
-            <span className="text-xs text-[color:var(--color-danger)]">{(save.error as Error)?.message}</span>
-          )}
-          <Button onClick={handleSave} disabled={save.isPending}>
-            {save.isPending ? "Saving…" : "Save Branding"}
-          </Button>
-        </div>
-      </div>
-    </Card>
   );
 }
 

@@ -378,6 +378,44 @@ export function Modal({
   );
 }
 
+// TabBar renders a horizontal tab navigation strip.
+export function TabBar<T extends string>({
+  tabs,
+  active,
+  onChange,
+}: {
+  tabs: { value: T; label: string; icon?: LucideIcon }[];
+  active: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex gap-1 overflow-x-auto border-b border-[var(--border)] px-1 pb-px" role="tablist">
+      {tabs.map((tab) => {
+        const isActive = tab.value === active;
+        return (
+          <button
+            key={tab.value}
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(tab.value)}
+            className={`relative flex items-center gap-2 whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
+              isActive
+                ? "text-accent-700 dark:text-accent-200"
+                : "text-[var(--text-muted)] hover:text-[var(--text)]"
+            }`}
+          >
+            {tab.icon && <tab.icon className="h-4 w-4 shrink-0" strokeWidth={2} />}
+            {tab.label}
+            {isActive && (
+              <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-accent-600 dark:bg-accent-400" />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
