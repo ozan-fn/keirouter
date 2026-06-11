@@ -22,13 +22,14 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.filter.outputs.should_build }}
+      should_build: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || steps.filter.outputs.should_build }}
     steps:
       - uses: actions/checkout@v4
         if: github.ref == 'refs/heads/main'
 
       - uses: dorny/paths-filter@v3
         id: filter
+        if: github.ref == 'refs/heads/main'
         with:
           filters: |
             should_build:
