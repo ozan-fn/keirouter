@@ -221,6 +221,14 @@ func (s *Server) routes() chi.Router {
 
 	// OpenAI-compatible API surface (authenticated).
 	r.Group(func(r chi.Router) {
+		// Cap concurrent in-flight requests to prevent resource exhaustion
+		// under high traffic. Each request holds argon2 goroutines, SQLite
+		// connection time, upstream connections, and buffer pool slots.
+		maxConc := s.cfg.Server.MaxConcurrentRequests
+		if maxConc <= 0 {
+			maxConc = 100 // sensible default for AI gateway workloads
+		}
+		r.Use(concurrencyLimiter(maxConc))
 		r.Use(s.authMiddleware)
 		r.Post("/v1/chat/completions", s.handleOpenAIChat)
 		r.Post("/v1/messages", s.handleAnthropicMessages)

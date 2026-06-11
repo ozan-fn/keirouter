@@ -120,3 +120,26 @@ func (s *Server) apiKeyRateLimiter(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// concurrencyLimiter caps the number of in-flight API requests to protect
+// the gateway from resource exhaustion under high concurrency. Each request
+// holds argon2 goroutines, SQLite connection time, upstream HTTP connections,
+// and buffer pool slots. When the semaphore is full, new requests get 503.
+//
+// maxConcurrent is tuned for typical AI gateway workloads: long-lived
+// streaming connections that hold resources for seconds to minutes.
+func concurrencyLimiter(maxConcurrent int) func(http.Handler) http.Handler {
+	sem := make(chan struct{}, maxConcurrent)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+				next.ServeHTTP(w, r)
+			default:
+				writeError(w, http.StatusServiceUnavailable,
+					"server is at capacity, please retry shortly")
+			}
+		})
+	}
+}

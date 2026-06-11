@@ -1,9 +1,10 @@
 package transform
 
 import (
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"fmt"
 	"strings"
+
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
@@ -66,6 +67,7 @@ var responsesAPIAllowlist = map[string]bool{
 	"include":           true,
 	"prompt_cache_key":  true,
 	"max_output_tokens": true,
+	"client_metadata":   true,
 }
 
 type respTool struct {
@@ -81,14 +83,16 @@ type respTool struct {
 }
 
 type respInputItem struct {
-	Type      string            `json:"type"`
-	Role      string            `json:"role,omitempty"`
-	Content   json.RawMessage   `json:"content,omitempty"`
-	CallID    string            `json:"call_id,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	Arguments string            `json:"arguments,omitempty"`
-	Output    json.RawMessage   `json:"output,omitempty"`
-	Summary   []respSummaryPart `json:"summary,omitempty"`
+	Type             string            `json:"type"`
+	Role             string            `json:"role,omitempty"`
+	Content          json.RawMessage   `json:"content,omitempty"`
+	CallID           string            `json:"call_id,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Arguments        string            `json:"arguments,omitempty"`
+	Output           json.RawMessage   `json:"output,omitempty"`
+	Summary          []respSummaryPart `json:"summary,omitempty"`
+	EncryptedContent string            `json:"encrypted_content,omitempty"`
+	ID               string            `json:"id,omitempty"`
 }
 
 type respSummaryPart struct {
@@ -149,6 +153,7 @@ func (OpenAIResponsesCodec) ParseRequest(body []byte) (*core.ChatRequest, error)
 	}
 
 	var pendingReasoning string
+	var pendingEncrypted string
 	for _, item := range items {
 		itemType := item.Type
 		if itemType == "" && item.Role != "" {
@@ -158,9 +163,16 @@ func (OpenAIResponsesCodec) ParseRequest(body []byte) (*core.ChatRequest, error)
 		switch itemType {
 		case "message":
 			msg := core.Message{Role: mapRespRole(item.Role)}
-			if pendingReasoning != "" && item.Role == "assistant" {
-				msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: pendingReasoning})
+			if pendingReasoning != "" || pendingEncrypted != "" {
+				if item.Role == "assistant" {
+					msg.Content = append(msg.Content, core.ContentPart{
+						Type:      core.PartThinking,
+						Text:      pendingReasoning,
+						Signature: pendingEncrypted,
+					})
+				}
 				pendingReasoning = ""
+				pendingEncrypted = ""
 			}
 			msg.Content = append(msg.Content, parseRespContent(item.Content)...)
 			req.Messages = append(req.Messages, msg)
@@ -174,9 +186,14 @@ func (OpenAIResponsesCodec) ParseRequest(body []byte) (*core.ChatRequest, error)
 				args = json.RawMessage("{}")
 			}
 			msg := core.Message{Role: core.RoleAssistant}
-			if pendingReasoning != "" {
-				msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: pendingReasoning})
+			if pendingReasoning != "" || pendingEncrypted != "" {
+				msg.Content = append(msg.Content, core.ContentPart{
+					Type:      core.PartThinking,
+					Text:      pendingReasoning,
+					Signature: pendingEncrypted,
+				})
 				pendingReasoning = ""
+				pendingEncrypted = ""
 			}
 			msg.Content = append(msg.Content, core.ContentPart{
 				Type:     core.PartToolCall,
@@ -194,12 +211,13 @@ func (OpenAIResponsesCodec) ParseRequest(body []byte) (*core.ChatRequest, error)
 			})
 
 		case "reasoning":
-			txt := extractRespReasoning(item)
-			if txt != "" {
+			txt, encrypted := extractRespReasoning(item)
+			if txt != "" || encrypted != "" {
 				if pendingReasoning != "" {
 					pendingReasoning += "\n"
 				}
 				pendingReasoning += txt
+				pendingEncrypted = encrypted
 			}
 		}
 	}
@@ -254,14 +272,17 @@ func respImageURL(raw json.RawMessage) string {
 	return obj.URL
 }
 
-func extractRespReasoning(item respInputItem) string {
+// extractRespReasoning returns the summary text and encrypted_content from a
+// reasoning item. The encrypted_content must be echoed back on follow-up turns
+// when the client requested include: ["reasoning.encrypted_content"].
+func extractRespReasoning(item respInputItem) (text string, encrypted string) {
 	var parts []string
 	for _, s := range item.Summary {
 		if s.Text != "" {
 			parts = append(parts, s.Text)
 		}
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n"), item.EncryptedContent
 }
 
 func mapRespRole(role string) core.Role {
@@ -312,6 +333,25 @@ func (OpenAIResponsesCodec) RenderRequest(req *core.ChatRequest) ([]byte, error)
 	for _, m := range req.Messages {
 		switch m.Role {
 		case core.RoleUser, core.RoleAssistant:
+			// Emit reasoning items with encrypted_content BEFORE the
+			// message/function_call items. The Codex API requires
+			// reasoning items to precede the assistant turn they belong to.
+			for _, p := range m.Content {
+				if p.Type == core.PartThinking && (p.Text != "" || p.Signature != "") {
+					reasoningItem := map[string]any{"type": "reasoning"}
+					if p.Signature != "" {
+						reasoningItem["encrypted_content"] = p.Signature
+					}
+					if p.Text != "" {
+						reasoningItem["summary"] = []map[string]any{
+							{"type": "summary_text", "text": p.Text},
+						}
+					}
+					input = append(input, reasoningItem)
+					break // only one reasoning item per assistant turn
+				}
+			}
+
 			contentType := "input_text"
 			if m.Role == core.RoleAssistant {
 				contentType = "output_text"
@@ -381,7 +421,7 @@ func (OpenAIResponsesCodec) RenderRequest(req *core.ChatRequest) ([]byte, error)
 			tools = append(tools, map[string]any{
 				"type":        "function",
 				"name":        t.Name,
-				"description":  t.Description,
+				"description": t.Description,
 				"parameters":  params,
 			})
 		}
@@ -405,18 +445,19 @@ func (OpenAIResponsesCodec) RenderRequest(req *core.ChatRequest) ([]byte, error)
 type respUnary struct {
 	ID     string `json:"id"`
 	Output []struct {
-		Type      string            `json:"type"`
-		Role      string            `json:"role"`
-		Content   []respContentPart `json:"content"`
-		CallID    string            `json:"call_id"`
-		Name      string            `json:"name"`
-		Arguments string            `json:"arguments"`
-		Summary   []respSummaryPart `json:"summary"`
+		Type             string            `json:"type"`
+		Role             string            `json:"role"`
+		Content          []respContentPart `json:"content"`
+		CallID           string            `json:"call_id"`
+		Name             string            `json:"name"`
+		Arguments        string            `json:"arguments"`
+		Summary          []respSummaryPart `json:"summary"`
+		EncryptedContent string            `json:"encrypted_content"`
 	} `json:"output"`
 	Usage *struct {
-		InputTokens         int `json:"input_tokens"`
-		OutputTokens        int `json:"output_tokens"`
-		InputTokensDetails  struct {
+		InputTokens        int `json:"input_tokens"`
+		OutputTokens       int `json:"output_tokens"`
+		InputTokensDetails struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"input_tokens_details"`
 	} `json:"usage"`
@@ -437,8 +478,12 @@ func (OpenAIResponsesCodec) ParseResponse(body []byte, model string) (*core.Chat
 			for _, s := range item.Summary {
 				b.WriteString(s.Text)
 			}
-			if b.Len() > 0 {
-				msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: b.String()})
+			if b.Len() > 0 || item.EncryptedContent != "" {
+				msg.Content = append(msg.Content, core.ContentPart{
+					Type:      core.PartThinking,
+					Text:      b.String(),
+					Signature: item.EncryptedContent,
+				})
 			}
 		case "message":
 			for _, p := range item.Content {
@@ -480,11 +525,17 @@ func (OpenAIResponsesCodec) RenderResponse(resp *core.ChatResponse) ([]byte, err
 	for _, p := range resp.Message.Content {
 		switch p.Type {
 		case core.PartThinking:
-			output = append(output, map[string]any{
-				"id":      fmt.Sprintf("rs_%s_%d", firstNonEmpty(resp.ID, "resp"), idx),
-				"type":    "reasoning",
-				"summary": []map[string]any{{"type": "summary_text", "text": p.Text}},
-			})
+			reasoningItem := map[string]any{
+				"id":   fmt.Sprintf("rs_%s_%d", firstNonEmpty(resp.ID, "resp"), idx),
+				"type": "reasoning",
+			}
+			if p.Signature != "" {
+				reasoningItem["encrypted_content"] = p.Signature
+			}
+			if p.Text != "" {
+				reasoningItem["summary"] = []map[string]any{{"type": "summary_text", "text": p.Text}}
+			}
+			output = append(output, reasoningItem)
 			idx++
 		case core.PartText:
 			output = append(output, map[string]any{
@@ -511,10 +562,10 @@ func (OpenAIResponsesCodec) RenderResponse(resp *core.ChatResponse) ([]byte, err
 		}
 	}
 	out := map[string]any{
-		"id":      firstNonEmpty(resp.ID, "resp_stream"),
-		"object":  "response",
-		"status":  "completed",
-		"output":  output,
+		"id":     firstNonEmpty(resp.ID, "resp_stream"),
+		"object": "response",
+		"status": "completed",
+		"output": output,
 		"usage": map[string]int{
 			"input_tokens":  resp.Usage.PromptTokens,
 			"output_tokens": resp.Usage.CompletionTokens,

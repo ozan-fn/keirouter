@@ -147,7 +147,7 @@ func (s *Server) slimmerConfig() slimmer.Config {
 // terseConfig resolves terse-mode settings from endpoint settings.
 func (s *Server) terseConfig() terse.Config {
 	es := s.loadEndpointSettings(context.Background())
-	return terse.Config{Enabled: es.TerseEnabled}
+	return terse.Config{Enabled: es.TerseEnabled, Level: terse.Level(es.TerseLevel)}
 }
 
 // cavemanConfig resolves caveman settings from endpoint settings.
@@ -211,6 +211,10 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 		current.TerseEnabled = *patch.TerseEnabled
 	}
 	if patch.TerseLevel != nil {
+		if !terse.ValidLevel(terse.Level(*patch.TerseLevel)) {
+			writeError(w, http.StatusBadRequest, "terse_level must be light, medium, or aggressive")
+			return
+		}
 		current.TerseLevel = *patch.TerseLevel
 	}
 	if patch.RoutingStrategy != nil {

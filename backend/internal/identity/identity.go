@@ -9,6 +9,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,11 +24,34 @@ var ErrUnauthorized = errors.New("identity: unauthorized")
 // Service manages API key lifecycle and authentication.
 type Service struct {
 	keys *store.APIKeyRepo
+
+	// authCache caches successful authentication results keyed by lookup hash.
+	// Under high concurrency, this avoids re-running argon2id verification
+	// (64 MiB + 4 threads each) on every request for the same key.
+	authMu    sync.RWMutex
+	authCache map[string]authCacheEntry
 }
+
+// authCacheEntry holds a cached authentication result.
+type authCacheEntry struct {
+	record  store.APIKey
+	expires time.Time
+}
+
+// authCacheTTL bounds how long a successful auth result is cached. Short enough
+// that key disable/deletion takes effect within seconds, long enough to absorb
+// bursty traffic from the same key (Claude Code sends 10+ req/s).
+const authCacheTTL = 5 * time.Second
+
+// authCacheMaxEntries limits the cache size to prevent unbounded memory growth.
+const authCacheMaxEntries = 256
 
 // New builds an identity Service.
 func New(keys *store.APIKeyRepo) *Service {
-	return &Service{keys: keys}
+	return &Service{
+		keys:      keys,
+		authCache: make(map[string]authCacheEntry),
+	}
 }
 
 // Issued is the result of creating a key. Plaintext is shown exactly once.
@@ -78,13 +102,31 @@ func (s *Service) CreateFromIssued(ctx context.Context, issued Issued) error {
 func (s *Service) Keys() *store.APIKeyRepo { return s.keys }
 
 // Authenticate verifies a presented plaintext key and returns its record. On
-// success it best-effort updates the key's last-used timestamp.
+// success it best-effort updates the key's last-used timestamp. A short-lived
+// positive-result cache avoids re-running argon2id on every request for active
+// keys, which is critical under high concurrency (each argon2 verification
+// consumes 64 MiB + 4 OS threads).
 func (s *Service) Authenticate(ctx context.Context, plaintext string) (store.APIKey, error) {
 	if plaintext == "" {
 		return store.APIKey{}, ErrUnauthorized
 	}
 	lookup := crypto.LookupHash(plaintext)
 
+	// Fast path: check auth cache for a recent positive result.
+	s.authMu.RLock()
+	if ent, ok := s.authCache[lookup]; ok && time.Now().Before(ent.expires) {
+		rec := ent.record
+		s.authMu.RUnlock()
+		// Verify the key hasn't been disabled since caching.
+		if rec.Disabled {
+			s.invalidateAuthCache(lookup)
+			return store.APIKey{}, ErrUnauthorized
+		}
+		return rec, nil
+	}
+	s.authMu.RUnlock()
+
+	// Slow path: full DB lookup + argon2 verification.
 	rec, err := s.keys.FindByLookup(ctx, lookup)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -101,14 +143,58 @@ func (s *Service) Authenticate(ctx context.Context, plaintext string) (store.API
 		return store.APIKey{}, ErrUnauthorized
 	}
 
+	// Cache the positive result for subsequent requests.
+	s.cacheAuthResult(lookup, rec)
+
 	// Best-effort last-used update; failure here must not fail auth.
-	// Run in a goroutine so this synchronous DB write never blocks the
-	// auth path. On SQLite (single-writer) this avoids contending with
-	// usage recording on the hot path.
+	// Run in a goroutine with a bounded timeout to prevent goroutine
+	// accumulation when SQLite's single writer is busy.
 	go func() {
-		_ = s.keys.TouchLastUsed(context.Background(), rec.ID, time.Now())
+		touchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.keys.TouchLastUsed(touchCtx, rec.ID, time.Now())
 	}()
 	return rec, nil
+}
+
+// cacheAuthResult stores a successful auth result in the cache.
+func (s *Service) cacheAuthResult(lookup string, rec store.APIKey) {
+	s.authMu.Lock()
+	// Evict oldest entries if the cache is full.
+	if len(s.authCache) >= authCacheMaxEntries {
+		var oldest string
+		var oldestExpiry time.Time
+		for k, v := range s.authCache {
+			if oldest == "" || v.expires.Before(oldestExpiry) {
+				oldest, oldestExpiry = k, v.expires
+			}
+		}
+		if oldest != "" {
+			delete(s.authCache, oldest)
+		}
+	}
+	s.authCache[lookup] = authCacheEntry{record: rec, expires: time.Now().Add(authCacheTTL)}
+	s.authMu.Unlock()
+}
+
+// invalidateAuthCache removes a cached auth entry (e.g. when a key is disabled).
+func (s *Service) invalidateAuthCache(lookup string) {
+	s.authMu.Lock()
+	delete(s.authCache, lookup)
+	s.authMu.Unlock()
+}
+
+// InvalidateAuthCacheForKey clears the auth cache for a specific key ID.
+// Call this after key mutations (disable, delete) so the next auth attempt
+// re-verifies immediately.
+func (s *Service) InvalidateAuthCacheForKey(keyID string) {
+	s.authMu.Lock()
+	for lookup, ent := range s.authCache {
+		if ent.record.ID == keyID {
+			delete(s.authCache, lookup)
+		}
+	}
+	s.authMu.Unlock()
 }
 
 // List returns the keys for a tenant (without secrets).
@@ -123,10 +209,18 @@ func (s *Service) Get(ctx context.Context, id string) (store.APIKey, error) {
 
 // SetDisabled toggles a key's disabled state.
 func (s *Service) SetDisabled(ctx context.Context, id string, disabled bool) error {
-	return s.keys.SetDisabled(ctx, id, disabled)
+	err := s.keys.SetDisabled(ctx, id, disabled)
+	if err == nil {
+		s.InvalidateAuthCacheForKey(id)
+	}
+	return err
 }
 
 // Delete removes a key.
 func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.keys.Delete(ctx, id)
+	err := s.keys.Delete(ctx, id)
+	if err == nil {
+		s.InvalidateAuthCacheForKey(id)
+	}
+	return err
 }

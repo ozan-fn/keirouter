@@ -101,3 +101,69 @@ func TestApply_MultiPartContent(t *testing.T) {
 	require.Contains(t, req.System, "tool_call")
 	require.Contains(t, req.System, "search")
 }
+
+func TestApply_LevelLight_DirectiveOnly(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}},
+		},
+		Tools: []core.Tool{
+			{Name: "read_file", Description: "Read a file"},
+		},
+	}
+	Apply(req, Config{Enabled: true, Level: LevelLight})
+	require.Contains(t, req.System, sentinel)
+	require.Contains(t, req.System, "TERSE format")
+	// light skips serialization
+	require.NotContains(t, req.System, "Conversation")
+	require.NotContains(t, req.System, "Tools")
+}
+
+func TestApply_LevelMedium_SerializesAll(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}},
+		},
+	}
+	Apply(req, Config{Enabled: true, Level: LevelMedium})
+	require.Contains(t, req.System, "Conversation")
+	require.Contains(t, req.System, "hello")
+}
+
+func TestApply_LevelAggressive_StripsThinking(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{
+				Role: core.RoleAssistant,
+				Content: []core.ContentPart{
+					{Type: core.PartThinking, Text: "internal reasoning process"},
+					{Type: core.PartText, Text: "here is the answer"},
+				},
+			},
+		},
+	}
+	Apply(req, Config{Enabled: true, Level: LevelAggressive})
+	require.Contains(t, req.System, "Conversation")
+	require.Contains(t, req.System, "here is the answer")
+	// thinking content must be stripped
+	require.NotContains(t, req.System, "internal reasoning process")
+}
+
+func TestApply_DefaultLevel_IsMedium(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "ping"}}},
+		},
+	}
+	// Level is empty (zero value) — should default to medium.
+	Apply(req, Config{Enabled: true, Level: ""})
+	require.Contains(t, req.System, "Conversation")
+	require.Contains(t, req.System, "ping")
+}
+
+func TestValidLevel(t *testing.T) {
+	for _, l := range []Level{LevelLight, LevelMedium, LevelAggressive} {
+		require.True(t, ValidLevel(l), "expected %q to be valid", l)
+	}
+	require.False(t, ValidLevel("bogus"))
+}

@@ -37,6 +37,10 @@ type ServerConfig struct {
 	RequestTimeout time.Duration `koanf:"request_timeout"`
 	// CORSOrigins lists allowed dashboard origins ("*" permitted for local).
 	CORSOrigins []string `koanf:"cors_origins"`
+	// MaxConcurrentRequests caps in-flight API requests to prevent resource
+	// exhaustion. Zero or negative means unlimited (not recommended for
+	// high-traffic deployments). Default: 100.
+	MaxConcurrentRequests int `koanf:"max_concurrent_requests"`
 }
 
 // DatabaseConfig selects and configures the persistence backend.
@@ -112,8 +116,8 @@ type DataConfig struct {
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
-			Host:               "127.0.0.1",
-			Port:               20180,
+			Host: "127.0.0.1",
+			Port: 20180,
 			// 60s prevents premature stall timeouts for codex/Responses
 			// streams which may have longer thinking periods between chunks.
 			StreamStallTimeout: 60 * time.Second,

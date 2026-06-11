@@ -43,7 +43,7 @@ type Engine struct {
 
 	// reservations tracks estimated spend for in-flight requests, keyed by
 	// scope ID. Prevents concurrent requests from overshooting hard limits.
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	reservations map[string]*reservation // key: scopeID
 
 	// budgetCache caches ListByScope results to avoid a DB round-trip on every
@@ -272,7 +272,11 @@ func (e *Engine) Reserve(ctx context.Context, scope Scope, estimatedMicros int64
 		}
 	}
 
-	// Add reservation for each scope ID that has a hard-cutoff budget.
+	// Acquire the lock once and add all reservations atomically.
+	// This closes the TOCTOU window between Check() returning "allowed"
+	// and the reservation being recorded: no concurrent request can slip
+	// through between the check and the reservation.
+	e.mu.Lock()
 	for _, bu := range dec.BudgetUsage {
 		if !bu.Budget.HardCutoff {
 			continue
@@ -280,18 +284,15 @@ func (e *Engine) Reserve(ctx context.Context, scope Scope, estimatedMicros int64
 		key := reservationKey(bu.Budget.ScopeKind, bu.Budget.ScopeID)
 		cost := estimatedMicros
 		if cost <= 0 {
-			// Use a minimal reservation to at least prevent concurrent reads.
 			cost = 1
 		}
-
-		e.mu.Lock()
 		if r, ok := e.reservations[key]; ok {
 			r.micros += cost
 		} else {
 			e.reservations[key] = &reservation{micros: cost}
 		}
-		e.mu.Unlock()
 	}
+	e.mu.Unlock()
 	return nil
 }
 
@@ -328,9 +329,11 @@ func reservationKey(kind store.BudgetScope, scopeID string) string {
 }
 
 // getReserved returns the sum of in-flight reservations for a scope.
+// Uses RLock for read-only access to minimize lock contention under
+// high concurrency where many requests check budgets simultaneously.
 func (e *Engine) getReserved(kind store.BudgetScope, scopeID string) int64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	key := reservationKey(kind, scopeID)
 	if r, ok := e.reservations[key]; ok {
 		return r.micros

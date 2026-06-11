@@ -50,6 +50,120 @@ func TestResponses_ParseRequest_StringInput(t *testing.T) {
 	require.Equal(t, "just a prompt", req.Messages[0].TextContent())
 }
 
+func TestResponses_ReasoningWithEncryptedContent_RoundTrip(t *testing.T) {
+	// Simulate a multi-turn Codex conversation where the client echoes back
+	// a reasoning item with encrypted_content (as required by the Codex API
+	// when include: ["reasoning.encrypted_content"] is set). This MUST survive
+	// the parse→render round-trip without data loss.
+	body := []byte(`{
+		"model": "gpt-5-codex",
+		"stream": true,
+		"instructions": "be precise",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "what is 2+2?"}]},
+			{"type": "reasoning", "encrypted_content": "encrypted_abc123", "summary": [{"type": "summary_text", "text": "thinking about math"}]},
+			{"type": "function_call", "call_id": "call_1", "name": "calculator", "arguments": "{\"expr\":\"2+2\"}"},
+			{"type": "function_call_output", "call_id": "call_1", "output": "4"},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "The answer is 4."}]}
+		]
+	}`)
+
+	req, err := OpenAIResponsesCodec{}.ParseRequest(body)
+	require.NoError(t, err)
+
+	// Verify reasoning item was parsed with both text and encrypted content.
+	// The reasoning is attached to the function_call message (next assistant turn).
+	var hasReasoning bool
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			if p.Type == core.PartThinking {
+				hasReasoning = true
+				require.Equal(t, "thinking about math", p.Text)
+				require.Equal(t, "encrypted_abc123", p.Signature)
+			}
+		}
+	}
+	require.True(t, hasReasoning, "reasoning item with encrypted_content must be preserved")
+
+	// Now render back to Responses API format.
+	rendered, err := OpenAIResponsesCodec{}.RenderRequest(req)
+	require.NoError(t, err)
+
+	// Verify the rendered output contains the reasoning item with encrypted_content.
+	var parsed struct {
+		Input []struct {
+			Type             string `json:"type"`
+			EncryptedContent string `json:"encrypted_content"`
+			Summary          []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"summary"`
+			CallID string `json:"call_id"`
+		} `json:"input"`
+	}
+	require.NoError(t, json.Unmarshal(rendered, &parsed))
+
+	// Find the reasoning item in the rendered output.
+	var foundReasoning bool
+	var foundFunctionCall bool
+	var foundFunctionCallOutput bool
+	for _, item := range parsed.Input {
+		switch item.Type {
+		case "reasoning":
+			foundReasoning = true
+			require.Equal(t, "encrypted_abc123", item.EncryptedContent, "encrypted_content must survive round-trip")
+			require.Len(t, item.Summary, 1)
+			require.Equal(t, "thinking about math", item.Summary[0].Text)
+		case "function_call":
+			foundFunctionCall = true
+			require.Equal(t, "call_1", item.CallID)
+		case "function_call_output":
+			foundFunctionCallOutput = true
+			require.Equal(t, "call_1", item.CallID)
+		}
+	}
+	require.True(t, foundReasoning, "rendered output must include reasoning item")
+	require.True(t, foundFunctionCall, "rendered output must include function_call")
+	require.True(t, foundFunctionCallOutput, "rendered output must include function_call_output")
+}
+
+func TestResponses_EncryptedContentOnly(t *testing.T) {
+	// Codex may send reasoning items with ONLY encrypted_content and no summary.
+	// These must still be preserved.
+	body := []byte(`{
+		"model": "gpt-5-codex",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+			{"type": "reasoning", "encrypted_content": "enc_xyz"},
+			{"type": "function_call", "call_id": "call_2", "name": "search", "arguments": "{\"q\":\"test\"}"},
+			{"type": "function_call_output", "call_id": "call_2", "output": "results"}
+		]
+	}`)
+
+	req, err := OpenAIResponsesCodec{}.ParseRequest(body)
+	require.NoError(t, err)
+
+	rendered, err := OpenAIResponsesCodec{}.RenderRequest(req)
+	require.NoError(t, err)
+
+	var parsed struct {
+		Input []struct {
+			Type             string `json:"type"`
+			EncryptedContent string `json:"encrypted_content"`
+		} `json:"input"`
+	}
+	require.NoError(t, json.Unmarshal(rendered, &parsed))
+
+	var found bool
+	for _, item := range parsed.Input {
+		if item.Type == "reasoning" {
+			found = true
+			require.Equal(t, "enc_xyz", item.EncryptedContent)
+		}
+	}
+	require.True(t, found, "reasoning item with only encrypted_content must be preserved")
+}
+
 func TestResponses_RenderRequest_Shape(t *testing.T) {
 	req := &core.ChatRequest{
 		Model:  "gpt-5-codex",
@@ -241,8 +355,8 @@ func TestResponses_RenderRequest_WithTools(t *testing.T) {
 
 	var parsed struct {
 		Tools []struct {
-			Type       string `json:"type"`
-			Name       string `json:"name"`
+			Type       string          `json:"type"`
+			Name       string          `json:"name"`
 			Parameters json.RawMessage `json:"parameters"`
 		} `json:"tools"`
 	}
