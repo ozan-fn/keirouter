@@ -1,27 +1,27 @@
-# Auto-updated by release.yml on tag v0.1.13. Do not edit manually.
+# Auto-updated by release.yml on tag v0.1.14. Do not edit manually.
 class Keirouter < Formula
   desc "AI API router — unified gateway for 20+ LLM providers with fallback, caching, and dashboard"
   homepage "https://github.com/mydisha/keirouter"
-  version "0.1.13"
+  version "0.1.14"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.13/keirouter_v0.1.13_darwin_arm64.tar.gz"
-      sha256 "67b6c4f65c6db27a9ee0034f8663b763c2f4c1d50053b52a4b56e0edeb8600db"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.14/keirouter_v0.1.14_darwin_arm64.tar.gz"
+      sha256 "8d40593b0f1ca4bd6d1e0de34dbec00941a06ff4a8f09ebaf904e93f701320ee"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.13/keirouter_v0.1.13_darwin_amd64.tar.gz"
-      sha256 "256311a0f9618dd7ea62626b94a76bc38230cdba48964f0b8ec85ba3de09dc1d"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.14/keirouter_v0.1.14_darwin_amd64.tar.gz"
+      sha256 "009e78055781257ab72654518be0d27c7c626ed4efc0a9de5b048ace411c983e"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.13/keirouter_v0.1.13_linux_arm64.tar.gz"
-      sha256 "29891b02fc95b9f10b155d2012685d9e63c2f20bd521574b08dacd3a3fbcdc35"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.14/keirouter_v0.1.14_linux_arm64.tar.gz"
+      sha256 "e05e483b2fda36504382ab5437e1e58d56d94354e762a1548cdcb9fbc74e1404"
     else
-      url "https://github.com/mydisha/keirouter/releases/download/v0.1.13/keirouter_v0.1.13_linux_amd64.tar.gz"
-      sha256 "d15638d924abafebfbfe41fe36d343ddf8c8c37d82b99da8c69022ffde7213db"
+      url "https://github.com/mydisha/keirouter/releases/download/v0.1.14/keirouter_v0.1.14_linux_amd64.tar.gz"
+      sha256 "0b629dad77ee00407580eb609f21022165eaf6765790d831a1f2b396c7478ee9"
     end
   end
 
