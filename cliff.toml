@@ -19,7 +19,7 @@ body = """
     {% for commit in commits %}
         - {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
             {{ commit.message | upper_first | trim }}\
-            {% if commit.links %} ([{{ commit.short_id }}]({{ commit.links[0] }})){% else %} ({{ commit.short_id }}){% endif %}\
+            ({{ commit.id | truncate(length=7, end="") }})\
     {% endfor %}\n
 {% endfor %}\n
 """
