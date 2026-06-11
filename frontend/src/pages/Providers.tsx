@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Boxes, Search, X } from "lucide-react";
+import { Boxes, Search, X, AlertTriangle } from "lucide-react";
 import { api, type Provider, type Account } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { Card, CardHeader, Badge, Spinner, EmptyState, StatusDot } from "../components/ui";
@@ -253,7 +253,10 @@ function ProviderCard({ provider: p, accountCount }: { provider: Provider; accou
             Connected
           </span>
         ) : p.deprecated ? (
-          <Badge tone="danger">risk</Badge>
+          <Badge tone="warning" title={p.notice || "Account may be restricted"}>
+            <AlertTriangle className="mr-1 h-3 w-3" />
+            unofficial
+          </Badge>
         ) : !p.drivable ? (
           <Badge tone="neutral">soon</Badge>
         ) : null}

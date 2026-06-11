@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
@@ -336,10 +336,22 @@ export function ProviderDetailPage() {
                 {k}
               </Badge>
             ))}
-            {provider.deprecated && <Badge tone="danger">risk</Badge>}
+            {provider.deprecated && (
+              <Badge tone="warning" title={provider.notice || "Account may be restricted"}>
+                <AlertTriangle className="mr-1 h-3 w-3" />
+                unofficial
+              </Badge>
+            )}
           </div>
         </div>
       </header>
+
+      {provider.deprecated && provider.notice && (
+        <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-4 py-3 text-xs leading-relaxed text-[color:var(--color-warning)]">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{provider.notice}</span>
+        </div>
+      )}
 
       <div className="space-y-6">
         <Card>
