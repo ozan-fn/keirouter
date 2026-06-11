@@ -135,6 +135,27 @@ func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 // Close releases the connection pool.
 func (db *DB) Close() error { return db.sql.Close() }
 
+// epochExpr returns a dialect-specific SQL expression that converts a TEXT
+// RFC3339 timestamp (column or placeholder) to unix-epoch seconds. SQLite has
+// strftime; Postgres needs an explicit cast to timestamptz before EXTRACT.
+func (db *DB) epochExpr(operand string) string {
+	if db.dialect == DialectPostgres {
+		return "EXTRACT(EPOCH FROM " + operand + "::timestamptz)"
+	}
+	return "strftime('%s', " + operand + ")"
+}
+
+// dateExpr returns a dialect-specific SQL expression that yields the YYYY-MM-DD
+// calendar date (as text) of a TEXT RFC3339 timestamp. SQLite's DATE() accepts
+// text directly and returns text; Postgres needs a cast through timestamptz
+// and an explicit format so the scanned value is always a string.
+func (db *DB) dateExpr(operand string) string {
+	if db.dialect == DialectPostgres {
+		return "TO_CHAR(" + operand + "::timestamptz, 'YYYY-MM-DD')"
+	}
+	return "DATE(" + operand + ")"
+}
+
 // rebind converts '?' placeholders to the engine's native form. SQLite accepts
 // '?' directly; Postgres needs $1, $2, ... positional placeholders.
 func (db *DB) rebind(query string) string {

@@ -15,9 +15,12 @@ CREATE TABLE plans (
     updated_at    TEXT NOT NULL
 );
 
--- Seed a "Default" plan for existing data.
+-- Seed a "Default" plan for existing data. Use a fixed RFC3339 literal so the
+-- statement is portable across SQLite and Postgres (datetime('now') is
+-- SQLite-only). The rest of the app writes RFC3339 strings to these TEXT
+-- columns via formatTime, so this matches the on-disk shape.
 INSERT INTO plans (id, tenant_id, name, description, limit_micros, limit_tokens, period, alert_pct, hard_cutoff, allowed_models, created_at, updated_at)
-VALUES ('default', 'default', 'Default', 'Default plan for existing keys', 0, 0, 'monthly', 80, 1, '', datetime('now'), datetime('now'));
+VALUES ('default', 'default', 'Default', 'Default plan for existing keys', 0, 0, 'monthly', 80, 1, '', '2026-06-11T00:00:00Z', '2026-06-11T00:00:00Z');
 
 -- Add plan_id column to api_keys.
 ALTER TABLE api_keys ADD COLUMN plan_id TEXT NOT NULL DEFAULT '';

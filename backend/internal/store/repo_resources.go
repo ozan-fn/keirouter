@@ -44,9 +44,10 @@ func (r *ResourceRepo) InsertResourceSample(ctx context.Context, s ResourceSampl
 // history chart to show long-term trends without loading every raw sample.
 func (r *ResourceRepo) ResourceBuckets(ctx context.Context, since time.Time, interval time.Duration) ([]ResourceBucket, error) {
 	bucketSecs := int64(interval.Seconds())
-	q := r.db.rebind(`
+	epochCreated := r.db.epochExpr("created_at")
+	q := r.db.rebind(fmt.Sprintf(`
 		SELECT
-			(CAST(strftime('%s', created_at) AS INTEGER) / ? * ?) AS bucket,
+			(CAST(%s AS BIGINT) / ? * ?) AS bucket,
 			AVG(proc_cpu_percent), MAX(proc_cpu_percent),
 			AVG(host_cpu_percent), MAX(host_cpu_percent),
 			AVG(CAST(proc_rss_bytes AS REAL)) / 1048576.0, MAX(proc_rss_bytes),
@@ -60,7 +61,7 @@ func (r *ResourceRepo) ResourceBuckets(ctx context.Context, since time.Time, int
 		FROM resource_samples
 		WHERE created_at >= ?
 		GROUP BY bucket
-		ORDER BY bucket ASC`)
+		ORDER BY bucket ASC`, epochCreated))
 
 	rows, err := r.db.sql.QueryContext(ctx, q, bucketSecs, bucketSecs, formatTime(since))
 	if err != nil {

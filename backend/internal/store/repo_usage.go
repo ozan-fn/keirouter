@@ -477,14 +477,16 @@ func (r *UsageRepo) Timeline(ctx context.Context, tenantID string, since time.Ti
 		slotSecs = 60
 	}
 
-	q := r.db.rebind(`
-		SELECT 
-			CAST((strftime('%s', created_at) - strftime('%s', ?)) / ? AS INTEGER) as bucket,
+	epochCreated := r.db.epochExpr("created_at")
+	epochSince := r.db.epochExpr("?")
+	q := r.db.rebind(fmt.Sprintf(`
+		SELECT
+			CAST((%s - %s) / ? AS INTEGER) as bucket,
 			COUNT(*) as count
 		FROM usage_records
 		WHERE tenant_id = ? AND created_at >= ? AND created_at <= ?
 		GROUP BY bucket
-		ORDER BY bucket ASC`)
+		ORDER BY bucket ASC`, epochCreated, epochSince))
 
 	rows, err := r.db.sql.QueryContext(ctx, q, formatTime(since), slotSecs, tenantID, formatTime(since), formatTime(to))
 	if err != nil {
@@ -517,9 +519,10 @@ type DailyPoint struct {
 // DailyByKey returns per-day usage breakdown for a specific API key since the
 // given time. Used by the customer portal to show usage trends.
 func (r *UsageRepo) DailyByKey(ctx context.Context, keyID string, since time.Time) ([]DailyPoint, error) {
-	q := r.db.rebind(`
+	dayExpr := r.db.dateExpr("created_at")
+	q := r.db.rebind(fmt.Sprintf(`
 		SELECT
-			DATE(created_at) as day,
+			%s as day,
 			COUNT(*),
 			COALESCE(SUM(prompt_tokens), 0),
 			COALESCE(SUM(completion_tokens), 0),
@@ -527,7 +530,7 @@ func (r *UsageRepo) DailyByKey(ctx context.Context, keyID string, since time.Tim
 		FROM usage_records
 		WHERE api_key_id = ? AND created_at >= ?
 		GROUP BY day
-		ORDER BY day ASC`)
+		ORDER BY day ASC`, dayExpr))
 	rows, err := r.db.sql.QueryContext(ctx, q, keyID, formatTime(since))
 	if err != nil {
 		return nil, fmt.Errorf("store: daily usage by key: %w", err)
