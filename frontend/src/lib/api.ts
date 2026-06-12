@@ -515,6 +515,122 @@ export interface SystemHistory {
   samples: SystemSample[];
 }
 
+// ============================================================================
+// Guardrails
+// ============================================================================
+
+export type GuardrailScope = "global" | "provider" | "model" | "chain" | "apikey";
+export type GuardrailAction = "allow" | "log_only" | "warn" | "mask" | "block";
+export type GuardrailSeverity = "low" | "medium" | "high";
+export type PIIStrategy = "redact" | "replace" | "mask" | "hash" | "block" | "anonymize";
+
+export interface PIIConfig {
+  enabled: boolean;
+  types?: string[];
+  strategy?: PIIStrategy;
+  min_score?: number;
+  scan_output?: boolean;
+  engine?: string;
+}
+
+export interface InjectionConfig {
+  enabled: boolean;
+  severity_threshold?: GuardrailSeverity;
+  action?: GuardrailAction;
+}
+
+export interface TopicsConfig {
+  enabled: boolean;
+  mode?: "allow" | "block";
+  topics?: string[];
+  action?: GuardrailAction;
+}
+
+export interface ToxicityConfig {
+  enabled: boolean;
+  categories?: string[];
+  threshold?: number;
+  action?: GuardrailAction;
+}
+
+export interface BiasConfig {
+  enabled: boolean;
+  categories?: string[];
+  threshold?: number;
+  action?: GuardrailAction;
+}
+
+export interface GuardrailPolicyConfig {
+  enabled?: boolean;
+  pii?: PIIConfig;
+  injection?: InjectionConfig;
+  topics?: TopicsConfig;
+  toxicity?: ToxicityConfig;
+  bias?: BiasConfig;
+}
+
+export interface GuardrailPolicy {
+  id: string;
+  name: string;
+  scope: GuardrailScope;
+  scope_id: string;
+  enabled: boolean;
+  config: GuardrailPolicyConfig;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GuardrailFinding {
+  entity: string;
+  score: number;
+  start: number;
+  end: number;
+  original?: string;
+  redacted?: string;
+}
+
+export interface GuardrailDecision {
+  detector: string;
+  action: GuardrailAction;
+  severity?: GuardrailSeverity;
+  reason?: string;
+  findings?: GuardrailFinding[];
+  direction?: "inbound" | "outbound";
+}
+
+export interface GuardrailTestResult {
+  action: GuardrailAction;
+  reason: string;
+  decisions: GuardrailDecision[];
+}
+
+export interface GuardrailLogEntry {
+  id: string;
+  request_id: string;
+  api_key_id: string;
+  provider: string;
+  model: string;
+  chain_id: string;
+  detector: string;
+  direction: "inbound" | "outbound";
+  action: GuardrailAction;
+  severity: GuardrailSeverity | "";
+  reason: string;
+  findings: GuardrailFinding[] | null;
+  created_at: string;
+}
+
+export interface EffectiveGuardrail {
+  scope: {
+    tenant_id?: string;
+    provider?: string;
+    model?: string;
+    chain_id?: string;
+    apikey_id?: string;
+  };
+  policy: GuardrailPolicyConfig;
+}
+
 export interface UpdateInfo {
   current: string;
   latest: string;
@@ -880,6 +996,66 @@ export const api = {
   // System monitoring.
   systemMonitor: () => request<SystemSnapshot>("GET", "/system"),
   systemHistory: () => request<SystemHistory>("GET", "/system/history"),
+
+  // Guardrails (content-safety policies).
+  listGuardrails: (scope?: GuardrailScope) =>
+    request<{ guardrails: GuardrailPolicy[] }>(
+      "GET",
+      scope ? `/guardrails?scope=${encodeURIComponent(scope)}` : "/guardrails",
+    ),
+  getGuardrail: (id: string) =>
+    request<GuardrailPolicy>("GET", `/guardrails/${id}`),
+  createGuardrail: (input: {
+    name?: string;
+    scope: GuardrailScope;
+    scope_id?: string;
+    enabled?: boolean;
+    config?: GuardrailPolicyConfig;
+  }) => request<GuardrailPolicy>("POST", "/guardrails", input),
+  updateGuardrail: (
+    id: string,
+    patch: { name?: string; enabled?: boolean; config?: GuardrailPolicyConfig },
+  ) => request<GuardrailPolicy>("PATCH", `/guardrails/${id}`, patch),
+  deleteGuardrail: (id: string) =>
+    request<void>("DELETE", `/guardrails/${id}`),
+  effectiveGuardrail: (params: {
+    provider?: string;
+    model?: string;
+    chain?: string;
+    apikey?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params.provider) qs.set("provider", params.provider);
+    if (params.model) qs.set("model", params.model);
+    if (params.chain) qs.set("chain", params.chain);
+    if (params.apikey) qs.set("apikey", params.apikey);
+    const suffix = qs.toString();
+    return request<EffectiveGuardrail>(
+      "GET",
+      `/guardrails/effective${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  listGuardrailEntities: () =>
+    request<{ entities: string[] }>("GET", "/guardrails/entities"),
+  listGuardrailLogs: (filter?: {
+    api_key_id?: string;
+    detector?: string;
+    action?: string;
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (filter?.api_key_id) qs.set("api_key_id", filter.api_key_id);
+    if (filter?.detector) qs.set("detector", filter.detector);
+    if (filter?.action) qs.set("action", filter.action);
+    if (filter?.limit) qs.set("limit", String(filter.limit));
+    const suffix = qs.toString();
+    return request<{ logs: GuardrailLogEntry[] }>(
+      "GET",
+      `/guardrails/logs${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  testGuardrail: (input: { text: string; config?: GuardrailPolicyConfig }) =>
+    request<GuardrailTestResult>("POST", "/guardrails/test", input),
 };
 
 // ---- SSE usage stream --------------------------------------------------------

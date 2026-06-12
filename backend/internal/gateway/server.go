@@ -24,6 +24,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/fastjson"
+	"github.com/mydisha/keirouter/backend/internal/guardrails"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/observ"
@@ -72,6 +73,9 @@ type Server struct {
 	version         string
 	updates         *update.Checker
 	insightsCache   *ttlCache
+	guardrails      *guardrails.Engine
+	guardrailRepo   *store.GuardrailRepo
+	guardrailLogs   *store.GuardrailLogRepo
 	router          chi.Router
 }
 
@@ -108,6 +112,9 @@ type Deps struct {
 	UsageHub        *usagehub.Hub
 	TimeoutNotifier *TimeoutNotifier
 	Refresher       dispatch.TokenRefresher
+	Guardrails      *guardrails.Engine
+	GuardrailRepo   *store.GuardrailRepo
+	GuardrailLogs   *store.GuardrailLogRepo
 }
 
 // New builds a gateway Server and wires its routes.
@@ -162,6 +169,9 @@ func New(d Deps) *Server {
 		version:         d.Version,
 		updates:         d.Updates,
 		insightsCache:   newTTLCache(insightsCacheTTL),
+		guardrails:      d.Guardrails,
+		guardrailRepo:   d.GuardrailRepo,
+		guardrailLogs:   d.GuardrailLogs,
 	}
 	s.router = s.routes()
 	startSystemCollector(d.Resources)

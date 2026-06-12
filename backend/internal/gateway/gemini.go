@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
@@ -63,6 +64,7 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 		APIKeyID:      key.ID,
 		TenantID:      tenantID,
 		ProjectID:     key.ProjectID,
+		RequestID:     chimiddleware.GetReqID(r.Context()),
 	}
 
 	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, tenantID, req.Model)
@@ -75,6 +77,10 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to resolve model")
 		return
 	}
+	if len(resolved.Targets) > 0 {
+		req.Metadata.Provider = resolved.Targets[0].Provider
+	}
+	req.Metadata.ChainID = resolved.PlanOpts.ChainID
 	affinityKey := requestAffinityKey(r, req)
 
 	opts := pipeline.Options{

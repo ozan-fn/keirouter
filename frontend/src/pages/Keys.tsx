@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, Copy, Check, ToggleLeft, ToggleRight, ArrowLeft, ArrowRight, Trash2, Wallet, Wrench, DollarSign, Gauge } from "lucide-react";
 import { api, type CreatedKey, type Plan } from "../lib/api";
@@ -31,6 +32,7 @@ const budgetPeriods = [
 export function KeysPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const navigate = useNavigate();
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys() });
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -322,19 +324,13 @@ export function KeysPage() {
                     </p>
                   )}
                   <div className="flex items-center gap-4 mt-0.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard.writeText(k.display);
-                        toast.success("Key copied", "The masked key identifier has been copied to your clipboard.");
-                      }}
-                      className="flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
-                      title="Copy key"
+                    <span
+                      className="font-mono text-xs text-[var(--text-muted)]"
+                      title="Masked key — the full key is only shown once, at creation time"
                     >
                       {k.display}
-                      <Copy className="h-3 w-3 opacity-50 transition-opacity hover:opacity-100" />
-                    </button>
-                    
+                    </span>
+
                     <button
                       type="button"
                       onClick={() => {
@@ -349,20 +345,28 @@ export function KeysPage() {
                     </button>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    onClick={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}
-                    disabled={toggleDisabled.isPending}
-                    className="px-2"
-                    title={k.disabled ? "Enable key" : "Disable key"}
-                  >
-                    {k.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4" />}
-                  </Button>
-                  <Button variant="danger" onClick={() => remove.mutate(k.id)}>
-                    Revoke
-                  </Button>
-                </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => navigate(`/keys/${k.id}`)}
+                  className="px-3"
+                  title="Configure key (models, guardrails)"
+                >
+                  Configure
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}
+                  disabled={toggleDisabled.isPending}
+                  className="px-2"
+                  title={k.disabled ? "Enable key" : "Disable key"}
+                >
+                  {k.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4" />}
+                </Button>
+                <Button variant="danger" onClick={() => remove.mutate(k.id)}>
+                  Revoke
+                </Button>
+              </div>
               </div>
             ))}
           </div>

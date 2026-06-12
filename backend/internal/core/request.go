@@ -95,6 +95,17 @@ type RequestMetadata struct {
 	// TenantID / ProjectID scope the request for multi-tenant deployments.
 	TenantID  string
 	ProjectID string
+	// RequestID is generated at the gateway edge and propagated through the
+	// pipeline so audit log rows can be correlated with usage records.
+	RequestID string
+	// Provider is the resolved upstream provider alias (openai, anthropic, ...).
+	// Populated by the gateway after dispatcher target resolution; used by the
+	// guardrails resolver for provider-scoped policy lookup.
+	Provider string
+	// ChainID is the routing chain id when the request was routed through one
+	// (empty for direct provider/model targeting). Used by the guardrails
+	// resolver for chain-scoped policy lookup.
+	ChainID string
 	// RequiredCapabilities the chosen model must satisfy (anti-downgrade guard).
 	RequiredCapabilities CapabilitySet
 }

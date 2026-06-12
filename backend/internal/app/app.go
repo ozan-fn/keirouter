@@ -21,6 +21,9 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/crypto"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/gateway"
+	"github.com/mydisha/keirouter/backend/internal/guardrails"
+	"github.com/mydisha/keirouter/backend/internal/guardrails/injection"
+	"github.com/mydisha/keirouter/backend/internal/guardrails/pii"
 	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/meter"
@@ -39,12 +42,13 @@ import (
 
 // App is the assembled application, ready to serve.
 type App struct {
-	cfg       config.Config
-	log       *slog.Logger
-	db        *store.DB
-	accounts  *store.AccountRepo
-	server    *http.Server
-	keepAlive *oauth.KeepAlive
+	cfg            config.Config
+	log            *slog.Logger
+	db             *store.DB
+	accounts       *store.AccountRepo
+	server         *http.Server
+	keepAlive      *oauth.KeepAlive
+	guardrailAudit *guardrails.AuditWriter
 }
 
 // Build constructs the application from configuration. It opens the database,
@@ -169,6 +173,24 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		cfg.Server.RequestTimeout,
 	)
 
+	// Guardrails: content-safety policies layered global → provider → model →
+	// chain → apikey. Resolver caches lookups for 30s; audit writer drains a
+	// buffered channel to the guardrail_logs table.
+	guardrailResolver := guardrails.NewResolver(db.Guardrails(), 30*time.Second)
+	guardrailAudit := guardrails.NewAuditWriter(db.GuardrailLogs(), log, guardrails.AuditWriterConfig{})
+	guardrailEngine := guardrails.NewEngine(guardrails.EngineConfig{
+		Resolver: guardrailResolver,
+		Audit:    guardrailAudit,
+		Detectors: []guardrails.Detector{
+			pii.New(),
+			injection.New(),
+			guardrails.NewTopicsStub(),
+			guardrails.NewToxicityStub(),
+			guardrails.NewBiasStub(),
+		},
+		Logger: log,
+	})
+
 	pipe := pipeline.New(pipeline.Deps{
 		Dispatcher:         disp,
 		Meter:              mtr,
@@ -177,6 +199,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		Metrics:            metrics,
 		Cache:              semanticCache,
 		Embedder:           embedder,
+		Guardrails:         guardrailEngine,
 		Logger:             log,
 		RequestTimeout:     cfg.Server.RequestTimeout,
 		StreamStallTimeout: cfg.Server.StreamStallTimeout,
@@ -227,6 +250,9 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		UsageHub:       uh,
 		TimeoutNotifier: timeoutNotifier,
 		Refresher:       tokenRefresher,
+		Guardrails:      guardrailEngine,
+		GuardrailRepo:   db.Guardrails(),
+		GuardrailLogs:   db.GuardrailLogs(),
 	})
 
 	srv := &http.Server{
@@ -237,7 +263,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		// timeout is enforced per-stream inside the connectors instead.
 	}
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit}, nil
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled, then shuts down
@@ -278,6 +304,10 @@ func (a *App) Run(ctx context.Context) error {
 		defer cancel()
 		if err := a.server.Shutdown(shutdownCtx); err != nil {
 			return err
+		}
+		// Drain pending guardrail audit rows before closing the DB.
+		if a.guardrailAudit != nil {
+			a.guardrailAudit.Stop(5 * time.Second)
 		}
 		return a.db.Close()
 	case err := <-errCh:
