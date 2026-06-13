@@ -25,6 +25,7 @@ const (
 	DialectAntigravity Dialect = "antigravity"  // Antigravity CloudCode
 	DialectCommandCode Dialect = "command_code" // Command Code generate API
 	DialectQoder       Dialect = "qoder"        // Qoder COSY-signed inference
+	DialectMimoFree    Dialect = "mimo_free"    // Xiaomi MiMo free tier (bootstrap JWT)
 	DialectWebCookie   Dialect = "web_cookie"   // browser-session cookie providers
 )
 

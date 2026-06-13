@@ -33,6 +33,9 @@ const POPULARITY: Record<string, number> = {
   cerebras: 26,
   sambanova: 27,
   nvidia: 28,
+  "xiaomi-mimo": 29,
+  "mimo-free": 30,
+  "xiaomi-tokenplan": 31,
   // Tier 4 — coding tools / wrappers
   cursor: 30,
   codex: 31,
@@ -262,6 +265,8 @@ function ProviderCard({ provider: p, accountCount }: { provider: Provider; accou
           </Badge>
         ) : !p.drivable ? (
           <Badge tone="neutral">soon</Badge>
+        ) : p.auth_kind === "none" ? (
+          <Badge tone="accent">free</Badge>
         ) : null}
       </div>
 

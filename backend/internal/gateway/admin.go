@@ -200,11 +200,22 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown provider: "+providerID)
 		return
 	}
+	kindFilter := core.ServiceKind(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind"))))
+	if kindFilter != "" && !core.ValidServiceKind(kindFilter) {
+		writeError(w, http.StatusBadRequest, "unknown model kind: "+string(kindFilter))
+		return
+	}
 
 	type modelInfo struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 		Kind string `json:"kind"`
+	}
+	modelKind := func(kind core.ServiceKind) core.ServiceKind {
+		if kind == "" {
+			return core.ServiceLLM
+		}
+		return kind
 	}
 
 	// Static catalog models.
@@ -212,7 +223,11 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 	var out []modelInfo
 	for _, m := range static {
-		out = append(out, modelInfo{ID: m.ID, Name: m.Name, Kind: string(m.Kind)})
+		kind := modelKind(m.Kind)
+		if kindFilter != "" && kind != kindFilter {
+			continue
+		}
+		out = append(out, modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind)})
 		seen[m.ID] = true
 	}
 
@@ -235,10 +250,14 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				for _, lm := range models {
+					kind := modelKind(lm.Kind)
+					if kindFilter != "" && kind != kindFilter {
+						continue
+					}
 					if seen[lm.ID] {
 						continue
 					}
-					out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(lm.Kind)})
+					out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind)})
 					seen[lm.ID] = true
 				}
 				break // only use first valid account

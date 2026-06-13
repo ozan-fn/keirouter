@@ -61,13 +61,15 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 	since := sinceForPeriod(period, tz)
 	ctx := r.Context()
 
-	// Run the four independent queries concurrently to reduce latency
+	// Run all independent queries concurrently to reduce latency
 	// from sum(sequential) to max(parallel).
 	var (
-		sum       store.Summary
-		breakdown []store.ProviderUsage
-		recent    []store.RecentRecord
-		timeline  []store.TimeBucket
+		sum           store.Summary
+		breakdown     []store.ProviderUsage
+		recent        []store.RecentRecord
+		timeline      []store.TimeBucket
+		ruleSavings   []store.RuleSavings
+		clientSavings []store.ClientSavings
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -89,6 +91,14 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 		var err error
 		timeline, err = s.usage.Timeline(gctx, adminTenant, since, time.Now(), 24)
 		return err
+	})
+	g.Go(func() error {
+		ruleSavings, _ = s.usage.SavingsByRule(gctx, adminTenant, since)
+		return nil
+	})
+	g.Go(func() error {
+		clientSavings, _ = s.usage.SavingsByClient(gctx, adminTenant, since)
+		return nil
 	})
 	if err := g.Wait(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -185,7 +195,6 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Token savings analytics from RTK slimmer and Caveman/Terse.
-	ruleSavings, _ := s.usage.SavingsByRule(ctx, adminTenant, since)
 	rules := make([]map[string]any, 0, len(ruleSavings))
 	for _, rs := range ruleSavings {
 		rules = append(rules, map[string]any{
@@ -210,7 +219,6 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 	// Per-client savings attribution. Generic across any client (claude-code,
 	// codex, cline, ...) — never locked to a specific tool. Clients with no
 	// detected identity are grouped under "unknown".
-	clientSavings, _ := s.usage.SavingsByClient(ctx, adminTenant, since)
 	byClient := make([]map[string]any, 0, len(clientSavings))
 	for _, cs := range clientSavings {
 		// Skip clients that produced no optimization at all, so the breakdown

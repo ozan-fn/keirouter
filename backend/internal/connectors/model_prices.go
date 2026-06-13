@@ -335,5 +335,7 @@ func mimoModelPrices() []ModelPrice {
 			{Provider: provider, Model: "mimo-v2-flash", InputPerM: 0.1, OutputPerM: 0.3},
 		}...)
 	}
+	// mimo-free: free tier, zero cost.
+	out = append(out, ModelPrice{Provider: "mimo-free", Model: "mimo-auto", InputPerM: 0, OutputPerM: 0})
 	return out
 }

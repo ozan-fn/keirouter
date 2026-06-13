@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/cache"
@@ -237,7 +238,56 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		// timeout is enforced per-stream inside the connectors instead.
 	}
 
+	// Auto-seed accounts for free, no-auth providers so they are immediately
+	// usable without a manual "connect" step in the dashboard.
+	seedFreeAccounts(ctx, db.Accounts(), log)
+
 	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive}, nil
+}
+
+// seedFreeAccounts auto-creates a default account for providers that are free
+// and require no credentials, so they are immediately usable without a manual
+// "connect" step in the dashboard. Only explicitly listed providers are seeded
+// to avoid creating phantom accounts for local-only providers (ollama-local,
+// vllm, sdwebui, etc.) that may not actually be running.
+func seedFreeAccounts(ctx context.Context, accounts *store.AccountRepo, log *slog.Logger) {
+	freeProviders := map[string]bool{
+		"mimo-free": true,
+	}
+	for _, spec := range connectors.Catalog() {
+		if !freeProviders[spec.ID] {
+			continue
+		}
+		existing, err := accounts.ListByProvider(ctx, store.DefaultTenantID, spec.ID)
+		if err != nil {
+			log.Warn("seed free accounts: list failed", "provider", spec.ID, "err", err)
+			continue
+		}
+		if len(existing) > 0 {
+			// Clear any lingering cooldowns from a previous session so the
+			// account is immediately usable after restart.
+			if err := accounts.ClearProviderCooldowns(ctx, store.DefaultTenantID, spec.ID); err != nil {
+				log.Warn("seed free accounts: clear cooldowns failed", "provider", spec.ID, "err", err)
+			}
+			continue
+		}
+		now := time.Now()
+		acc := store.Account{
+			ID:        uuid.NewString(),
+			TenantID:  store.DefaultTenantID,
+			Provider:  spec.ID,
+			Label:     spec.DisplayName + " (auto)",
+			AuthKind:  store.AuthNone,
+			Priority:  100,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		if err := accounts.Create(ctx, acc); err != nil {
+			log.Warn("seed free accounts: create failed", "provider", spec.ID, "err", err)
+			continue
+		}
+		log.Info("auto-seeded free provider account", "provider", spec.ID, "label", acc.Label)
+	}
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled, then shuts down

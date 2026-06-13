@@ -286,6 +286,13 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 		return
 	}
 
+	// Free providers (auth_kind: "none") have no credentials to protect and
+	// only one auto-seeded account, so cooldowns would lock out the only
+	// routing path. Skip cooldowns for these accounts.
+	if acc, aerr := d.accounts.Get(ctx, accountID); aerr == nil && acc.AuthKind == store.AuthNone {
+		return
+	}
+
 	var cooldown time.Duration
 	switch err.Kind {
 	case core.ErrRateLimit:

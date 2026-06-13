@@ -43,6 +43,7 @@ var rules = []rule{
 	{"mistral", []core.Capability{core.CapToolCalling}, false},
 	{"mimo-v2-omni", []core.Capability{core.CapToolCalling, core.CapVision, core.CapLongContext}, false},
 	{"mimo-v2.5", []core.Capability{core.CapToolCalling, core.CapVision, core.CapLongContext}, true},
+	{"mimo-auto", []core.Capability{core.CapToolCalling, core.CapReasoning, core.CapVision, core.CapLongContext}, true},
 	{"mimo", []core.Capability{core.CapToolCalling, core.CapLongContext}, false},
 	{"mixtral", []core.Capability{core.CapToolCalling}, false},
 	{"nemotron", []core.Capability{core.CapToolCalling}, false},

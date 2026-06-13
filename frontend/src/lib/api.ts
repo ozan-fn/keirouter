@@ -653,8 +653,11 @@ export const api = {
   completeOnboarding: () => request<{ ok: boolean }>("POST", "/auth/onboarding/complete"),
 
   providers: () => request<{ providers: Provider[] }>("GET", "/providers"),
-  providerModels: (id: string) =>
-    request<{ models: { id: string; name: string; kind: string }[] }>("GET", `/providers/${id}/models`),
+  providerModels: (id: string, kind?: string) =>
+    request<{ models: { id: string; name: string; kind: string }[] }>(
+      "GET",
+      `/providers/${id}/models${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
+    ),
   providerRouting: (id: string) =>
     request<ProviderRoutingSettings>("GET", `/providers/${id}/routing`),
   updateProviderRouting: (id: string, patch: Partial<ProviderRoutingSettings>) =>
