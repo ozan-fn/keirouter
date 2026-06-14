@@ -30,6 +30,8 @@ const ConsoleLogPage = lazy(() => named(import("./pages/ConsoleLog"), "ConsoleLo
 const SystemPage = lazy(() => named(import("./pages/System"), "SystemPage"));
 const OAuthCallbackPage = lazy(() => named(import("./pages/OAuthCallback"), "OAuthCallbackPage"));
 const KeyPortalPage = lazy(() => named(import("./pages/KeyPortal"), "KeyPortalPage"));
+const KeyDetailPage = lazy(() => named(import("./pages/KeyDetail"), "KeyDetailPage"));
+const GuardrailsPage = lazy(() => named(import("./pages/Guardrails"), "GuardrailsPage"));
 
 function PageFallback() {
   return (
@@ -71,6 +73,8 @@ export function App() {
                 <Route path="skills" element={<SkillsPage />} />
                 <Route path="console" element={<ConsoleLogPage />} />
                 <Route path="keys" element={<KeysPage />} />
+                <Route path="keys/:id" element={<KeyDetailPage />} />
+                <Route path="guardrails" element={<GuardrailsPage />} />
                 <Route path="plans" element={<PlansPage />} />
                 <Route path="budgets" element={<PlansPage />} />
                 <Route path="system" element={<SystemPage />} />

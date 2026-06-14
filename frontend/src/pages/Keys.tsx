@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, Copy, Check, ToggleLeft, ToggleRight, ArrowLeft, ArrowRight, Trash2, Wallet, Wrench, DollarSign, Gauge, ShieldCheck, Boxes, Link2, CircleCheck, CircleOff, Activity, Ban, ListFilter } from "lucide-react";
 import { api, type APIKey, type CreatedKey, type Plan } from "../lib/api";
@@ -146,6 +147,7 @@ function KeyRow({
   selected,
   onSelect,
   onToggle,
+  onConfigure,
   onRevoke,
   togglePending,
 }: {
@@ -153,6 +155,7 @@ function KeyRow({
   selected: boolean;
   onSelect: () => void;
   onToggle: () => void;
+  onConfigure: () => void;
   onRevoke: () => void;
   togglePending: boolean;
 }) {
@@ -218,6 +221,15 @@ function KeyRow({
 
       <div className="flex items-center gap-2 sm:justify-end">
         <Button
+          variant="secondary"
+          onClick={onConfigure}
+          className="px-3"
+          title="Configure key (models, guardrails)"
+        >
+          <Wrench className="h-4 w-4" />
+          Configure
+        </Button>
+        <Button
           variant="ghost"
           onClick={onToggle}
           disabled={togglePending}
@@ -239,6 +251,7 @@ function KeyRow({
 export function KeysPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const navigate = useNavigate();
   const keys = useQuery({ queryKey: ["keys"], queryFn: () => api.listKeys() });
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -526,6 +539,7 @@ export function KeysPage() {
                   selected={selectedIds.has(k.id)}
                   onSelect={() => toggleSelect(k.id)}
                   onToggle={() => toggleDisabled.mutate({ id: k.id, disabled: !k.disabled })}
+                  onConfigure={() => navigate(`/keys/${k.id}`)}
                   onRevoke={() => remove.mutate(k.id)}
                   togglePending={toggleDisabled.isPending}
                 />

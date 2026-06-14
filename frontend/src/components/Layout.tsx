@@ -22,6 +22,7 @@ import {
   X,
   Key,
   Activity,
+  Shield,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -66,6 +67,12 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
+    heading: "Safety",
+    items: [
+      { to: "/guardrails", label: "Guardrails", icon: Shield },
+    ],
+  },
+  {
     heading: "Cost & Analytics",
     items: [
       { to: "/usage", label: "Usage", icon: BarChart3 },
@@ -98,6 +105,7 @@ const TITLE_BY_PATH: Record<string, string> = {
   "/quota": "Quota Tracker",
   "/settings": "Settings",
   "/keys": "API Keys",
+  "/guardrails": "Guardrails",
   "/console": "Console Log",
   "/cli-tools": "CLI Tools",
   "/system": "System",
@@ -107,6 +115,7 @@ const TITLE_BY_PREFIX: [string, string][] = [
   ["/providers/", "Provider"],
   ["/cli-tools/", "CLI Tool"],
   ["/media/", "Media"],
+  ["/keys/", "API Key"],
 ];
 
 function titleForPath(pathname: string): string {

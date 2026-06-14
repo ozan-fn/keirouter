@@ -22,6 +22,9 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/crypto"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/gateway"
+	"github.com/mydisha/keirouter/backend/internal/guardrails"
+	"github.com/mydisha/keirouter/backend/internal/guardrails/injection"
+	"github.com/mydisha/keirouter/backend/internal/guardrails/pii"
 	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/identity"
 	"github.com/mydisha/keirouter/backend/internal/meter"
@@ -40,12 +43,13 @@ import (
 
 // App is the assembled application, ready to serve.
 type App struct {
-	cfg       config.Config
-	log       *slog.Logger
-	db        *store.DB
-	accounts  *store.AccountRepo
-	server    *http.Server
-	keepAlive *oauth.KeepAlive
+	cfg            config.Config
+	log            *slog.Logger
+	db             *store.DB
+	accounts       *store.AccountRepo
+	server         *http.Server
+	keepAlive      *oauth.KeepAlive
+	guardrailAudit *guardrails.AuditWriter
 }
 
 // Build constructs the application from configuration. It opens the database,
@@ -170,6 +174,24 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		cfg.Server.RequestTimeout,
 	)
 
+	// Guardrails: content-safety policies layered global → provider → model →
+	// chain → apikey. Resolver caches lookups for 30s; audit writer drains a
+	// buffered channel to the guardrail_logs table.
+	guardrailResolver := guardrails.NewResolver(db.Guardrails(), 30*time.Second)
+	guardrailAudit := guardrails.NewAuditWriter(db.GuardrailLogs(), log, guardrails.AuditWriterConfig{})
+	guardrailEngine := guardrails.NewEngine(guardrails.EngineConfig{
+		Resolver: guardrailResolver,
+		Audit:    guardrailAudit,
+		Detectors: []guardrails.Detector{
+			pii.New(),
+			injection.New(),
+			guardrails.NewTopicsStub(),
+			guardrails.NewToxicityStub(),
+			guardrails.NewBiasStub(),
+		},
+		Logger: log,
+	})
+
 	pipe := pipeline.New(pipeline.Deps{
 		Dispatcher:         disp,
 		Meter:              mtr,
@@ -178,6 +200,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		Metrics:            metrics,
 		Cache:              semanticCache,
 		Embedder:           embedder,
+		Guardrails:         guardrailEngine,
 		Logger:             log,
 		RequestTimeout:     cfg.Server.RequestTimeout,
 		StreamStallTimeout: cfg.Server.StreamStallTimeout,
@@ -200,34 +223,37 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	keepAlive := oauth.NewKeepAlive(tokenRefresher, db.Accounts(), store.DefaultTenantID, log)
 
 	gw := gateway.New(gateway.Deps{
-		Config:      cfg,
-		Logger:      log,
-		Version:     version,
-		Updates:     update.NewChecker(version, ""),
-		DB:          db,
-		Identity:    idSvc,
-		Auth:        authSvc,
-		Pipeline:    pipe,
-		Conns:       connRegistry,
-		Chains:      db.Chains(),
-		Aliases:     db.Aliases(),
-		Accounts:    db.Accounts(),
-		Pools:       db.ProxyPools(),
-		Budgets:     db.Budgets(),
-		BudgetEngine: bud,
-		Usage:       db.Usage(),
-		Resources:   db.Resources(),
-		Settings:    db.Settings(),
-		Vault:       v,
-		Codecs:      codecs,
-		Metrics:     metrics,
-		FrontendDir: frontendDir,
-		DataDir:     dataDir,
-		CfManager:   cfManager,
-		TsManager:   tsManager,
-		UsageHub:       uh,
+		Config:          cfg,
+		Logger:          log,
+		Version:         version,
+		Updates:         update.NewChecker(version, ""),
+		DB:              db,
+		Identity:        idSvc,
+		Auth:            authSvc,
+		Pipeline:        pipe,
+		Conns:           connRegistry,
+		Chains:          db.Chains(),
+		Aliases:         db.Aliases(),
+		Accounts:        db.Accounts(),
+		Pools:           db.ProxyPools(),
+		Budgets:         db.Budgets(),
+		BudgetEngine:    bud,
+		Usage:           db.Usage(),
+		Resources:       db.Resources(),
+		Settings:        db.Settings(),
+		Vault:           v,
+		Codecs:          codecs,
+		Metrics:         metrics,
+		FrontendDir:     frontendDir,
+		DataDir:         dataDir,
+		CfManager:       cfManager,
+		TsManager:       tsManager,
+		UsageHub:        uh,
 		TimeoutNotifier: timeoutNotifier,
 		Refresher:       tokenRefresher,
+		Guardrails:      guardrailEngine,
+		GuardrailRepo:   db.Guardrails(),
+		GuardrailLogs:   db.GuardrailLogs(),
 	})
 
 	srv := &http.Server{
@@ -242,7 +268,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit}, nil
 }
 
 // seedFreeAccounts auto-creates a default account for providers that are free
@@ -328,6 +354,10 @@ func (a *App) Run(ctx context.Context) error {
 		defer cancel()
 		if err := a.server.Shutdown(shutdownCtx); err != nil {
 			return err
+		}
+		// Drain pending guardrail audit rows before closing the DB.
+		if a.guardrailAudit != nil {
+			a.guardrailAudit.Stop(5 * time.Second)
 		}
 		return a.db.Close()
 	case err := <-errCh:

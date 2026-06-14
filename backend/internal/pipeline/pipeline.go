@@ -24,6 +24,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/caveman"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
+	"github.com/mydisha/keirouter/backend/internal/guardrails"
 	"github.com/mydisha/keirouter/backend/internal/meter"
 	"github.com/mydisha/keirouter/backend/internal/normalizer"
 	"github.com/mydisha/keirouter/backend/internal/observ"
@@ -52,6 +53,7 @@ type Pipeline struct {
 	metrics    *observ.Metrics
 	cache      *cache.Cache
 	embedder   cache.Embedder
+	guardrails *guardrails.Engine
 	log        *slog.Logger
 
 	requestTimeout     time.Duration // upper bound on non-streaming upstream calls
@@ -68,6 +70,7 @@ type Deps struct {
 	Metrics    *observ.Metrics
 	Cache      *cache.Cache
 	Embedder   cache.Embedder
+	Guardrails *guardrails.Engine
 	Logger     *slog.Logger
 
 	// RequestTimeout bounds non-streaming upstream calls. Zero means no limit.
@@ -94,6 +97,7 @@ func New(d Deps) *Pipeline {
 		metrics:    d.Metrics,
 		cache:      d.Cache,
 		embedder:   d.Embedder,
+		guardrails: d.Guardrails,
 		log:        log,
 
 		requestTimeout:     d.RequestTimeout,
@@ -156,6 +160,17 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	if err := p.preflight(ctx, req, opts); err != nil {
 		p.log.Debug("preflight rejected", "err", err)
 		return nil, err
+	}
+
+	// Guardrails inbound: PII masking, prompt-injection block, etc. Runs
+	// before any token-saving transform so the masked text is what the
+	// slimmer sees. A Block decision returns ErrPolicyBlocked, which is
+	// non-fallbackable — different providers won't change a safety decision.
+	if gres := p.guardrails.Inbound(ctx, req); gres.Action == guardrails.ActionBlock {
+		p.log.Debug("guardrails blocked inbound", "reason", gres.Reason)
+		scope := budget.Scope{TenantID: req.Metadata.TenantID, ProjectID: req.Metadata.ProjectID, APIKeyID: req.Metadata.APIKeyID}
+		p.budgetRelease(scope)
+		return nil, &core.ProviderError{Kind: core.ErrPolicyBlocked, Message: gres.Reason}
 	}
 
 	// Semantic cache lookup before any token-saving transform mutates the
@@ -244,6 +259,17 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 
 		// Reset backoff and clear model cooldown on success.
 		p.dispatcher.NoteSuccess(ctx, attempt.Account.ID, attempt.Target.Model)
+
+		// Guardrails outbound: PII scan / response masking. Runs after the
+		// upstream succeeds but before we record usage so a Block decision
+		// still costs the user but never returns the leaked content.
+		if gres := p.guardrails.Outbound(ctx, req, resp); gres.Action == guardrails.ActionBlock {
+			p.log.Debug("guardrails blocked outbound", "reason", gres.Reason)
+			cost := p.record(ctx, req.Metadata, attempt, resp.Usage, false, latency, save)
+			p.budgetConfirm(scope, cost)
+			return nil, &core.ProviderError{Kind: core.ErrPolicyBlocked, Message: gres.Reason}
+		}
+
 		cost := p.record(ctx, req.Metadata, attempt, resp.Usage, false, latency, save)
 		p.cacheStore(ctx, vec, resp)
 		// Confirm budget reservation — usage is now recorded in DB.
@@ -309,6 +335,16 @@ func (p *Pipeline) Stream(ctx context.Context, req *core.ChatRequest, opts Optio
 		p.log.Debug("stream preflight rejected", "err", err)
 		return nil, err
 	}
+
+	// Guardrails inbound on streaming requests. Same semantics as Chat().
+	// Outbound scanning of streamed chunks is deferred — per-chunk scanning
+	// could fragment matches across boundaries; full-stream buffering would
+	// undermine the latency advantage of streaming.
+	if gres := p.guardrails.Inbound(ctx, req); gres.Action == guardrails.ActionBlock {
+		p.log.Debug("guardrails blocked inbound stream", "reason", gres.Reason)
+		return nil, &core.ProviderError{Kind: core.ErrPolicyBlocked, Message: gres.Reason}
+	}
+
 	slimStats := p.applyTokenSaving(req, opts)
 	save := buildSaveState(slimStats, opts)
 

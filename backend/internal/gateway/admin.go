@@ -123,6 +123,9 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/system", s.adminSystem)
 	r.Get("/system/history", s.adminSystemHistory)
 	r.Get("/system/resources", s.adminSystemResourceHistory)
+
+	// Guardrails (content safety policies + audit log).
+	s.mountGuardrails(r)
 }
 
 const adminTenant = store.DefaultTenantID

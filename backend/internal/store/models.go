@@ -258,6 +258,50 @@ type ResourceSample struct {
 	InflightRequests int64
 }
 
+// GuardrailScope identifies which dimension of a request a policy targets.
+// Policies stack at request time from least to most specific.
+type GuardrailScope string
+
+const (
+	GuardrailScopeGlobal   GuardrailScope = "global"
+	GuardrailScopeProvider GuardrailScope = "provider"
+	GuardrailScopeModel    GuardrailScope = "model"
+	GuardrailScopeChain    GuardrailScope = "chain"
+	GuardrailScopeAPIKey   GuardrailScope = "apikey"
+)
+
+// GuardrailPolicy is a stored safety policy. Config is an opaque JSON blob
+// owned by the guardrails package; the store layer never inspects it.
+type GuardrailPolicy struct {
+	ID        string
+	TenantID  string
+	Scope     GuardrailScope
+	ScopeID   string // empty for global
+	Name      string
+	Enabled   bool
+	Config    string // JSON
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// GuardrailLog is one detector decision recorded for audit.
+type GuardrailLog struct {
+	ID        string
+	TenantID  string
+	RequestID string
+	APIKeyID  string
+	Provider  string
+	Model     string
+	ChainID   string
+	Detector  string // pii | injection | toxicity | topics | bias
+	Direction string // inbound | outbound
+	Action    string // allow | warn | mask | block | log_only
+	Severity  string // low | medium | high (empty when n/a)
+	Reason    string
+	Findings  string // JSON array
+	CreatedAt time.Time
+}
+
 // ResourceBucket is one aggregated time slice for the resources timeline.
 // Each metric carries an average and a max so spikes survive bucketing.
 // Network bytes are reported as a within-bucket delta (MAX-MIN of cumulative).

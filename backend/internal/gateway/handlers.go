@@ -14,6 +14,7 @@ import (
 	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
 	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
@@ -164,6 +165,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		APIKeyID:      key.ID,
 		TenantID:      tenantID,
 		ProjectID:     key.ProjectID,
+		RequestID:     chimiddleware.GetReqID(r.Context()),
 	}
 
 	s.consoleLog.Logf("DEBUG", "  model=%s · stream=%v · messages=%d · tenant=%s · key=%s (%s)",
@@ -181,6 +183,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		writeError(w, http.StatusInternalServerError, "failed to resolve model")
 		return
 	}
+
+	// Surface the first resolved provider into the routing metadata so the
+	// guardrails resolver can apply provider-scoped policies. The first
+	// target is the primary; fallback targets may differ but policy lookups
+	// happen once per request, before dispatch.
+	if len(resolved.Targets) > 0 {
+		req.Metadata.Provider = resolved.Targets[0].Provider
+	}
+	req.Metadata.ChainID = resolved.PlanOpts.ChainID
 
 	// Enforce per-key model access restrictions. Filter resolved targets to
 	// only include models the key is allowed to access.

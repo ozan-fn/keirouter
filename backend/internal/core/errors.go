@@ -28,6 +28,10 @@ const (
 	ErrCapability ErrorKind = "capability"
 	// ErrBudgetBlocked: KeiRouter budget guard rejected before dispatch.
 	ErrBudgetBlocked ErrorKind = "budget_blocked"
+	// ErrPolicyBlocked: a guardrail policy rejected the request before dispatch.
+	// Not fallbackable — falling back to another provider would not change the
+	// outcome of a content-safety decision.
+	ErrPolicyBlocked ErrorKind = "policy_blocked"
 	// ErrInternal: router-internal fault.
 	ErrInternal ErrorKind = "internal"
 )
@@ -75,7 +79,7 @@ func (e *ProviderError) Retryable() bool {
 // candidate in the chain rather than surfacing this error to the client.
 func (e *ProviderError) Fallbackable() bool {
 	switch e.Kind {
-	case ErrBadRequest, ErrBudgetBlocked:
+	case ErrBadRequest, ErrBudgetBlocked, ErrPolicyBlocked:
 		return false
 	default:
 		return true

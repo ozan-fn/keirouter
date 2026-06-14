@@ -658,4 +658,3 @@ function TunnelBadge({ reachable }: { reachable: boolean | null }) {
   const label = reachable === true ? "Reachable" : reachable === false ? "Unreachable" : "Checking…";
   return <Badge tone={tone}>{label}</Badge>;
 }
-
