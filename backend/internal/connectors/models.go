@@ -144,6 +144,7 @@ var providerModels = map[string][]ModelSpec{
 		m("qwen3-coder-plus", "Qwen3 Coder Plus"),
 	},
 	"alicode-intl": {m("qwen3.5-plus", "Qwen3.5 Plus"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3-coder-plus", "Qwen3 Coder Plus")},
+	"mimo-free":    {m("mimo-auto", "MiMo Auto")},
 	"xiaomi-mimo":  {m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-omni", "MiMo V2 Omni"), m("mimo-v2-flash", "MiMo V2 Flash")},
 	"xiaomi-tokenplan": {
 		m("mimo-v2.5-pro", "MiMo V2.5 Pro"), m("mimo-v2.5", "MiMo V2.5"), m("mimo-v2-pro", "MiMo V2 Pro"), m("mimo-v2-omni", "MiMo V2 Omni"),

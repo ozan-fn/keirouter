@@ -107,6 +107,8 @@ func DefaultRegistry() *Registry {
 			qc := NewQoder(p.ID, p.BaseURL)
 			conns = append(conns, qc)
 			RegisterLiveModelSource(p.ID, NewQoderModelSource(qc))
+		case p.Dialect == core.DialectMimoFree:
+			conns = append(conns, NewMimoFree(p.ID, p.BaseURL))
 		default:
 			// Dialect not yet drivable; skip connector creation.
 		}
@@ -120,7 +122,8 @@ func DrivableDialect(d core.Dialect) bool {
 	switch d {
 	case core.DialectOpenAI, core.DialectAnthropic, core.DialectGemini, core.DialectOllama,
 		core.DialectVertex, core.DialectOpenAIResponses, core.DialectGeminiCLI, core.DialectAntigravity,
-		core.DialectCommandCode, core.DialectKiro, core.DialectCursor, core.DialectQoder:
+		core.DialectCommandCode, core.DialectKiro, core.DialectCursor, core.DialectQoder,
+		core.DialectMimoFree:
 		return true
 	default:
 		return false

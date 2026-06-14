@@ -349,6 +349,9 @@ export function ProviderDetailPage() {
                 unofficial
               </Badge>
             )}
+            {provider.auth_kind === "none" && (
+              <Badge tone="accent">free</Badge>
+            )}
           </div>
         </div>
       </header>

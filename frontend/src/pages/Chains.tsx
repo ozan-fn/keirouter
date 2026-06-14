@@ -31,6 +31,11 @@ const normalizeChainStrategy = (strategy: string) =>
 const displayStrategy = (strategy: string) =>
   isRoundRobinStrategy(strategy) ? "round-robin" : strategy;
 
+const CHAIN_MODEL_KIND = "llm";
+
+const isLLMProvider = (provider: Provider) =>
+  !provider.service_kinds?.length || provider.service_kinds.includes(CHAIN_MODEL_KIND);
+
 // ─── Searchable Select ───────────────────────────────────────────────────────
 
 interface SelectOption {
@@ -770,7 +775,7 @@ function ChainModal({ chain, providers, onClose }: {
   const valid = name.trim() && steps.some((s) => s.provider && s.model);
 
   // Fallback model options
-  const fallbackProviderOptions: SelectOption[] = providers.map((p) => ({
+  const fallbackProviderOptions: SelectOption[] = providers.filter(isLLMProvider).map((p) => ({
     value: p.id,
     label: p.display_name,
     sublabel: p.id,
@@ -778,8 +783,8 @@ function ChainModal({ chain, providers, onClose }: {
   }));
 
   const fallbackModelsQuery = useQuery({
-    queryKey: ["providerModels", fallbackProvider],
-    queryFn: () => api.providerModels(fallbackProvider),
+    queryKey: ["providerModels", fallbackProvider, CHAIN_MODEL_KIND],
+    queryFn: () => api.providerModels(fallbackProvider, CHAIN_MODEL_KIND),
     enabled: !!fallbackProvider,
     staleTime: 60_000,
   });
@@ -938,13 +943,13 @@ function StepRow({
   onMoveDown?: () => void;
 }) {
   const modelsQuery = useQuery({
-    queryKey: ["providerModels", step.provider],
-    queryFn: () => api.providerModels(step.provider),
+    queryKey: ["providerModels", step.provider, CHAIN_MODEL_KIND],
+    queryFn: () => api.providerModels(step.provider, CHAIN_MODEL_KIND),
     enabled: !!step.provider,
     staleTime: 60_000,
   });
 
-  const providerOptions: SelectOption[] = providers.map((p) => ({
+  const providerOptions: SelectOption[] = providers.filter(isLLMProvider).map((p) => ({
     value: p.id,
     label: p.display_name,
     sublabel: p.id,

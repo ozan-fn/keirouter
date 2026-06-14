@@ -151,6 +151,10 @@ func freeTierProviders() []ProviderSpec {
 		{ID: "byteplus", DisplayName: "BytePlus ModelArk", Alias: "bpm", Dialect: core.DialectOpenAI,
 			BaseURL: "https://ark.ap-southeast.bytepluses.com/api/coding/v3", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#2563EB", Website: "https://console.byteplus.com/ark"},
+		{ID: "mimo-free", DisplayName: "MiMo Free", Alias: "mf", Dialect: core.DialectMimoFree,
+			BaseURL: mimoFreeDefaultBase, AuthKind: "none", AuthModes: []string{"none"}, ServiceKinds: llm(),
+			Color: "#FF6900", Website: "https://xiaomimimo.com",
+			Notice: "Free MiMo models via anonymous bootstrap JWT. No API key required. Rate limits apply."},
 	}
 }
 
