@@ -70,6 +70,8 @@ type Server struct {
 	tsManager       *tailscale.Manager
 	usageHub        *usagehub.Hub
 	timeoutNotifier *TimeoutNotifier
+	proxyNotifier   *ProxyNotifier
+	rateLimiter     interface{ SetEnabled(bool) }
 	refresher       dispatch.TokenRefresher
 	version         string
 	updates         *update.Checker
@@ -114,6 +116,8 @@ type Deps struct {
 	TsManager       *tailscale.Manager
 	UsageHub        *usagehub.Hub
 	TimeoutNotifier *TimeoutNotifier
+	ProxyNotifier   *ProxyNotifier
+	RateLimiter     interface{ SetEnabled(bool) }
 	Refresher       dispatch.TokenRefresher
 	Guardrails      *guardrails.Engine
 	GuardrailRepo   *store.GuardrailRepo
@@ -170,6 +174,8 @@ func New(d Deps) *Server {
 		tsManager:       d.TsManager,
 		usageHub:        d.UsageHub,
 		timeoutNotifier: d.TimeoutNotifier,
+		proxyNotifier:   d.ProxyNotifier,
+		rateLimiter:     d.RateLimiter,
 		refresher:       d.Refresher,
 		version:         d.Version,
 		updates:         d.Updates,
