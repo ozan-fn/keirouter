@@ -125,6 +125,25 @@ func TestGitHubCopilot_Validate(t *testing.T) {
 	})
 }
 
+func TestCommandCode_Validate(t *testing.T) {
+	t.Run("valid token", func(t *testing.T) {
+		srv := modelsServer(t, http.StatusOK)
+		defer srv.Close()
+		c := NewCommandCode("command-code", srv.URL)
+		require.NoError(t, c.Validate(context.Background(), core.Credentials{AccessToken: "t", BaseURL: srv.URL}))
+	})
+	t.Run("rejected token", func(t *testing.T) {
+		srv := modelsServer(t, http.StatusUnauthorized)
+		defer srv.Close()
+		c := NewCommandCode("command-code", srv.URL)
+		require.Error(t, c.Validate(context.Background(), core.Credentials{AccessToken: "bad", BaseURL: srv.URL}))
+	})
+	t.Run("missing credential", func(t *testing.T) {
+		c := NewCommandCode("command-code", "https://example.com/generate")
+		require.Error(t, c.Validate(context.Background(), core.Credentials{}))
+	})
+}
+
 func TestVertex_Validate(t *testing.T) {
 	t.Run("valid raw key", func(t *testing.T) {
 		srv := modelsServer(t, http.StatusOK)
@@ -151,7 +170,6 @@ func TestTokenPresenceValidators(t *testing.T) {
 		name string
 		v    validator
 	}{
-		{"command-code", NewCommandCode("command-code", "https://example.com/generate")},
 		{"gemini-cli", NewGeminiCLI("gemini-cli", "https://example.com/v1internal")},
 		{"antigravity", NewAntigravity("antigravity", "https://example.com")},
 		{"cursor", NewCursor("cursor", "https://example.com")},
