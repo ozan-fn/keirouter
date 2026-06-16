@@ -154,16 +154,16 @@ export function ChangelogMarkdown({
   }
 
   return (
-    <div className={compact ? "space-y-3" : "space-y-5"}>
-      {releases.map((rel) => (
-        <div key={rel.version}>
+    <div className={compact ? "space-y-3 text-[var(--text)]" : "space-y-5"}>
+      {releases.map((rel, releaseIndex) => (
+        <div key={rel.version} className={compact && releaseIndex > 0 ? "border-t border-[var(--border)] pt-3" : undefined}>
           {/* Version header */}
-          <div className="mb-2 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-md bg-accent-100 px-2 py-0.5 font-mono text-xs font-semibold text-accent-700 dark:bg-accent-900/40 dark:text-accent-300">
+          <div className="mb-2 flex min-w-0 items-center gap-2">
+            <span className="inline-flex shrink-0 items-center rounded-md bg-accent-100 px-2 py-0.5 font-mono text-xs font-semibold text-accent-700 dark:bg-accent-900/40 dark:text-accent-300">
               v{rel.version}
             </span>
             {rel.date && (
-              <span className="text-xs text-[var(--text-muted)]">{rel.date}</span>
+              <span className="min-w-0 truncate text-xs text-[var(--text-muted)]">{rel.date}</span>
             )}
           </div>
 
@@ -183,14 +183,14 @@ export function ChangelogMarkdown({
                         {meta.label}
                       </span>
                     </div>
-                    <ul className={compact ? "space-y-0.5" : "space-y-1"}>
+                    <ul className={compact ? "space-y-1" : "space-y-1"}>
                       {sec.entries.map((entry, i) => (
                         <li
                           key={i}
-                          className="flex items-start gap-1.5 text-xs leading-relaxed text-[var(--text)]"
+                          className="flex min-w-0 items-start gap-1.5 text-xs leading-relaxed text-[var(--text)]"
                         >
                           <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-[var(--text-muted)]" />
-                          <span className="min-w-0">
+                          <span className="min-w-0 break-words">
                             {entry.scope && (
                               <span className="mr-1 inline-flex items-center rounded bg-[var(--bg-subtle)] px-1 py-px font-mono text-[10px] font-medium text-[var(--text-muted)]">
                                 {entry.scope}
@@ -198,7 +198,7 @@ export function ChangelogMarkdown({
                             )}
                             {entry.description}
                             {entry.commit && (
-                              <span className="ml-1 font-mono text-[10px] text-[var(--text-muted)]">
+                              <span className="ml-1 whitespace-nowrap font-mono text-[10px] text-[var(--text-muted)]">
                                 ({entry.commit})
                               </span>
                             )}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/transform"
 )
@@ -12,13 +14,20 @@ import (
 // points directly at the generate endpoint, so the connector POSTs to it as-is.
 // The request is a wrapped generate envelope (built by the codec) and the
 // response is an AI SDK v5 NDJSON event stream (bare JSON objects per line, no
-// SSE "data:" framing), so each line is handed straight to the codec. Mirrors
-// 9router's CommandCode executor.
+// SSE "data:" framing), so each line is handed straight to the codec.
 type CommandCode struct {
 	id          string
 	defaultBase string
 	codec       transform.CommandCodeCodec
 }
+
+const (
+	commandCodeVersion       = "0.25.7"
+	commandCodeCLIEnv        = "cli"
+	commandCodeVersionHeader = "x-command-code-version"
+	commandCodeCLIEnvHeader  = "x-cli-environment"
+	commandCodeSessionHeader = "x-session-id"
+)
 
 // NewCommandCode builds a Command Code connector.
 func NewCommandCode(id, defaultBaseURL string) *CommandCode {
@@ -36,7 +45,11 @@ func (c *CommandCode) baseURL(creds core.Credentials) string {
 }
 
 func (c *CommandCode) headers(creds core.Credentials) map[string]string {
-	h := map[string]string{}
+	h := map[string]string{
+		commandCodeVersionHeader: commandCodeVersion,
+		commandCodeCLIEnvHeader:  commandCodeCLIEnv,
+		commandCodeSessionHeader: uuid.NewString(),
+	}
 	switch {
 	case creds.AccessToken != "":
 		h["Authorization"] = bearer(creds.AccessToken)
@@ -56,9 +69,10 @@ func (c *CommandCode) Validate(ctx context.Context, creds core.Credentials) erro
 	return nil
 }
 
-// Chat performs a non-streaming generate call.
+// Chat performs a unary client call by folding the upstream event stream into a
+// single canonical response.
 func (c *CommandCode) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
-	req.Stream = false
+	req.Stream = true
 	body, err := c.codec.RenderRequest(req)
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}

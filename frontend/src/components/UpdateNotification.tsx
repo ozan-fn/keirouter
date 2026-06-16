@@ -67,42 +67,42 @@ export function UpdateNotification() {
         <div
           role="dialog"
           aria-label="Update available"
-          className="absolute right-0 top-full z-50 mt-2 w-96 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
+          className="fixed right-4 top-20 z-50 flex max-h-[calc(100vh-6rem)] w-[min(34rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)]/95 shadow-[0_24px_70px_rgba(15,23,42,0.18)] backdrop-blur-xl dark:shadow-[0_24px_70px_rgba(0,0,0,0.45)]"
         >
-          <div className="flex items-start justify-between gap-2 border-b border-[var(--border)] px-4 py-3">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)]/90 px-4 py-3.5">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent-100 text-accent-700 shadow-inner dark:bg-accent-900/45 dark:text-accent-200">
                 <Sparkles className="h-4 w-4" strokeWidth={2} />
               </div>
-              <div>
-                <p className="text-sm font-semibold leading-tight">Update available</p>
-                <p className="text-xs leading-tight text-[var(--text-muted)]">
-                  <span className="font-mono">{data.current}</span>
-                  <span className="mx-1">→</span>
-                  <span className="font-mono font-medium text-accent-600 dark:text-accent-400">{data.latest}</span>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold leading-tight tracking-[-0.01em]">Update available</p>
+                <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs leading-tight text-[var(--text-muted)]">
+                  <span className="truncate font-mono">{data.current}</span>
+                  <span className="text-[var(--text-muted)]">→</span>
+                  <span className="truncate font-mono font-semibold text-accent-600 dark:text-accent-400">{data.latest}</span>
                 </p>
               </div>
             </div>
             <button
               onClick={() => setOpen(false)}
               aria-label="Dismiss"
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 dark:hover:bg-ink-800"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-ink-800"
             >
               <X className="h-4 w-4" />
             </button>
           </div>
 
           {data.changelog && (
-            <div className="max-h-56 overflow-y-auto px-4 py-3">
+            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3 [scrollbar-gutter:stable]">
               <ChangelogMarkdown changelog={data.changelog} compact />
             </div>
           )}
 
-          <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--border)] bg-[var(--bg-elevated)]/90 px-4 py-3">
             <Link
               to="/settings#system"
               onClick={() => setOpen(false)}
-              className="flex items-center gap-1.5 rounded-lg bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 transition-colors hover:bg-accent-100 dark:bg-accent-900/30 dark:text-accent-300 dark:hover:bg-accent-900/50"
+              className="flex items-center gap-1.5 rounded-lg bg-accent-50 px-3 py-1.5 text-xs font-semibold text-accent-700 transition-colors hover:bg-accent-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:bg-accent-900/30 dark:text-accent-300 dark:hover:bg-accent-900/50"
             >
               <FileText className="h-3.5 w-3.5" />
               View full changelog
@@ -112,7 +112,7 @@ export function UpdateNotification() {
                 href={data.html_url}
                 target="_blank"
                 rel="noreferrer noopener"
-                className="flex items-center gap-1 text-xs text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+                className="flex items-center gap-1 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
               >
                 Release notes
                 <ExternalLink className="h-3 w-3" />

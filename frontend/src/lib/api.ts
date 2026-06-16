@@ -649,6 +649,18 @@ export interface UpdateInfo {
   checked: boolean;
 }
 
+export interface SQLiteStatus {
+  available: boolean;
+  dialect: string;
+  path?: string;
+}
+
+export interface SQLiteRestoreResult {
+  ok: boolean;
+  restart_required: boolean;
+  safety_backup: string;
+}
+
 class APIError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -672,6 +684,37 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const data = await res.json();
+      message = data?.error?.message ?? message;
+    } catch {
+      // keep statusText
+    }
+    throw new APIError(res.status, message);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+async function requestBlob(method: string, path: string): Promise<Blob> {
+  const res = await fetch(`/api${path}`, { method });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const data = await res.json();
+      message = data?.error?.message ?? message;
+    } catch {
+      // keep statusText
+    }
+    throw new APIError(res.status, message);
+  }
+  return res.blob();
+}
+
+async function requestForm<T>(method: string, path: string, body: FormData): Promise<T> {
+  const res = await fetch(`/api${path}`, { method, body });
   if (!res.ok) {
     let message = res.statusText;
     try {
@@ -938,6 +981,14 @@ export const api = {
     ),
   importDatabase: (payload: Record<string, unknown>, passphrase?: string) =>
     request<{ imported: number }>("POST", "/settings/database", passphrase ? { ...payload, passphrase } : payload),
+
+  sqliteStatus: () => request<SQLiteStatus>("GET", "/settings/sqlite"),
+  backupSQLite: () => requestBlob("GET", "/settings/sqlite/backup"),
+  restoreSQLite: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return requestForm<SQLiteRestoreResult>("POST", "/settings/sqlite/restore", body);
+  },
 
   // Proxy test.
   testProxy: (proxyUrl: string) =>

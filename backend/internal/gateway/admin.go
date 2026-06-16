@@ -98,6 +98,9 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Post("/settings/access", s.adminUpdateAccessSettings)
 	r.Get("/settings/database", s.adminExportDatabase)
 	r.Post("/settings/database", s.adminImportDatabase)
+	r.Get("/settings/sqlite", s.adminSQLiteStatus)
+	r.Get("/settings/sqlite/backup", s.adminSQLiteBackup)
+	r.Post("/settings/sqlite/restore", s.adminSQLiteRestore)
 	r.Post("/settings/proxy-test", s.adminTestProxy)
 
 	// Update check (queries GitHub for the latest release + changelog).

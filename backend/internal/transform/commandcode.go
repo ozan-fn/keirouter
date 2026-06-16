@@ -2,8 +2,8 @@ package transform
 
 import (
 	"bytes"
-	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"fmt"
+	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 	"strings"
 
 	"github.com/google/uuid"
@@ -17,8 +17,7 @@ import (
 // content blocks (text / tool-call / tool-result), and tools as
 // {name, description, input_schema}. The response is an AI SDK v5 NDJSON event
 // stream (text-delta, reasoning-delta, tool-input-*, tool-call, finish-step,
-// finish, error). This mirrors 9router's openai-to-commandcode and
-// commandcode-to-openai translators.
+// finish, error).
 type CommandCodeCodec struct{}
 
 func (CommandCodeCodec) Dialect() core.Dialect { return core.DialectCommandCode }

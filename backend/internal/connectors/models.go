@@ -34,9 +34,8 @@ func emb(id, name string, dims int) ModelSpec {
 }
 
 // providerModels maps a provider id to the curated set of models it offers.
-// This is a starter catalog mirroring 9router; providers marked passthrough in
-// upstream (openrouter, vercel, ...) accept any model id, so their listed set
-// here is only a discovery hint, not an allow-list.
+// Providers marked passthrough upstream (openrouter, vercel, ...) accept any
+// model id, so their listed set here is only a discovery hint, not an allow-list.
 var providerModels = map[string][]ModelSpec{
 	"openai": {
 		m("gpt-5.4", "GPT-5.4"), m("gpt-5.4-mini", "GPT-5.4 Mini"), m("gpt-5.2", "GPT-5.2"),
@@ -154,6 +153,19 @@ var providerModels = map[string][]ModelSpec{
 	"volcengine-ark": {
 		m("Doubao-Seed-2.0-pro", "Doubao Seed 2.0 Pro"), m("DeepSeek-V4-Pro", "DeepSeek V4 Pro"),
 		m("GLM-5.1", "GLM 5.1"), m("Kimi-K2.6", "Kimi K2.6"),
+	},
+	"commandcode": {
+		m("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro"),
+		m("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash"),
+		m("moonshotai/Kimi-K2.6", "Kimi K2.6"),
+		m("moonshotai/Kimi-K2.5", "Kimi K2.5"),
+		m("zai-org/GLM-5.1", "GLM 5.1"),
+		m("zai-org/GLM-5", "GLM 5"),
+		m("MiniMaxAI/MiniMax-M2.7", "MiniMax M2.7"),
+		m("MiniMaxAI/MiniMax-M2.5", "MiniMax M2.5"),
+		m("Qwen/Qwen3.6-Max-Preview", "Qwen 3.6 Max Preview"),
+		m("Qwen/Qwen3.6-Plus", "Qwen 3.6 Plus"),
+		m("stepfun/Step-3.5-Flash", "Step 3.5 Flash"),
 	},
 	"byteplus": {m("seed-2-0-pro-260328", "Seed 2.0 Pro"), m("kimi-k2-thinking-251104", "Kimi K2 Thinking"), m("glm-4-7-251222", "GLM 4.7")},
 	"cloudflare-ai": {

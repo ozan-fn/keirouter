@@ -942,6 +942,8 @@ function strengthOf(pass: string): { label: string; tone: "muted" | "weak" | "ok
 function DatabaseSettings() {
   const toast = useToast();
   const importRef = useRef<HTMLInputElement>(null);
+  const sqliteImportRef = useRef<HTMLInputElement>(null);
+  const sqlite = useQuery({ queryKey: ["sqlite-status"], queryFn: () => api.sqliteStatus() });
   const [loading, setLoading] = useState(false);
 
   const [exportOpen, setExportOpen] = useState(false);
@@ -955,6 +957,10 @@ function DatabaseSettings() {
   const [importPass, setImportPass] = useState("");
   const [showImportPass, setShowImportPass] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+
+  const [sqliteRestoreOpen, setSQLiteRestoreOpen] = useState(false);
+  const [pendingSQLiteFile, setPendingSQLiteFile] = useState<File | null>(null);
+  const [sqliteRestoreError, setSQLiteRestoreError] = useState<string | null>(null);
 
   const resetExport = () => {
     setExportOpen(false);
@@ -971,6 +977,13 @@ function DatabaseSettings() {
     setShowImportPass(false);
     setImportError(null);
     if (importRef.current) importRef.current.value = "";
+  };
+
+  const resetSQLiteRestore = () => {
+    setSQLiteRestoreOpen(false);
+    setPendingSQLiteFile(null);
+    setSQLiteRestoreError(null);
+    if (sqliteImportRef.current) sqliteImportRef.current.value = "";
   };
 
   const downloadBackup = async (pass: string | undefined) => {
@@ -997,6 +1010,27 @@ function DatabaseSettings() {
       resetExport();
     } catch (e) {
       toast.error("Export failed", (e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadSQLiteBackup = async () => {
+    setLoading(true);
+    try {
+      const blob = await api.backupSQLite();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().replace(/[.:]/g, "-");
+      a.href = url;
+      a.download = `keirouter-sqlite-${stamp}.db`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("SQLite backup downloaded", "Database file snapshot saved as .db.");
+    } catch (e) {
+      toast.error("SQLite backup failed", (e as Error).message);
     } finally {
       setLoading(false);
     }
@@ -1042,6 +1076,35 @@ function DatabaseSettings() {
     }
   };
 
+  const handleSQLiteFilePicked = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setPendingSQLiteFile(file);
+    setSQLiteRestoreError(null);
+    setSQLiteRestoreOpen(true);
+  };
+
+  const submitSQLiteRestore = async () => {
+    if (!pendingSQLiteFile) {
+      setSQLiteRestoreError("No SQLite backup selected.");
+      return;
+    }
+    setLoading(true);
+    setSQLiteRestoreError(null);
+    try {
+      const result = await api.restoreSQLite(pendingSQLiteFile);
+      toast.success(
+        "SQLite restore staged",
+        `Safety backup created at ${result.safety_backup}. Restart KeiRouter to load restored database.`,
+      );
+      resetSQLiteRestore();
+    } catch (e) {
+      setSQLiteRestoreError((e as Error).message || "Restore failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const submitImportWithPass = async () => {
     const p = importPass.trim();
     if (!p) {
@@ -1071,23 +1134,24 @@ function DatabaseSettings() {
   const exportDisabled =
     loading ||
     (usePortable && (!exportPass.trim() || exportPass !== exportConfirm));
+  const sqliteAvailable = sqlite.data?.available === true;
 
   return (
     <>
       <Card>
         <SectionHeader
-          title="Database"
-          description="Export or import your KeiRouter configuration."
+          title="Configuration backup"
+          description="Export or import KeiRouter configuration as JSON. Portable mode re-keys credentials with a passphrase."
           icon={Database}
         />
         <div className="flex flex-wrap items-center gap-3 border-t border-[var(--border)] px-6 py-4">
           <Button variant="ghost" onClick={() => setExportOpen(true)} disabled={loading}>
             <Download className="h-4 w-4" />
-            Download Backup
+            Download JSON backup
           </Button>
           <Button variant="ghost" onClick={() => importRef.current?.click()} disabled={loading}>
             <Upload className="h-4 w-4" />
-            Import Backup
+            Import JSON backup
           </Button>
           <input
             ref={importRef}
@@ -1096,6 +1160,64 @@ function DatabaseSettings() {
             className="hidden"
             onChange={handleFilePicked}
           />
+        </div>
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="SQLite database file"
+          description="Download or restore the raw SQLite database. Only available when database.driver is sqlite."
+          icon={Shield}
+          iconTone="neutral"
+        />
+        <div className="border-t border-[var(--border)] px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-semibold ${
+                    sqliteAvailable
+                      ? "bg-accent-100 text-accent-700 dark:bg-accent-900/40 dark:text-accent-200"
+                      : "bg-ink-100 text-[var(--text-muted)] dark:bg-ink-800"
+                  }`}
+                >
+                  {sqlite.isLoading ? "Checking…" : sqliteAvailable ? "SQLite active" : "Unavailable"}
+                </span>
+                {sqlite.data?.dialect && (
+                  <span className="font-mono text-xs text-[var(--text-muted)]">
+                    driver={sqlite.data.dialect}
+                  </span>
+                )}
+              </div>
+              <p className="mt-2 max-w-2xl text-xs leading-relaxed text-[var(--text-muted)]">
+                {sqliteAvailable
+                  ? "Backup uses SQLite VACUUM INTO for a consistent .db snapshot. Restore validates integrity and creates a safety copy before replacement."
+                  : "Only available for SQLite connections. Postgres and in-memory databases are not eligible for raw database-file backup."}
+              </p>
+              {sqlite.data?.path && (
+                <p className="mt-2 truncate font-mono text-[11px] text-[var(--text-muted)]">
+                  {sqlite.data.path}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="ghost" onClick={downloadSQLiteBackup} disabled={loading || !sqliteAvailable}>
+                <Download className="h-4 w-4" />
+                Download .db
+              </Button>
+              <Button variant="ghost" onClick={() => sqliteImportRef.current?.click()} disabled={loading || !sqliteAvailable}>
+                <Upload className="h-4 w-4" />
+                Restore .db
+              </Button>
+              <input
+                ref={sqliteImportRef}
+                type="file"
+                accept=".db,.sqlite,.sqlite3,application/vnd.sqlite3,application/octet-stream"
+                className="hidden"
+                onChange={handleSQLiteFilePicked}
+              />
+            </div>
+          </div>
         </div>
       </Card>
 
@@ -1258,6 +1380,41 @@ function DatabaseSettings() {
           >
             <Upload className="h-4 w-4" />
             {loading ? "Importing…" : "Restore"}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={sqliteRestoreOpen}
+        onClose={() => (loading ? null : resetSQLiteRestore())}
+        title="Restore SQLite database"
+        subtitle="This replaces the active SQLite database file after validation."
+      >
+        <div className="space-y-4 px-6 py-5">
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-4">
+            <p className="text-sm font-semibold text-[var(--text)]">
+              {pendingSQLiteFile?.name ?? "No file selected"}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
+              KeiRouter creates a safety backup before replacing the database. Restart required after restore because current DB connections still point at the old file.
+            </p>
+          </div>
+
+          {sqliteRestoreError && <ErrorBanner message={sqliteRestoreError} />}
+
+          <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>Use only trusted KeiRouter SQLite backups. Restoring wrong data may break providers, keys, usage records, and settings.</span>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
+          <Button variant="ghost" onClick={resetSQLiteRestore} disabled={loading}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={submitSQLiteRestore} disabled={loading || !pendingSQLiteFile}>
+            <Upload className="h-4 w-4" />
+            {loading ? "Restoring…" : "Restore database"}
           </Button>
         </div>
       </Modal>

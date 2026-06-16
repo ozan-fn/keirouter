@@ -32,8 +32,9 @@ const (
 // DB wraps the sql.DB handle together with its dialect so repositories can
 // adapt placeholder syntax and engine-specific statements.
 type DB struct {
-	sql     *sql.DB
-	dialect Dialect
+	sql        *sql.DB
+	dialect    Dialect
+	sqlitePath string
 }
 
 // Open connects using the given database configuration and verifies the
@@ -42,13 +43,15 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, dataDir string) (*DB, 
 	dialect := Dialect(cfg.Driver)
 
 	var (
-		driverName string
-		dsn        string
+		driverName     string
+		dsn            string
+		sqliteFilePath string
 	)
 	switch dialect {
 	case DialectSQLite:
 		driverName = "sqlite"
-		dsn = sqliteDSN(cfg, dataDir)
+		sqliteFilePath = sqlitePath(cfg, dataDir)
+		dsn = sqliteDSNFromPath(sqliteFilePath)
 	case DialectPostgres:
 		driverName = "pgx"
 		dsn = cfg.DSN
@@ -81,7 +84,7 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, dataDir string) (*DB, 
 		return nil, fmt.Errorf("store: ping %s: %w", dialect, err)
 	}
 
-	db := &DB{sql: sqlDB, dialect: dialect}
+	db := &DB{sql: sqlDB, dialect: dialect, sqlitePath: sqliteFilePath}
 	if dialect == DialectSQLite {
 		if err := db.applySQLitePragmas(ctx); err != nil {
 			_ = sqlDB.Close()
@@ -93,11 +96,19 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, dataDir string) (*DB, 
 
 // sqliteDSN builds the SQLite connection string. An empty DSN defaults to a
 // file under the data directory; ":memory:" is honored for tests.
-func sqliteDSN(cfg config.DatabaseConfig, dataDir string) string {
+func sqlitePath(cfg config.DatabaseConfig, dataDir string) string {
 	path := cfg.DSN
 	if path == "" {
 		path = dataDir + "/keirouter.db"
 	}
+	return path
+}
+
+func sqliteDSN(cfg config.DatabaseConfig, dataDir string) string {
+	return sqliteDSNFromPath(sqlitePath(cfg, dataDir))
+}
+
+func sqliteDSNFromPath(path string) string {
 	if path == ":memory:" {
 		// Shared-cache in-memory keeps the schema visible across the pool.
 		return "file::memory:?cache=shared"
@@ -125,6 +136,9 @@ func (db *DB) SQL() *sql.DB { return db.sql }
 
 // Dialect reports the active engine.
 func (db *DB) Dialect() Dialect { return db.dialect }
+
+// SQLitePath reports the SQLite database file path when the active engine is SQLite.
+func (db *DB) SQLitePath() string { return db.sqlitePath }
 
 // BeginTx starts a database transaction. Callers use this for multi-table
 // writes that must succeed or fail atomically (e.g. key + budget creation).

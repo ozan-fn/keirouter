@@ -68,9 +68,9 @@ func llm(extra ...core.ServiceKind) []core.ServiceKind {
 // web search, web fetch, embeddings).
 //
 // Dialect determines which connector backs a provider. Providers whose upstream
-// dialect KeiRouter does not yet drive natively (kiro, cursor, antigravity,
-// gemini-cli, vertex, commandcode, web-cookie) are present for discovery and
-// account management but only become routable once their connector lands.
+// dialect KeiRouter does not yet drive natively remain in the catalog for
+// discovery and account management, but are not routable until a dedicated
+// connector lands.
 func Catalog() []ProviderSpec {
 	return append(append(append(append(append(
 		pinnedProviders(),
@@ -261,7 +261,8 @@ func apiKeyProviders() []ProviderSpec {
 			Website: "https://azure.microsoft.com/en-us/products/ai-services/openai-service"},
 		{ID: "commandcode", DisplayName: "Command Code", Alias: "cmc", Dialect: core.DialectCommandCode,
 			BaseURL: "https://api.commandcode.ai/alpha/generate", AuthKind: "api_key", ServiceKinds: llm(),
-			Color: "#000000", Website: "https://commandcode.ai", Hidden: true},
+			Color: "#000000", Website: "https://commandcode.ai", APIKeyURL: "https://commandcode.ai/studio",
+			Notice: "Use your Command Code API key from commandcode.ai/studio or ~/.commandcode/auth.json."},
 		{ID: "groq", DisplayName: "Groq", Alias: "groq", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.groq.com/openai/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceSTT),
 			Color: "#F55036", Website: "https://groq.com", APIKeyURL: "https://console.groq.com/keys",

@@ -76,8 +76,27 @@ func TestFindModel(t *testing.T) {
 	if _, ok := FindModel("openai", "gpt-4o"); !ok {
 		t.Error("expected to find openai/gpt-4o")
 	}
+	if _, ok := FindModel("commandcode", "deepseek/deepseek-v4-pro"); !ok {
+		t.Error("expected to find commandcode/deepseek/deepseek-v4-pro")
+	}
 	if _, ok := FindModel("openai", "nonexistent-model"); ok {
 		t.Error("expected miss for nonexistent model")
+	}
+}
+
+func TestCommandCodeCatalogVisible(t *testing.T) {
+	spec, ok := SpecByID("commandcode")
+	if !ok {
+		t.Fatal("catalog missing commandcode")
+	}
+	if spec.Hidden {
+		t.Fatal("commandcode should be visible")
+	}
+	if spec.APIKeyURL != "https://commandcode.ai/studio" {
+		t.Fatalf("unexpected commandcode APIKeyURL %q", spec.APIKeyURL)
+	}
+	if len(ModelsForProvider("commandcode")) == 0 {
+		t.Fatal("commandcode should have static models")
 	}
 }
 
