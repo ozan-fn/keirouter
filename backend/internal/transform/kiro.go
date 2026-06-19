@@ -413,6 +413,19 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 		reconcileOrphanedKiroToolResults(merged, current)
 	}
 
+	// Dedup toolResults by toolUseId on every user turn. CodeWhisperer rejects
+	// a userInputMessage whose toolResults list the same toolUseId twice with
+	// TOOL_DUPLICATE (HTTP 400). Duplicates can arise from merging consecutive
+	// user turns, from a client resending the same tool_result on resume/retry,
+	// or from the same id appearing as both a RoleTool message and a
+	// user-embedded tool_result. Keep the first occurrence of each id.
+	for _, h := range merged {
+		if uim, ok := h["userInputMessage"].(map[string]any); ok {
+			dedupKiroUIMToolResults(uim)
+		}
+	}
+	dedupKiroUIMToolResults(current)
+
 	// Attach tools to the current message's context.
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
@@ -552,6 +565,39 @@ func mergeKiroUIMContext(dst, src map[string]any) {
 	}
 }
 
+// dedupKiroUIMToolResults removes duplicate toolResults from a single
+// userInputMessage, keeping the first occurrence of each toolUseId. Bedrock
+// rejects a message whose toolResults repeat a toolUseId with TOOL_DUPLICATE
+// (HTTP 400). Entries without a toolUseId are left untouched.
+func dedupKiroUIMToolResults(uim map[string]any) {
+	if uim == nil {
+		return
+	}
+	ctx, ok := uim["userInputMessageContext"].(map[string]any)
+	if !ok {
+		return
+	}
+	trs, ok := ctx["toolResults"].([]map[string]any)
+	if !ok || len(trs) < 2 {
+		return
+	}
+	seen := make(map[string]bool, len(trs))
+	kept := make([]map[string]any, 0, len(trs))
+	for _, tr := range trs {
+		id, _ := tr["toolUseId"].(string)
+		if id != "" {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+		}
+		kept = append(kept, tr)
+	}
+	if len(kept) != len(trs) {
+		ctx["toolResults"] = kept
+	}
+}
+
 // reconcileOrphanedKiroToolResults removes toolResults whose toolUseId has no
 // matching toolUse in any assistant message, folding their content back into
 // the carrier's user text. A dangling structured reference makes Kiro return
@@ -559,6 +605,7 @@ func mergeKiroUIMContext(dst, src map[string]any) {
 // content is salvaged as text rather than discarded.
 // userInputMessage map; orphans can land on it or on any history user turn.
 func reconcileOrphanedKiroToolResults(history []map[string]any, current map[string]any) {
+
 	// Phase 1: collect valid toolUseIds from assistant history.
 	valid := map[string]bool{}
 	for _, h := range history {

@@ -215,11 +215,81 @@ func TestKiro_RenderRequest_FlattensToolsWhenClientSentNone(t *testing.T) {
 	}
 }
 
+// Bedrock rejects a userInputMessage whose toolResults repeat the same
+// toolUseId with TOOL_DUPLICATE (HTTP 400). Duplicates can arise when a client
+// resends the same tool_result (e.g. on resume/retry) or when merging
+// consecutive user turns combines two results for the same id. The codec must
+// dedup toolResults per toolUseId, keeping one entry.
+func TestKiro_RenderRequest_DedupsDuplicateToolResults(t *testing.T) {
+	dupID := "tooluse_dup_1"
+	req := &core.ChatRequest{
+		Model: "claude-opus-4.8-thinking",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "run it"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: dupID, Name: "Bash", Arguments: json.RawMessage(`{"command":"ls"}`)}},
+			}},
+			// Two consecutive tool turns carrying a result for the SAME id —
+			// these merge into one user turn and would otherwise duplicate.
+			{Role: core.RoleTool, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: dupID, Content: "a.go"}},
+			}},
+			{Role: core.RoleTool, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{CallID: dupID, Content: "a.go"}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "thanks"}}},
+		},
+		Tools: []core.Tool{{Name: "Bash", Description: "run", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	body, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	cs := env["conversationState"].(map[string]any)
+
+	// Count occurrences of the duplicate id across all toolResults (history +
+	// currentMessage). It must appear at most once per userInputMessage.
+	countInUIM := func(uim map[string]any) int {
+		ctx, ok := uim["userInputMessageContext"].(map[string]any)
+		if !ok {
+			return 0
+		}
+		trs, ok := ctx["toolResults"].([]any)
+		if !ok {
+			return 0
+		}
+		n := 0
+		for _, tr := range trs {
+			if id, _ := tr.(map[string]any)["toolUseId"].(string); id == dupID {
+				n++
+			}
+		}
+		return n
+	}
+	for _, h := range cs["history"].([]any) {
+		if uim, ok := h.(map[string]any)["userInputMessage"].(map[string]any); ok {
+			if c := countInUIM(uim); c > 1 {
+				t.Errorf("history userInputMessage has %d toolResults for %q, want <=1", c, dupID)
+			}
+		}
+	}
+	cm := cs["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	if c := countInUIM(cm); c > 1 {
+		t.Errorf("currentMessage has %d toolResults for %q, want <=1", c, dupID)
+	}
+}
+
 // When the client DOES send tools but a tool_result references a tool_use that
 // was dropped by client-side compaction, the orphaned result must be folded
 // back into user text instead of left as a dangling structured reference
 // (which makes Kiro return 400).
 func TestKiro_RenderRequest_ReconcilesOrphanedToolResults(t *testing.T) {
+
 	req := &core.ChatRequest{
 		Model: "claude-opus-4.8-thinking",
 		Messages: []core.Message{
