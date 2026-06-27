@@ -9,9 +9,10 @@ import (
 )
 
 // ToolArgSanitizer buffers streaming tool call arguments and emits sanitized
-// JSON when the tool call completes. This mirrors 9router's behavior of
-// buffering tool args and cleaning them at finish time (e.g., fixing Read.limit
-// from string to int, clamping values).
+// JSON when the tool call completes. Tool-call arguments from fragmenting
+// upstreams arrive split across frames and must be reassembled into one
+// complete JSON object before rendering (e.g. fixing Read.limit from string to
+// int, clamping values).
 //
 // Usage: call Process() for each chunk. Call Flush() when the stream ends.
 type ToolArgSanitizer struct {
@@ -28,51 +29,6 @@ type toolBuffer struct {
 // NewToolArgSanitizer creates a new sanitizer.
 func NewToolArgSanitizer() *ToolArgSanitizer {
 	return &ToolArgSanitizer{buffers: make(map[int]*toolBuffer)}
-}
-
-// sanitizableToolNames is the set of tool names whose streamed arguments need
-// finish-time repair (string→int coercion, clamping, type fixes). Only requests
-// carrying one of these tools require the buffer-until-finish path; everything
-// else can stream tool-call deltas straight through.
-var sanitizableToolNames = map[string]struct{}{
-	"Read":  {},
-	"Write": {},
-	"Edit":  {},
-	"Bash":  {},
-	"Glob":  {},
-	"Grep":  {},
-}
-
-// SanitizableToolsPresent reports whether any of the given tool names requires
-// argument sanitization. When false, streamed tool-call deltas can be forwarded
-// incrementally without buffering, since no finish-time repair is needed.
-func SanitizableToolsPresent(toolNames []string) bool {
-	for _, name := range toolNames {
-		if _, ok := sanitizableToolNames[name]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-// IncrementalToolStreamingSafe reports whether a client dialect can consume
-// tool-call argument deltas as they arrive, without the gateway first
-// assembling each call's arguments into one complete JSON object.
-//
-// OpenAI (chat completions), OpenAI Responses, and Anthropic all define a
-// streaming wire format for partial tool arguments (delta tool_calls,
-// function_call_arguments.delta, input_json_delta), so forwarding fragments is
-// native and safe. Other dialects (Gemini, Ollama, and the provider-native
-// formats) render each tool call as a single object with complete arguments, so
-// fragments would produce malformed output — those must keep buffering until the
-// call completes.
-func IncrementalToolStreamingSafe(d core.Dialect) bool {
-	switch d {
-	case core.DialectOpenAI, core.DialectOpenAIResponses, core.DialectAnthropic:
-		return true
-	default:
-		return false
-	}
 }
 
 // Process handles one streaming chunk. For ChunkToolCall, it buffers arguments
@@ -123,6 +79,7 @@ func (s *ToolArgSanitizer) Process(chunk core.StreamChunk, emit func(core.Stream
 	if args != "" && args != "{}" {
 		buf.args.WriteString(args)
 	}
+
 }
 
 // Flush emits all remaining buffered tool calls. Call this when the stream ends
@@ -160,8 +117,8 @@ func (s *ToolArgSanitizer) flushIndex(idx int, emit func(core.StreamChunk)) {
 	})
 }
 
-// sanitizeToolArgs applies argument cleanup rules matching 9router's
-// sanitizeToolArgs logic. It fixes common issues from non-Anthropic models.
+// sanitizeToolArgs applies argument cleanup rules. It fixes common issues from
+// non-Anthropic models.
 func sanitizeToolArgs(toolName, argsJSON string) string {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
