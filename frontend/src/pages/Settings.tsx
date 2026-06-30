@@ -214,6 +214,34 @@ function saverPatch(s: EndpointSettings): Partial<EndpointSettings> {
   };
 }
 
+// HeadroomAdvisory sets expectations for the Headroom saver: it works best
+// against a fast, local proxy. Large or first-seen ("cold") contexts can take
+// many seconds for the proxy to compress, in which case Headroom fails open
+// (request passes through uncompressed, so it records 0 savings). The instant
+// local savers don't have this caveat.
+function HeadroomAdvisory() {
+  return (
+    <div className="border-t border-[var(--border)] px-6 py-4">
+      <div className="flex gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3">
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+        <div className="text-xs leading-relaxed text-[var(--text-muted)]">
+          <span className="font-medium text-[var(--text)]">Best for a fast, local proxy.</span>{" "}
+          Headroom is called synchronously before each request. Large or first-seen
+          contexts can take the proxy several seconds (sometimes much longer on CPU-only
+          machines) to compress — when that exceeds the timeout below, Headroom{" "}
+          <span className="font-medium text-[var(--text)]">fails open</span> (the request
+          goes through uncompressed and records 0 savings). For consistent savings without
+          an external dependency, rely on{" "}
+          <span className="font-medium text-[var(--text)]">RTK</span> +{" "}
+          <span className="font-medium text-[var(--text)]">Caveman/Terse</span> +{" "}
+          <span className="font-medium text-[var(--text)]">Ponytail</span>, which run
+          instantly in-process.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // HeadroomInstallHelp explains how to install and run a local Headroom proxy.
 // Headroom is the open-source headroom-ai proxy; KeiRouter calls its
 // /v1/compress endpoint. Shown inside the Headroom card so operators can get a
@@ -401,6 +429,7 @@ function SavingTab({
           icon={Zap}
           iconTone="neutral"
         />
+        <HeadroomAdvisory />
         <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
           <span className="text-sm font-medium">Enable Headroom</span>
           <Toggle checked={local.headroom_enabled} onChange={(v) => saverUpdate({ headroom_enabled: v })} />

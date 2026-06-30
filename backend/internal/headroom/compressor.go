@@ -6,12 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
+
+// defaultMaxConcurrentCompress bounds how many compression calls may be in
+// flight at once. The reference Headroom proxy defaults to a single worker with
+// modest rpm/tpm limits, so an unbounded burst from an active coding session
+// stampedes it into 503s (or crashes it). Capping concurrency keeps the proxy
+// healthy; requests beyond the cap fail open (uncompressed) instead of piling
+// on. Override with KEIROUTER_HEADROOM_MAX_CONCURRENCY.
+const defaultMaxConcurrentCompress = 4
 
 // Compressor wraps a fail-open HTTP client and a logger. It compresses a
 // request's messages by calling an external Headroom proxy and replacing the
@@ -20,6 +32,9 @@ import (
 type Compressor struct {
 	client *http.Client
 	log    *slog.Logger
+	// sem bounds concurrent in-flight compression calls (see
+	// defaultMaxConcurrentCompress).
+	sem chan struct{}
 }
 
 // New constructs a Compressor. The HTTP client deliberately has NO client-level
@@ -33,7 +48,20 @@ func New(log *slog.Logger) *Compressor {
 	return &Compressor{
 		client: &http.Client{},
 		log:    log,
+		sem:    make(chan struct{}, resolveMaxConcurrency()),
 	}
+}
+
+// resolveMaxConcurrency reads the concurrency cap from the environment, falling
+// back to the default. Values below 1 are ignored.
+func resolveMaxConcurrency() int {
+	n := defaultMaxConcurrentCompress
+	if v := strings.TrimSpace(os.Getenv("KEIROUTER_HEADROOM_MAX_CONCURRENCY")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 1 {
+			n = parsed
+		}
+	}
+	return n
 }
 
 // compressRequest is the JSON body POSTed to Compress_Endpoint.
@@ -74,18 +102,29 @@ func (c *Compressor) Compress(ctx context.Context, req *core.ChatRequest, cfg Co
 		return &Stats{}
 	}
 
+	// Bound concurrent calls so a burst never stampedes (or crashes) a small
+	// single-worker proxy. When every slot is busy, skip compression for this
+	// request (fail-open) rather than pile on and trigger 503s.
+	select {
+	case c.sem <- struct{}{}:
+		defer func() { <-c.sem }()
+	default:
+		c.log.Debug("headroom: concurrency cap reached; skipping compression (fail-open)")
+		return &Stats{}
+	}
+
 	// Capture the outbound JSON size before the call so phantom-savings can be
 	// judged against the real payload, not the proxy's token claim.
 	bytesBefore := jsonBytes(toOpenAIMessages(req))
 
-	resp, err := c.callCompress(ctx, req, cfg)
+	resp, attempts, err := c.callCompress(ctx, req, cfg)
 	if err != nil {
-		c.logFailOpen(cfg.URL, err)
+		c.logFailOpen(cfg.URL, attempts, err)
 		return &Stats{}
 	}
 	if resp == nil || len(resp.Messages) == 0 {
 		// Missing / null / non-array / empty messages -> fail-open.
-		c.logFailOpen(cfg.URL, errors.New("response contained no compressed messages"))
+		c.logFailOpen(cfg.URL, attempts, errors.New("response contained no compressed messages"))
 		return &Stats{}
 	}
 
@@ -111,11 +150,24 @@ func (c *Compressor) Compress(ctx context.Context, req *core.ChatRequest, cfg Co
 	return &clamped
 }
 
+// maxCompressAttempts bounds how many times callCompress will hit the proxy for
+// a single request: one initial attempt plus retries. Headroom returns 503 (and
+// occasionally 429/502/504) while its compression model is warming up or its
+// async queue is saturated, expecting the client to retry shortly. A small
+// bounded retry converts those transient failures into successful compressions
+// instead of falling open and losing the savings.
+const maxCompressAttempts = 3
+
+// retryBackoff is the base delay between attempts when the proxy reports a
+// transient status without a usable Retry-After header.
+const retryBackoff = 250 * time.Millisecond
+
 // callCompress performs the POST to Compress_Endpoint with a context deadline
-// of cfg.Timeout. It returns an error for any non-success condition (transport
-// error, non-2xx status, decode failure, timeout/late response via context
-// cancellation) so the caller can fail open.
-func (c *Compressor) callCompress(ctx context.Context, req *core.ChatRequest, cfg Config) (*compressResponse, error) {
+// of cfg.Timeout. It returns the decoded response on success, plus the number
+// of attempts made. It returns an error for any non-success condition so the
+// caller can fail open; transient statuses (and transport errors) are retried
+// within the same deadline before giving up.
+func (c *Compressor) callCompress(ctx context.Context, req *core.ChatRequest, cfg Config) (*compressResponse, int, error) {
 	body := compressRequest{
 		Messages: toOpenAIMessages(req),
 		Model:    req.Model,
@@ -126,46 +178,143 @@ func (c *Compressor) callCompress(ctx context.Context, req *core.ChatRequest, cf
 
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	// The per-call deadline; a response arriving after it is abandoned because
-	// client.Do returns a context error.
+	// The per-call deadline spans all attempts; a response arriving after it is
+	// abandoned because client.Do returns a context error.
 	callCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
 	endpoint := buildCompressEndpoint(cfg.URL)
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
+
+	var lastErr error
+	var retryAfter time.Duration
+	attempts := 0
+	for attempt := 0; attempt < maxCompressAttempts; attempt++ {
+		if attempt > 0 {
+			// Wait before retrying, honoring Retry-After when present, but never
+			// past the per-call deadline.
+			if err := sleepCtx(callCtx, retryDelay(retryAfter)); err != nil {
+				return nil, attempts, err
+			}
+		}
+		attempts++
+
+		decoded, after, retryable, err := c.doCompress(callCtx, endpoint, payload)
+		if err == nil {
+			return decoded, attempts, nil
+		}
+		lastErr = err
+		retryAfter = after
+		if !retryable {
+			return nil, attempts, err
+		}
+	}
+	return nil, attempts, lastErr
+}
+
+// doCompress performs a single POST attempt. It returns the decoded response on
+// success, or an error plus whether the failure is transient (worth retrying)
+// and any Retry-After hint parsed from the response.
+func (c *Compressor) doCompress(ctx context.Context, endpoint string, payload []byte) (*compressResponse, time.Duration, bool, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, err
+		// Transport errors (connection refused, reset, transient DNS) are worth
+		// one more try within the deadline; a permanent failure simply exhausts
+		// the attempts and then fails open.
+		return nil, 0, true, err
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
-		return nil, fmt.Errorf("unexpected status %d", httpResp.StatusCode)
+		retryable := isRetryableStatus(httpResp.StatusCode)
+		var after time.Duration
+		if retryable {
+			after = parseRetryAfter(httpResp.Header.Get("Retry-After"))
+			// Drain so the connection can be reused for the retry.
+			_, _ = io.Copy(io.Discard, httpResp.Body)
+		}
+		return nil, after, retryable, fmt.Errorf("unexpected status %d", httpResp.StatusCode)
 	}
 
 	var decoded compressResponse
 	if err := json.NewDecoder(httpResp.Body).Decode(&decoded); err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
-	return &decoded, nil
+	return &decoded, 0, false, nil
+}
+
+// isRetryableStatus reports whether an HTTP status is a transient, retry-worthy
+// signal from the proxy (busy / warming up / gateway hiccup).
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, // 429
+		http.StatusBadGateway,         // 502
+		http.StatusServiceUnavailable, // 503
+		http.StatusGatewayTimeout:     // 504
+		return true
+	default:
+		return false
+	}
+}
+
+// retryDelay returns the delay to wait before the next attempt: the proxy's
+// Retry-After hint when present and sane, otherwise the base backoff.
+func retryDelay(retryAfter time.Duration) time.Duration {
+	if retryAfter > 0 {
+		return retryAfter
+	}
+	return retryBackoff
+}
+
+// parseRetryAfter parses a Retry-After header expressed in whole seconds. It
+// ignores HTTP-date forms and caps the value at 2s so a misbehaving proxy can't
+// stall the request near its deadline.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	d := time.Duration(secs) * time.Second
+	if d > 2*time.Second {
+		d = 2 * time.Second
+	}
+	return d
+}
+
+// sleepCtx waits for d or until ctx is done, returning ctx.Err() if the
+// deadline is reached first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // logFailOpen records a fail-open warning with a masked endpoint (never the raw
 // URL, so embedded credentials and query strings stay out of logs). The work is
 // wrapped in a recover so that a logging failure is itself suppressed and never
 // escapes the pipeline.
-func (c *Compressor) logFailOpen(rawURL string, cause error) {
+func (c *Compressor) logFailOpen(rawURL string, attempts int, cause error) {
 	defer func() { _ = recover() }()
 	c.log.Warn("headroom compression failed; leaving request unchanged (fail-open)",
 		"endpoint", maskURL(rawURL),
+		"attempts", attempts,
 		"error", cause,
 	)
 }
