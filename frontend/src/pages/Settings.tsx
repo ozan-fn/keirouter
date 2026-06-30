@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database, Clock,
-  ArrowUpCircle, CheckCircle2, ExternalLink, XCircle, Terminal,
+  ArrowUpCircle, CheckCircle2, ExternalLink, XCircle, Terminal, RefreshCw,
   Gauge, Eye, EyeOff, KeyRound, Download, Upload, ShieldCheck, Info,
   Palette, Shield,
 } from "lucide-react";
@@ -1693,6 +1693,28 @@ function DatabaseSettings() {
 
 function UpdatesSettings() {
   const { data, isLoading, isError } = useUpdateInfo();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [checking, setChecking] = useState(false);
+
+  const checkNow = async () => {
+    setChecking(true);
+    try {
+      const fresh = await api.updateCheck(true);
+      qc.setQueryData(["update-check"], fresh);
+      if (!fresh.checked) {
+        toast.error("Update check failed", "Could not reach GitHub. Try again later.");
+      } else if (fresh.update_available) {
+        toast.success("Update available", `${fresh.latest} is ready to install.`);
+      } else {
+        toast.success("Up to date", `You're running the latest version (${fresh.current}).`);
+      }
+    } catch (e) {
+      toast.error("Update check failed", (e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const publishedLabel = data?.published_at
     ? new Date(data.published_at).toLocaleDateString(undefined, {
@@ -1708,6 +1730,12 @@ function UpdatesSettings() {
         title="Updates"
         description="Check for new KeiRouter releases and read the latest changelog."
         icon={ArrowUpCircle}
+        action={
+          <Button variant="ghost" className="h-8 px-3 text-xs" onClick={checkNow} disabled={checking}>
+            <RefreshCw className={`h-3.5 w-3.5 ${checking ? "animate-spin" : ""}`} />
+            {checking ? "Checking…" : "Check now"}
+          </Button>
+        }
       />
       <div className="border-t border-[var(--border)] px-6 py-4">
         {isLoading ? (
