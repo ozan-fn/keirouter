@@ -21,14 +21,14 @@ import (
 
 // ---- Qwen (portal.qwen.ai) --------------------------------------------------
 
-// Qwen client fingerprint, mirroring 9router's qwen executor.
+// Qwen client fingerprint.
 const qwenUserAgent = "QwenCode/0.12.3 (linux; x64)"
 
 // Qwen drives portal.qwen.ai's OpenAI-compatible /chat/completions endpoint.
 // Qwen OAuth tokens are bound to a per-account resource_url (host shard), so the
 // connector resolves the host from creds.Extra["resource_url"] when present.
 // It also injects an ephemeral cache-control system message and stream usage
-// options, matching 9router's QwenExecutor.
+// options.
 type Qwen struct {
 	id          string
 	defaultBase string
@@ -184,7 +184,7 @@ const iflowUserAgent = "iFlow-Cli"
 // IFlow drives apis.iflow.cn's OpenAI-compatible /chat/completions endpoint.
 // iFlow requires a per-request HMAC-SHA256 signature over
 // "<user-agent>:<session-id>:<timestamp>" keyed by the API key, plus the
-// session-id and timestamp headers. Mirrors 9router's IFlowExecutor.
+// session-id and timestamp headers.
 type IFlow struct {
 	id          string
 	defaultBase string

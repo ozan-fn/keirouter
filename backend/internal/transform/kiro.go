@@ -22,8 +22,7 @@ import (
 //
 // Kiro has no native reasoning toggle, so reasoning is enabled by injecting a
 // "<thinking_mode>enabled</thinking_mode>" prefix into the user content, plus a
-// "[Context: Current time ...]" marker — a faithful port of 9router's
-// openai-to-kiro translator and kiroConstants. The response is a binary AWS
+// "[Context: Current time ...]" marker. The response is a binary AWS
 // EventStream, parsed by the Kiro connector (not this codec), so the
 // Parse/RenderResponse and stream methods here are minimal stubs.
 type KiroCodec struct{}

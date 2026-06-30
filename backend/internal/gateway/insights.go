@@ -778,8 +778,7 @@ func testRelayPool(relayURL string, timeout time.Duration) proxyTestResult {
 // ---- skills -----------------------------------------------------------------
 
 // skillsKey is the settings key under which skill toggles are stored. Skills
-// are reusable system-prompt augmentations the gateway can apply, mirroring
-// 9router's Skills feature.
+// are reusable system-prompt augmentations the gateway can apply.
 const skillsKey = "skills"
 
 type skill struct {

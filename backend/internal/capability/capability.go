@@ -98,7 +98,15 @@ func SupportsProvider(provider, model string, required core.CapabilitySet) bool 
 
 // Required infers the capabilities a request needs from its content, so the
 // dispatcher can reject incapable fallback targets. It is conservative: it only
-// flags capabilities that are unambiguously required by the request shape.
+// flags capabilities that a target genuinely cannot fake, so a fallback never
+// silently breaks the request.
+//
+// Tool calling and input modalities (vision, audio) are hard requirements: a
+// model without them cannot honor the request at all. Structured output and
+// reasoning are intentionally NOT flagged — they are adapted downstream rather
+// than refused (json_schema degrades to json_object for providers without
+// native support, and thinking is normalized per provider), so gating routing
+// on them would reject targets that can in fact serve the request.
 func Required(req *core.ChatRequest) core.CapabilitySet {
 	set := core.NewCapabilitySet()
 	if len(req.Tools) > 0 {
@@ -106,12 +114,6 @@ func Required(req *core.ChatRequest) core.CapabilitySet {
 	}
 	if req.Stream {
 		set.Add(core.CapStreaming)
-	}
-	if req.Reasoning != nil && (req.Reasoning.Effort != "" || req.Reasoning.MaxTokens > 0) {
-		set.Add(core.CapReasoning)
-	}
-	if len(req.ResponseFormat) > 0 {
-		set.Add(core.CapStructuredOutput)
 	}
 	for _, m := range req.Messages {
 		for _, p := range m.Content {

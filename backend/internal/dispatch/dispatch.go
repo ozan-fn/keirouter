@@ -29,7 +29,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
 
-// Exponential backoff constants (mirrors 9router's accountFallback logic).
+// Exponential backoff constants.
 const (
 	// BackoffBase is the base cooldown duration at backoff level 1.
 	BackoffBase = 2 * time.Second

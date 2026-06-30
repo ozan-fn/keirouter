@@ -1,6 +1,5 @@
 // Package consolelog provides a thread-safe log buffer that captures request
-// pipeline output and streams it to dashboard clients via SSE. It mirrors
-// 9router's consoleLogBuffer.js behavior for the Go backend.
+// pipeline output and streams it to dashboard clients via SSE.
 package consolelog
 
 import (

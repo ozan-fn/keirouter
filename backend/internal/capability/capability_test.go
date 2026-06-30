@@ -170,7 +170,9 @@ func TestResolveProfileChain(t *testing.T) {
 	}
 }
 
-// TestRequired verifies request-shape inference.
+// TestRequired verifies request-shape inference. Structured output and
+// reasoning are adapted downstream rather than gated, so they are intentionally
+// absent from the required set even when the request carries them.
 func TestRequired(t *testing.T) {
 	req := &core.ChatRequest{
 		Tools:          []core.Tool{{Name: "lookup"}},
@@ -188,8 +190,6 @@ func TestRequired(t *testing.T) {
 	want := core.NewCapabilitySet(
 		core.CapToolCalling,
 		core.CapStreaming,
-		core.CapStructuredOutput,
-		core.CapReasoning,
 		core.CapVision,
 		core.CapAudioInput,
 	)

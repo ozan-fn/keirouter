@@ -879,7 +879,7 @@ func stripTimeContext(s string) string {
 }
 
 // TestKiro_RenderRequest_NormalizesToolSchema verifies the tool schema is passed
-// through to Kiro as-is (matching 9router's proven-good translator), with only a
+// through to Kiro as-is, with only a
 // "required" array guaranteed present. Kiro accepts full JSON-Schema draft
 // documents, so client keywords like "$schema" and "additionalProperties" are
 // preserved rather than stripped — stripping diverged from the working shape and
