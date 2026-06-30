@@ -102,6 +102,7 @@ Grab whichever path matches what's already on your machine — no need to instal
 | Method | You'll need | Great for |
 |---|---|---|
 | **Homebrew** | macOS or Linux with Homebrew | The fastest way to a prebuilt binary |
+| **Windows** | Windows 10/11 with PowerShell | Prebuilt binary, no Go/Node |
 | **From source** | Go 1.24+ and Node.js 20+ | Local hacking / latest `main` |
 | **Docker** | Just Docker | Clean, isolated runs |
 | **Docker Compose** | Docker + Docker Compose | VPS / production / Coolify |
@@ -153,6 +154,25 @@ docker compose up -d --build
 ```
 
 VPS, PostgreSQL, and Coolify notes live in [deploy/README.md](deploy/README.md).
+</details>
+
+<details>
+<summary><strong>Option E — Windows</strong> · prebuilt, no Go/Node needed</summary>
+
+Open **PowerShell** and run:
+
+```powershell
+irm https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.ps1 | iex
+```
+
+It downloads the latest prebuilt binary, drops it (plus the dashboard) into `%LOCALAPPDATA%\KeiRouter`, and adds it to your PATH. Open a **new** terminal afterwards, then:
+
+```powershell
+keirouter -bootstrap   # mint your first API key (printed once)
+keirouter              # start the server on :20180
+```
+
+> Pin a version or change the location with `$env:KEIROUTER_VERSION` / `$env:KEIROUTER_DIR` before running the one-liner.
 </details>
 
 ### First login
