@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
@@ -9,7 +9,9 @@ import { KilocodeConnectModal } from "../components/KilocodeConnectModal";
 import { CodebuddyConnectModal } from "../components/CodebuddyConnectModal";
 import { CursorConnectModal } from "../components/CursorConnectModal";
 import { CommandCodeConnectModal } from "../components/CommandCodeConnectModal";
+import { CustomModelsSection } from "../components/CustomModelsSection";
 import { useToast } from "../components/Toast";
+
 import {
   Card,
   CardHeader,
@@ -356,6 +358,9 @@ export function ProviderDetailPage() {
               <Badge tone="accent">free</Badge>
             )}
           </div>
+          {provider.custom && provider.base_url && (
+            <BaseURLDisplay baseURL={provider.base_url} dialect={provider.dialect} />
+          )}
         </div>
       </header>
 
@@ -609,9 +614,13 @@ export function ProviderDetailPage() {
             )}
           </Card>
         )}
+
+        {/* User-registered custom models (separate from the catalog list). */}
+        <CustomModelsSection provider={provider} />
       </div>
 
       {oauthOpen && oauthProvider && (
+
         <ConnectModal provider={oauthProvider} onClose={() => setOauthOpen(false)} />
       )}
       {kiroOpen && <KiroConnectModal onClose={() => setKiroOpen(false)} />}
@@ -649,6 +658,58 @@ export function ProviderDetailPage() {
         />
       )}
     </>
+  );
+}
+
+// BaseURLDisplay shows the upstream base URL for a user-defined custom
+// provider (OpenAI- or Anthropic-compatible) on the provider detail header,
+// with a one-click copy affordance. Hidden for built-in providers whose base
+// URL is fixed and not user-configurable.
+function BaseURLDisplay({ baseURL, dialect }: { baseURL: string; dialect?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(baseURL);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard may be unavailable (insecure context); silently ignore.
+    }
+  };
+
+  const dialectLabel =
+    dialect === "anthropic"
+      ? "Anthropic-compatible"
+      : dialect === "openai"
+        ? "OpenAI-compatible"
+        : dialect;
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-1.5">
+        <Globe className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+        <span className="text-xs font-medium text-[var(--text-muted)]">Base URL</span>
+        <code className="truncate font-mono text-xs text-[var(--text)]" title={baseURL}>
+          {baseURL}
+        </code>
+        <button
+          type="button"
+          onClick={copy}
+          title="Copy base URL"
+          className="shrink-0 rounded-md p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]"
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5 text-[color:var(--color-success)]" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+      {dialectLabel && (
+        <Badge tone="neutral">{dialectLabel}</Badge>
+      )}
+    </div>
   );
 }
 

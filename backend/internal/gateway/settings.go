@@ -16,8 +16,8 @@ import (
 )
 
 // endpointSettingsKey is the settings-store key under which token-saving
-// preferences are persisted as a JSON blob (mirrors 9router's endpoint
-// settings: RTK token saver + caveman output compression + terse mode).
+// preferences are persisted as a JSON blob (RTK token saver + caveman output
+// compression + terse mode).
 const endpointSettingsKey = "endpoint_settings"
 
 // EndpointSettings holds the dashboard-configurable token-saving preferences.
@@ -36,7 +36,7 @@ type EndpointSettings struct {
 	TerseEnabled bool   `json:"terse_enabled"`
 	TerseLevel   string `json:"terse_level"`
 
-	// Routing strategy fields (mirrors 9router).
+	// Routing strategy fields.
 	RoutingStrategy  string `json:"routing_strategy"`   // "fill-first" | "round-robin" | "smart-round-robin"
 	StickyLimit      int    `json:"sticky_limit"`       // calls per account before switching
 	ComboStrategy    string `json:"combo_strategy"`     // "fallback" | "round-robin"
@@ -64,11 +64,11 @@ type EndpointSettings struct {
 	RequestTimeoutMs int `json:"request_timeout_ms"`
 }
 
-// defaultEndpointSettings mirrors 9router's defaults: RTK on, caveman/terse off.
+// defaultEndpointSettings returns the defaults: RTK on, caveman/terse off.
 func defaultEndpointSettings() EndpointSettings {
 	return EndpointSettings{
-		RTKEnabled:     true,
-		RTKFilterLevel: "none",
+		RTKEnabled:           true,
+		RTKFilterLevel:       "none",
 		CavemanEnabled:       false,
 		CavemanLevel:         string(caveman.LevelFull),
 		TerseEnabled:         false,
@@ -80,14 +80,14 @@ func defaultEndpointSettings() EndpointSettings {
 		OutboundProxyURL:     "",
 		OutboundNoProxy:      "",
 		RateLimitsEnabled:    true,
-		// Timeout defaults (ms). Raised from 9router's aggressive 20s/30s to
+		// Timeout defaults (ms). Generous bounds to
 		// accommodate slow upstream providers and reasoning models.
 		// Keep account routing context-sticky by default: repeated turns from
 		// the same conversation prefer the same account, while new conversations
 		// still spread across accounts.
 		RoutingStrategy:         string(dispatch.StrategySmartRoundRobin),
-		StreamStallTimeoutMs:    120000, // 2 min (was 30s in 9router)
-		ResponseHeaderTimeoutMs: 60000,  // 60s (was 20s in 9router)
+		StreamStallTimeoutMs:    120000, // 2 min
+		ResponseHeaderTimeoutMs: 60000,  // 60s
 		RequestTimeoutMs:        300000, // 5 min
 	}
 }
@@ -562,7 +562,7 @@ func (s *Server) adminUpdateProviderRouting(w http.ResponseWriter, r *http.Reque
 // ---- access settings --------------------------------------------------------
 
 // accessSettingsKey is the settings-store key for the Endpoints page access
-// options (local access, secure tunnel, Tailscale), mirroring 9router.
+// options (local access, secure tunnel, Tailscale).
 const accessSettingsKey = "access_settings"
 
 // AccessSettings holds the endpoint reachability toggles. These are dashboard

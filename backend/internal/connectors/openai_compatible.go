@@ -178,7 +178,7 @@ func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials)
 		return fmt.Errorf("validation failed for %s: %w", c.id, err)
 	}
 
-	// Many 9router-compatible providers either omit /models or reject unknown
+	// Many OpenAI-compatible providers either omit /models or reject unknown
 	// probe models with 400/404 while still accepting the credential. Fall back
 	// to a minimal chat request and treat any non-auth HTTP response as proof
 	// that the connection reached the provider.

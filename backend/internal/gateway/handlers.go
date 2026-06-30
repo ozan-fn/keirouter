@@ -370,8 +370,17 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	// ToolArgSanitizer buffers streaming tool call arguments and emits
 	// sanitized JSON when each tool call completes. This fixes malformed
 	// arguments from non-Anthropic models (e.g., Read.limit as string).
+	// Tool-call args from fragmenting upstreams (Kiro, Cursor, CommandCode)
+	// arrive split across frames and must be reassembled into one complete JSON
+	// object before rendering, regardless of tool name or client dialect.
+	// Streaming raw fragments and relying on the client to reassemble breaks
+	// clients like Cline ("missing required parameter"). The sanitizer passes
+	// text/thinking through immediately, so this only buffers the (small,
+	// non-actionable) tool-arg fragments — live text streaming is unaffected.
 	sanitizer := transform.NewToolArgSanitizer()
+
 	// ThinkTagState strips <think>...</think> tags from streaming content.
+
 	// Some models (MiMo, QwQ) embed reasoning as XML tags in the content
 	// field instead of using a structured reasoning_content field.
 	thinkFilter := &transform.ThinkTagState{}
@@ -432,7 +441,9 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 
 	// Flush any remaining buffered tool calls and think-tag buffer.
 	sanitizer.Flush(renderChunk)
+
 	// Flush think-tag state — emit any remaining buffered text.
+
 	for _, fc := range thinkFilter.Flush() {
 		if fc.Type == core.ChunkThinking {
 			continue
