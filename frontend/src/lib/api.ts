@@ -247,6 +247,46 @@ export interface AccountInput {
   priority?: number;
 }
 
+// BulkAccountItem is one credential in a bulk import. Only api_key (and an
+// optional per-item base_url / label) varies per row; shared provider config
+// lives on BulkAccountInput.
+export interface BulkAccountItem {
+  label?: string;
+  api_key?: string;
+  base_url?: string;
+}
+
+export interface BulkAccountInput {
+  provider: string;
+  base_url?: string;
+  region?: string;
+  account_id?: string;
+  azure_endpoint?: string;
+  azure_deployment?: string;
+  azure_api_version?: string;
+  azure_organization?: string;
+  priority?: number;
+  proxy_pool_id?: string;
+  validate?: boolean;
+  items: BulkAccountItem[];
+}
+
+export interface BulkAccountResult {
+  index: number;
+  label: string;
+  status: "created" | "error" | "skipped";
+  id?: string;
+  error?: string;
+}
+
+export interface BulkAccountResponse {
+  total: number;
+  created: number;
+  failed: number;
+  skipped: number;
+  results: BulkAccountResult[];
+}
+
 export interface ChainStep {
   provider: string;
   model: string;
@@ -1016,6 +1056,8 @@ export const api = {
   listAccounts: () => request<{ accounts: Account[] }>("GET", "/accounts"),
   createAccount: (input: AccountInput) =>
     request<{ id: string }>("POST", "/accounts", input),
+  bulkCreateAccounts: (input: BulkAccountInput) =>
+    request<BulkAccountResponse>("POST", "/accounts/bulk", input),
   updateAccount: (id: string, patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string }) =>
     request<{ id: string }>("PATCH", `/accounts/${id}`, patch),
   deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${id}`),
@@ -1108,7 +1150,9 @@ export const api = {
     request<{ ids: string[] }>("DELETE", "/models/disabled", { providerAlias, ids }),
 
   // Update check (queries GitHub for the latest release + changelog).
-  updateCheck: () => request<UpdateInfo>("GET", "/update/check"),
+  // Pass force=true to bypass the backend's 6-hour cache (the "Check now" button).
+  updateCheck: (force?: boolean) =>
+    request<UpdateInfo>("GET", `/update/check${force ? "?refresh=1" : ""}`),
 
   // Database export/import. An optional passphrase produces a portable backup
   // whose credentials are re-keyed to the passphrase (movable across machines

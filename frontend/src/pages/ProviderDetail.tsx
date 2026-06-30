@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings } from "../lib/api";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText } from "lucide-react";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
 import { KilocodeConnectModal } from "../components/KilocodeConnectModal";
@@ -11,6 +11,7 @@ import { CursorConnectModal } from "../components/CursorConnectModal";
 import { CommandCodeConnectModal } from "../components/CommandCodeConnectModal";
 import { CustomModelsSection } from "../components/CustomModelsSection";
 import { useToast } from "../components/Toast";
+import { parseKeys } from "../lib/bulk";
 
 import {
   Card,
@@ -22,6 +23,7 @@ import {
   Spinner,
   EmptyState,
   ErrorBanner,
+  Modal,
 } from "../components/ui";
 
 // redirectURIForProvider returns the OAuth callback the provider redirects to
@@ -93,6 +95,7 @@ export function ProviderDetailPage() {
   const [cursorOpen, setCursorOpen] = useState(false);
   const [commandcodeOpen, setCommandcodeOpen] = useState(false);
   const [addKeyOpen, setAddKeyOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   // Model search and pagination
   const [modelSearchQuery, setModelSearchQuery] = useState("");
@@ -250,9 +253,72 @@ export function ProviderDetailPage() {
     onError: (e: Error) => toast.error("Routing update failed", e.message),
   });
 
+  // Multi-select for connected accounts: enables bulk enable / disable / delete.
+  const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(new Set());
+  const toggleAccountSelection = (accId: string) =>
+    setSelectedAccountIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(accId)) next.delete(accId);
+      else next.add(accId);
+      return next;
+    });
+  const clearAccountSelection = () => setSelectedAccountIds(new Set());
+
+  const bulkUpdateAccounts = useMutation({
+    mutationFn: async ({ ids, disabled }: { ids: string[]; disabled: boolean }) => {
+      await Promise.all(ids.map((accId) => api.updateAccount(accId, { disabled })));
+    },
+    onSuccess: (_, { ids, disabled }) => {
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      clearAccountSelection();
+      toast.success(
+        `${ids.length} account${ids.length > 1 ? "s" : ""} ${disabled ? "disabled" : "enabled"}`,
+        disabled ? "Selected accounts are paused and excluded from routing." : "Selected accounts are active again.",
+      );
+    },
+    onError: (e: Error) => toast.error("Bulk update failed", e.message),
+  });
+
+  const bulkDeleteAccounts = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(ids.map((accId) => api.deleteAccount(accId)));
+    },
+    onSuccess: (_, ids) => {
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      clearAccountSelection();
+      toast.success(`${ids.length} account${ids.length > 1 ? "s" : ""} removed`, "Encrypted secrets have been purged.");
+    },
+    onError: (e: Error) => toast.error("Bulk removal failed", e.message),
+  });
+
   // Sort accounts by priority for display.
   const sortedAccounts = [...myAccounts].sort((a, b) => a.priority - b.priority);
   const disabledModelIds = new Set(disabledModels.data?.ids ?? []);
+
+  // Derived selection state (scoped to this provider's accounts).
+  const selectedList = sortedAccounts.filter((a) => selectedAccountIds.has(a.id));
+  const allAccountsSelected = sortedAccounts.length > 0 && selectedList.length === sortedAccounts.length;
+  const someAccountsSelected = selectedList.length > 0 && !allAccountsSelected;
+  const bulkBusy = bulkUpdateAccounts.isPending || bulkDeleteAccounts.isPending;
+
+  const toggleSelectAllAccounts = () => {
+    if (allAccountsSelected) clearAccountSelection();
+    else setSelectedAccountIds(new Set(sortedAccounts.map((a) => a.id)));
+  };
+  const handleBulkDisable = () => {
+    const ids = selectedList.filter((a) => !a.disabled).map((a) => a.id);
+    if (ids.length) bulkUpdateAccounts.mutate({ ids, disabled: true });
+  };
+  const handleBulkEnable = () => {
+    const ids = selectedList.filter((a) => a.disabled).map((a) => a.id);
+    if (ids.length) bulkUpdateAccounts.mutate({ ids, disabled: false });
+  };
+  const handleBulkDeleteAccounts = () => {
+    const ids = selectedList.map((a) => a.id);
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} account${ids.length > 1 ? "s" : ""}? Encrypted secrets will be purged. This cannot be undone.`)) return;
+    bulkDeleteAccounts.mutate(ids);
+  };
 
   // runTestAll tests every account sequentially (one at a time), updating each
   // row's status as it goes, then summarizes the outcome. Failures don't stop
@@ -324,6 +390,11 @@ export function ProviderDetailPage() {
     provider.auth_modes.includes("none") ||
     !oauthProvider
   );
+  // Bulk key upload applies to providers authenticated by API key. It is hidden
+  // for Azure (each key needs its own endpoint + deployment, so there is no
+  // shared config to bulk against) and for no-auth providers (nothing to bulk).
+  const providerSupportsApiKey = provider.auth_modes.includes("api_key") || provider.auth_kind === "api_key";
+  const supportsBulkUpload = supportsManualConnect && providerSupportsApiKey && provider.id !== "azure";
 
   return (
     <>
@@ -438,6 +509,12 @@ export function ProviderDetailPage() {
                     {provider.auth_kind === "none" ? "Connect" : "Add API key"}
                   </Button>
                 )}
+                {supportsBulkUpload && (
+                  <Button variant="ghost" className="h-8 px-3 text-xs" onClick={() => setBulkOpen(true)}>
+                    <Layers className="h-3.5 w-3.5" />
+                    Bulk add
+                  </Button>
+                )}
               </div>
             }
           />
@@ -465,24 +542,63 @@ export function ProviderDetailPage() {
               hint="Add an account to start routing through this provider."
             />
           ) : (
-            <div className="divide-y divide-[var(--border)]">
-              {sortedAccounts.map((a, i) => (
-                <AccountRow
-                  key={a.id}
-                  account={a}
-                  index={i}
-                  total={sortedAccounts.length}
-                  pools={pools.data?.pools ?? []}
-                  onDelete={() => remove.mutate(a.id)}
-                  onMoveUp={() => moveAccount(a.id, "up")}
-                  onMoveDown={() => moveAccount(a.id, "down")}
-                  onTest={() => runTest(a.id)}
-                  onUpdateProxy={(patch) => updateAccount.mutate({ id: a.id, patch })}
-                  testResult={testResults[a.id]}
-                  disabledByBatch={testingAll}
-                />
-              ))}
-            </div>
+            <>
+              <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-2.5">
+                <label className="flex cursor-pointer items-center gap-2 text-xs text-[var(--text-muted)]">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+                    checked={allAccountsSelected}
+                    ref={(el) => { if (el) el.indeterminate = someAccountsSelected; }}
+                    onChange={toggleSelectAllAccounts}
+                  />
+                  Select all
+                </label>
+                {selectedList.length > 0 ? (
+                  <>
+                    <span className="text-xs text-[var(--text-muted)]">{selectedList.length} selected</span>
+                    <div className="flex-1" />
+                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={handleBulkEnable} disabled={bulkBusy}>
+                      <ToggleRight className="h-3.5 w-3.5 text-emerald-500" />
+                      Enable
+                    </Button>
+                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={handleBulkDisable} disabled={bulkBusy}>
+                      <ToggleLeft className="h-3.5 w-3.5" />
+                      Disable
+                    </Button>
+                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={handleBulkDeleteAccounts} disabled={bulkBusy}>
+                      <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                      Delete
+                    </Button>
+                    <Button variant="ghost" className="h-7 px-2 text-xs" onClick={clearAccountSelection} disabled={bulkBusy}>
+                      Clear
+                    </Button>
+                  </>
+                ) : (
+                  <span className="text-xs text-[var(--text-muted)]">Select accounts for bulk actions</span>
+                )}
+              </div>
+              <div className="divide-y divide-[var(--border)]">
+                {sortedAccounts.map((a, i) => (
+                  <AccountRow
+                    key={a.id}
+                    account={a}
+                    index={i}
+                    total={sortedAccounts.length}
+                    pools={pools.data?.pools ?? []}
+                    selected={selectedAccountIds.has(a.id)}
+                    onToggleSelect={() => toggleAccountSelection(a.id)}
+                    onDelete={() => remove.mutate(a.id)}
+                    onMoveUp={() => moveAccount(a.id, "up")}
+                    onMoveDown={() => moveAccount(a.id, "down")}
+                    onTest={() => runTest(a.id)}
+                    onUpdateProxy={(patch) => updateAccount.mutate({ id: a.id, patch })}
+                    testResult={testResults[a.id]}
+                    disabledByBatch={testingAll}
+                  />
+                ))}
+              </div>
+            </>
           )}
         </Card>
 
@@ -657,6 +773,9 @@ export function ProviderDetailPage() {
           onClose={() => { setAddKeyOpen(false); setError(""); }}
         />
       )}
+      {bulkOpen && (
+        <BulkAddKeysModal provider={provider} onClose={() => setBulkOpen(false)} />
+      )}
     </>
   );
 }
@@ -798,6 +917,8 @@ function AccountRow({
   index,
   total,
   pools,
+  selected,
+  onToggleSelect,
   onDelete,
   onMoveUp,
   onMoveDown,
@@ -810,6 +931,8 @@ function AccountRow({
   index: number;
   total: number;
   pools: ProxyPool[];
+  selected?: boolean;
+  onToggleSelect?: () => void;
   onDelete: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -846,9 +969,18 @@ function AccountRow({
   const boundPool = pools.find((p) => p.id === a.proxy_pool_id);
 
   return (
-    <div className={`px-4 py-3 ${a.disabled ? "opacity-60" : ""}`}>
+    <div className={`px-4 py-3 ${a.disabled ? "opacity-60" : ""} ${selected ? "bg-accent-50/50 dark:bg-accent-900/10" : ""}`}>
       {/* Header row */}
       <div className="flex items-center justify-between gap-3">
+        {onToggleSelect && (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={onToggleSelect}
+            aria-label={`Select ${a.label || a.provider}`}
+            className="h-3.5 w-3.5 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+          />
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-sm font-medium">{a.label || a.provider}</span>
@@ -1028,6 +1160,258 @@ function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
         <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(2, pct)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+// BulkAddKeysModal imports many API keys for a provider in one shot. Shared
+// provider config (base URL, region, Cloudflare account) is entered once and
+// applied to every key; only the key (and an optional inline label / base URL)
+// varies per line. The standardized paste format is parsed live with a preview,
+// keys can be loaded from a .txt/.csv file, and the backend returns a per-row
+// outcome that is rendered after import.
+function BulkAddKeysModal({ provider, onClose }: { provider: Provider; onClose: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const [validate, setValidate] = useState(false);
+  const [baseURL, setBaseURL] = useState(provider.base_url ?? "");
+  const [region, setRegion] = useState(provider.default_region ?? "");
+  const [accountID, setAccountID] = useState("");
+  const [results, setResults] = useState<BulkAccountResult[] | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const isCloudflare = provider.id === "cloudflare-ai";
+  const isCustom = provider.id === "custom-openai" || provider.id === "custom-anthropic" || !!provider.custom;
+  const hasRegions = (provider.regions?.length ?? 0) > 0;
+  const requiresBaseURL = isCustom;
+  // Generic providers expose an optional shared base URL; region/Cloudflare
+  // providers use their own dedicated control instead.
+  const showBaseURL = !hasRegions && !isCloudflare;
+  const keyPlaceholder = provider.id === "xai" ? "xai-..." : "sk-...";
+
+  const parsed = useMemo(() => parseKeys(text), [text]);
+  const validCount = parsed.entries.length;
+
+  const importMut = useMutation({
+    mutationFn: () =>
+      api.bulkCreateAccounts({
+        provider: provider.id,
+        base_url: showBaseURL && baseURL.trim() ? baseURL.trim() : undefined,
+        region: hasRegions ? region : undefined,
+        account_id: isCloudflare ? accountID.trim() : undefined,
+        validate,
+        items: parsed.entries.map((e) => ({
+          label: e.label || undefined,
+          api_key: e.apiKey,
+          base_url: e.baseURL,
+        })),
+      }),
+    onSuccess: (res) => {
+      setResults(res.results);
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      if (res.failed === 0) {
+        toast.success(
+          "Bulk import complete",
+          `${res.created} key${res.created === 1 ? "" : "s"} added${res.skipped ? `, ${res.skipped} duplicate skipped` : ""}.`,
+        );
+      } else {
+        toast.error(
+          "Bulk import finished with errors",
+          `${res.created} added, ${res.failed} failed${res.skipped ? `, ${res.skipped} skipped` : ""}.`,
+        );
+      }
+    },
+    onError: (e: Error) => toast.error("Bulk import failed", e.message),
+  });
+
+  const canImport =
+    validCount > 0 &&
+    !importMut.isPending &&
+    (!requiresBaseURL || !!baseURL.trim()) &&
+    (!isCloudflare || !!accountID.trim());
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const content = await file.text();
+    setText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, "")}\n${content}` : content));
+    e.target.value = "";
+  };
+
+  const reset = () => {
+    setResults(null);
+    setText("");
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Bulk add API keys — ${provider.display_name}`}
+      subtitle="Paste one key per line, or load a .txt/.csv file."
+      maxWidth="max-w-2xl"
+    >
+      {results ? (
+        <BulkResultsView
+          results={results}
+          onClose={onClose}
+          onAgain={reset}
+        />
+      ) : (
+        <div className="space-y-4 px-6 py-5">
+          {/* Shared provider config applied to every key. */}
+          {(showBaseURL || hasRegions || isCloudflare) && (
+            <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+              <p className="text-xs font-medium text-[var(--text-muted)]">Shared settings (applied to every key)</p>
+              {hasRegions && (
+                <Field label="Region">
+                  <select
+                    value={region}
+                    onChange={(e) => setRegion(e.target.value)}
+                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+                  >
+                    {(provider.regions ?? []).map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+              {isCloudflare && (
+                <Field label="Cloudflare account ID">
+                  <Input value={accountID} onChange={(e) => setAccountID(e.target.value)} placeholder="abc123def456..." required />
+                </Field>
+              )}
+              {showBaseURL && (
+                <Field label={requiresBaseURL ? "Base URL" : "Base URL (optional)"}>
+                  <Input
+                    value={baseURL}
+                    onChange={(e) => setBaseURL(e.target.value)}
+                    placeholder="for custom endpoints"
+                    required={requiresBaseURL}
+                  />
+                </Field>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">API keys</label>
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                Load file
+              </button>
+              <input ref={fileRef} type="file" accept=".txt,.csv,text/plain,text/csv" className="hidden" onChange={onFile} />
+            </div>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={8}
+              spellCheck={false}
+              placeholder={`${keyPlaceholder}\nlabel-2, ${keyPlaceholder}\n# lines starting with # are comments`}
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 font-mono text-xs placeholder:text-[var(--text-muted)] focus:border-accent-400 focus:outline-none"
+            />
+            <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+              One key per line. Optional inline label: <code className="font-mono">label,key</code>. Blank lines and{" "}
+              <code className="font-mono">#</code> comments are ignored.
+            </p>
+          </div>
+
+          {/* Live parse preview. */}
+          {text.trim() && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Badge tone={validCount > 0 ? "success" : "neutral"}>{validCount} ready</Badge>
+              {parsed.duplicates > 0 && <Badge tone="warning">{parsed.duplicates} duplicate</Badge>}
+              {parsed.errors.length > 0 && <Badge tone="danger">{parsed.errors.length} invalid</Badge>}
+              {parsed.errors.slice(0, 3).map((err) => (
+                <span key={err.line} className="text-[var(--text-muted)]">
+                  line {err.line}: {err.message}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-3">
+            <input
+              type="checkbox"
+              checked={validate}
+              onChange={(e) => setValidate(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+            />
+            <span className="text-xs leading-relaxed text-[var(--text-muted)]">
+              <span className="font-medium text-[var(--text)]">Validate each key against the upstream</span> before saving.
+              Slower for large batches and may hit provider rate limits. Off by default.
+            </span>
+          </label>
+
+          <div className="flex gap-3">
+            <Button type="button" variant="ghost" onClick={onClose} className="flex-1">
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => importMut.mutate()} disabled={!canImport} className="flex-1">
+              {importMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {importMut.isPending ? "Importing…" : `Import ${validCount || ""}`.trim()}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// BulkResultsView renders the per-row outcome of a bulk import.
+function BulkResultsView({
+  results,
+  onClose,
+  onAgain,
+}: {
+  results: BulkAccountResult[];
+  onClose: () => void;
+  onAgain: () => void;
+}) {
+  const created = results.filter((r) => r.status === "created").length;
+  const skipped = results.filter((r) => r.status === "skipped").length;
+  const failed = results.filter((r) => r.status === "error").length;
+
+  return (
+    <div className="space-y-4 px-6 py-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone="success">{created} added</Badge>
+        {skipped > 0 && <Badge tone="warning">{skipped} skipped</Badge>}
+        {failed > 0 && <Badge tone="danger">{failed} failed</Badge>}
+      </div>
+      <div className="max-h-72 divide-y divide-[var(--border)] overflow-y-auto rounded-xl border border-[var(--border)]">
+        {results.map((r) => (
+          <div key={r.index} className="flex items-center gap-3 px-3 py-2 text-xs">
+            {r.status === "created" ? (
+              <CheckCircle className="h-4 w-4 shrink-0 text-emerald-500" />
+            ) : r.status === "skipped" ? (
+              <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
+            ) : (
+              <XCircle className="h-4 w-4 shrink-0 text-red-500" />
+            )}
+            <span className="w-10 shrink-0 text-[var(--text-muted)]">#{r.index + 1}</span>
+            <span className="flex-1 truncate font-medium">{r.label || "(unlabeled)"}</span>
+            {r.error && <span className="truncate text-[var(--text-muted)]" title={r.error}>{r.error}</span>}
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-3">
+        <Button type="button" variant="ghost" onClick={onAgain} className="flex-1">
+          <Layers className="h-4 w-4" />
+          Import more
+        </Button>
+        <Button type="button" onClick={onClose} className="flex-1">
+          <Check className="h-4 w-4" />
+          Done
+        </Button>
       </div>
     </div>
   );
