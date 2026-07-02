@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/capability"
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/proxy"
 	"github.com/mydisha/keirouter/backend/internal/store"
@@ -220,7 +221,10 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 	for _, target := range ordered {
 		// Capability guard: never fall back to a model that cannot honor the
 		// request. This prevents silent quality downgrades.
-		if !capability.SupportsProvider(target.Provider, target.Model, required) {
+		// User-defined (custom) providers have unknown upstream capabilities,
+		// so the guard is relaxed for them — unsupported modalities are
+		// stripped downstream by the pipeline instead of blocking the request.
+		if !connectors.IsCustomProviderID(target.Provider) && !capability.SupportsProvider(target.Provider, target.Model, required) {
 			lastReason = fmt.Sprintf("model %q lacks required capabilities", target.Model)
 			continue
 		}

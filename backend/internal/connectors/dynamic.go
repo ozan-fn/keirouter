@@ -1,6 +1,7 @@
 package connectors
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -101,6 +102,14 @@ func dynamicModelsFor(providerID string) []ModelSpec {
 	cp := make([]ModelSpec, len(models))
 	copy(cp, models)
 	return cp
+}
+
+// IsCustomProviderID reports whether a provider id belongs to a user-defined
+// dynamic provider instance (prefixed "custom-openai-" or "custom-anthropic-").
+// The routing layer uses this to relax capability guards for providers whose
+// upstream capabilities are unknown.
+func IsCustomProviderID(id string) bool {
+	return strings.HasPrefix(id, CustomOpenAIPrefix) || strings.HasPrefix(id, CustomAnthropicPrefix)
 }
 
 // dynamicConnector builds a connector on demand for a dynamic provider. Custom

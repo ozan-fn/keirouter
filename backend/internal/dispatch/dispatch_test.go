@@ -202,6 +202,54 @@ func TestPlanWith_TargetRoundRobinRotatesComboTargets(t *testing.T) {
 	require.Equal(t, []string{"gpt-4o", "gpt-5", "gpt-4o"}, got)
 }
 
+func TestPlanWith_CustomProviderSkipsCapabilityGuard(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccountWithProvider("acc-custom", "custom-openai-bandel", 10))
+
+	// glm-5.2 on a custom provider lacks vision in its resolved profile.
+	// A vision-required request would normally be rejected, but custom
+	// providers bypass the guard because their upstream capabilities are
+	// unknown — the pipeline soft-degrades modalities instead.
+	required := core.NewCapabilitySet(core.CapVision)
+	targets := []Target{{Provider: "custom-openai-bandel", Model: "glm-5.2"}}
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, required, PlanOptions{})
+	require.NoError(t, err)
+	require.NotEmpty(t, attempts)
+	require.Equal(t, "custom-openai-bandel", attempts[0].Target.Provider)
+	require.Equal(t, "glm-5.2", attempts[0].Target.Model)
+}
+
+func TestPlanWith_BuiltInProviderEnforcesCapabilityGuard(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccount("acc-1", 10))
+
+	// glm-5.2 on a built-in provider resolves to a profile without vision.
+	// A vision-required request must be rejected by the guard.
+	required := core.NewCapabilitySet(core.CapVision)
+	targets := []Target{{Provider: "openai", Model: "glm-5.2"}}
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, required, PlanOptions{})
+	require.Error(t, err)
+	require.Empty(t, attempts)
+	require.Contains(t, err.Error(), "lacks required capabilities")
+}
+
+func testAccountWithProvider(id, provider string, priority int) store.Account {
+	now := time.Now()
+	return store.Account{
+		ID:        id,
+		TenantID:  store.DefaultTenantID,
+		Provider:  provider,
+		Label:     id,
+		AuthKind:  store.AuthAPIKey,
+		Priority:  priority,
+		Metadata:  "{}",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
 func TestAdvanceRotationStateHonorsStickyLimit(t *testing.T) {
 	cursor, nextCursor, hits := advanceRotationState(3, 0, 0, 2)
 	require.Equal(t, 0, cursor)

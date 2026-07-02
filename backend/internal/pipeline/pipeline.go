@@ -22,6 +22,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/cache"
 	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/caveman"
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/guardrails"
@@ -246,6 +247,18 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			"model", attempt.Target.Model, "account", attempt.Account.ID)
 		attemptReq := cloneForAttempt(req, attempt.Target.Model)
 
+		// Soft-degrade unsupported modalities for custom/dynamic providers.
+		// Built-in providers are already guarded by the dispatcher's capability
+		// check; custom providers have unknown upstream capabilities and may
+		// not support vision or audio. Stripping replaces those parts with text
+		// placeholders so the upstream receives a valid request it can process.
+		if connectors.IsCustomProviderID(attempt.Target.Provider) {
+			if capability.StripUnsupportedModalities(attemptReq, attempt.Target.Provider, attempt.Target.Model) {
+				p.log.Debug("stripped unsupported modalities for custom provider",
+					"provider", attempt.Target.Provider, "model", attempt.Target.Model)
+			}
+		}
+
 		// Inject proxy config from credentials into context so the connector's
 		// HTTP client uses the right proxy/relay for this account.
 		callCtx := core.WithProxy(ctx, attempt.Creds)
@@ -450,6 +463,18 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		started := time.Now()
 		p.log.Debug("stream attempt start", "i", i, "provider", attempt.Target.Provider,
 			"model", attempt.Target.Model, "account", attempt.Account.ID)
+
+		// Soft-degrade unsupported modalities for custom/dynamic providers.
+		// Built-in providers are already guarded by the dispatcher's capability
+		// check; custom providers have unknown upstream capabilities and may
+		// not support vision or audio. Stripping replaces those parts with text
+		// placeholders so the upstream receives a valid request it can process.
+		if connectors.IsCustomProviderID(attempt.Target.Provider) {
+			if capability.StripUnsupportedModalities(attemptReq, attempt.Target.Provider, attempt.Target.Model) {
+				p.log.Debug("stripped unsupported modalities for custom provider",
+					"provider", attempt.Target.Provider, "model", attempt.Target.Model)
+			}
+		}
 
 		// Capture TTFT from the connector's first-chunk callback.
 		// StartedAt is set to the attempt start so connectors measure TTFT
