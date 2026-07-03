@@ -275,6 +275,40 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		}
 		latency := time.Since(started)
 
+		// Some upstream providers reject non-streaming requests with 400
+		// "Stream must be set to true". ErrBadRequest is not fallbackable, so
+		// the pipeline would normally abort the entire chain. Detect this
+		// specific error and transparently retry with streaming, draining the
+		// stream into a single ChatResponse. This handles all connectors
+		// uniformly (OpenAI-compatible, Qwen, IFlow, etc.) without requiring
+		// per-connector fixes.
+		if callErr != nil && isStreamRequiredError(callErr) {
+			p.log.Debug("provider requires streaming, retrying via Stream()",
+				"provider", attempt.Target.Provider, "model", attempt.Target.Model)
+			streamCtx := core.WithProxy(ctx, attempt.Creds)
+			var streamCancel context.CancelFunc
+			if reqTimeout := p.resolvedRequestTimeout(); reqTimeout > 0 {
+				streamCtx, streamCancel = context.WithTimeout(streamCtx, reqTimeout)
+			}
+			streamReq := cloneForAttempt(req, attempt.Target.Model)
+			stream, sErr := attempt.Conn.Stream(streamCtx, streamReq, attempt.Creds, core.StreamConfig{})
+			if streamCancel != nil {
+				streamCancel()
+			}
+			if sErr == nil {
+				sResp, drainErr := drainStream(stream, req.Model)
+				if drainErr == nil {
+					callErr = nil
+					resp = sResp
+					latency = time.Since(started)
+				} else {
+					callErr = drainErr
+				}
+			} else {
+				callErr = sErr
+			}
+		}
+
 		if callErr != nil {
 			pe := core.AsProviderError(callErr)
 			lastErr = pe
@@ -1207,6 +1241,92 @@ func cloneForAttempt(req *core.ChatRequest, model string) *core.ChatRequest {
 	clone := *req
 	clone.Model = model
 	return &clone
+}
+
+// isStreamRequiredError reports whether the error indicates the upstream
+// provider rejected a non-streaming request with "Stream must be set to true".
+// Some providers only accept streaming requests and return HTTP 400 when
+// stream=false. Since ErrBadRequest is not fallbackable, the pipeline must
+// detect this specific case and retry with streaming.
+func isStreamRequiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	pe := core.AsProviderError(err)
+	if pe == nil {
+		return false
+	}
+	// Accept any 4xx (some providers return 400, others 422).
+	if pe.StatusCode < 400 || pe.StatusCode >= 500 {
+		return false
+	}
+	msg := strings.ToLower(pe.Message)
+	return strings.Contains(msg, "stream must be set to true") ||
+		strings.Contains(msg, "streaming is required") ||
+		strings.Contains(msg, "stream parameter is required") ||
+		strings.Contains(msg, `"stream" must be true`)
+}
+
+// drainStream consumes a stream channel and folds the chunks into a single
+// ChatResponse. Used by the pipeline when a non-streaming Chat() call failed
+// with a "Stream must be set to true" error and the pipeline retries with
+// streaming internally.
+func drainStream(stream <-chan core.StreamChunk, model string) (*core.ChatResponse, error) {
+	msg := core.Message{Role: core.RoleAssistant}
+	var text, thinking string
+	toolCalls := map[string]*core.ToolCall{}
+	var toolOrder []string
+	finish := core.FinishStop
+	var usage core.Usage
+
+	for ch := range stream {
+		switch ch.Type {
+		case core.ChunkText:
+			text += ch.Delta
+		case core.ChunkThinking:
+			thinking += ch.Delta
+		case core.ChunkToolCall:
+			if ch.ToolCall != nil {
+				existing, ok := toolCalls[ch.ToolCall.ID]
+				if !ok {
+					tc := *ch.ToolCall
+					toolCalls[ch.ToolCall.ID] = &tc
+					toolOrder = append(toolOrder, ch.ToolCall.ID)
+				} else if len(ch.ToolCall.Arguments) > 0 {
+					existing.Arguments = append(existing.Arguments, ch.ToolCall.Arguments...)
+				}
+				finish = core.FinishToolCalls
+			}
+		case core.ChunkFinish:
+			if ch.FinishReason != "" {
+				finish = ch.FinishReason
+			}
+		case core.ChunkUsage:
+			if ch.Usage != nil {
+				usage = *ch.Usage
+			}
+		case core.ChunkError:
+			if ch.Err != nil {
+				return nil, ch.Err
+			}
+		}
+	}
+
+	if thinking != "" {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: thinking})
+	}
+	if text != "" {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: text})
+	}
+	for _, id := range toolOrder {
+		tc := toolCalls[id]
+		if len(tc.Arguments) == 0 {
+			tc.Arguments = json.RawMessage("{}")
+		}
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartToolCall, ToolCall: tc})
+	}
+
+	return &core.ChatResponse{Model: model, Message: msg, FinishReason: finish, Usage: usage}, nil
 }
 
 // ---- direct-body usage capture -----------------------------------------------
