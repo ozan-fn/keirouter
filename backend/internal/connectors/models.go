@@ -335,7 +335,7 @@ func ModelsByKind(kind core.ServiceKind) []ProviderModel {
 		if !core.HasServiceKind(spec.ServiceKinds, kind) {
 			continue
 		}
-		for _, mdl := range providerModels[spec.ID] {
+		for _, mdl := range ModelsForProvider(spec.ID) {
 			if mdl.Kind == kind {
 				out = append(out, ProviderModel{Provider: spec.ID, Model: mdl})
 			}
@@ -346,7 +346,7 @@ func ModelsByKind(kind core.ServiceKind) []ProviderModel {
 
 // FindModel locates a model by provider id and model id.
 func FindModel(providerID, modelID string) (ModelSpec, bool) {
-	for _, mdl := range providerModels[providerID] {
+	for _, mdl := range ModelsForProvider(providerID) {
 		if mdl.ID == modelID {
 			return mdl, true
 		}
