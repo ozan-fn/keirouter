@@ -2,6 +2,11 @@ package connectors
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
@@ -413,13 +418,84 @@ func GetLiveModelSource(provider string) LiveModelSource {
 	if src, ok := liveModelSources[provider]; ok {
 		return src
 	}
-	// Dynamic (user-defined) OpenAI-compatible providers are not in the static
-	// registry, so build a discovery source on demand. This lets a custom
-	// provider's /models endpoint populate the catalog just like a built-in one.
-	if p, ok := DynamicProviderByID(provider); ok && p.Dialect == core.DialectOpenAI {
-		return &OpenAICompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL}
+	// Dynamic (user-defined) providers are not in the static registry, so build
+	// a discovery source on demand. This lets a custom provider's /models
+	// endpoint populate the catalog just like a built-in one.
+	if p, ok := DynamicProviderByID(provider); ok {
+		switch p.Dialect {
+		case core.DialectOpenAI:
+			return &OpenAICompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL}
+		case core.DialectAnthropic:
+			return &AnthropicCompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL}
+		}
 	}
 	return nil
+}
+
+// AnthropicCompatibleModelSource implements LiveModelSource for custom
+// anthropic-compatible dynamic providers by fetching GET <base>/v1/models
+// (Anthropic shape: {"data":[{"id":"...","display_name":"..."}]}).
+type AnthropicCompatibleModelSource struct {
+	provider    string
+	defaultBase string
+}
+
+func (s *AnthropicCompatibleModelSource) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
+	base := s.defaultBase
+	if creds.BaseURL != "" {
+		base = creds.BaseURL
+	}
+	for key, val := range creds.Extra {
+		base = strings.ReplaceAll(base, "{"+key+"}", val)
+	}
+	base = strings.TrimRight(base, "/")
+	base = strings.TrimSuffix(base, "/messages")
+	base = strings.TrimSuffix(base, "/v1")
+	url := strings.TrimRight(base, "/") + "/v1/models"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if k := strings.TrimSpace(creds.APIKey); k != "" {
+		req.Header.Set("x-api-key", k)
+	} else if t := strings.TrimSpace(creds.AccessToken); t != "" {
+		req.Header.Set("Authorization", bearer(t))
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := sharedClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+		return nil, fmt.Errorf("GET /v1/models returned %d: %s", resp.StatusCode, truncateError(body))
+	}
+
+	var envelope struct {
+		Data []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("decode /v1/models response: %w", err)
+	}
+	out := make([]ModelSpec, 0, len(envelope.Data))
+	for _, e := range envelope.Data {
+		if e.ID == "" {
+			continue
+		}
+		name := e.DisplayName
+		if name == "" {
+			name = e.ID
+		}
+		out = append(out, ModelSpec{ID: e.ID, Name: name, Kind: core.ServiceLLM})
+	}
+	return out, nil
 }
 
 // QuotaEntry is one upstream quota bucket (e.g. AGENTIC_REQUEST usage).

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult, type QuotaAccount } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
@@ -82,6 +82,22 @@ export function ProviderDetailPage() {
     staleTime: 60_000,
   });
 
+  const importModelsMut = useMutation({
+    mutationFn: () => api.importModels(id!),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["provider-models", id] });
+      qc.invalidateQueries({ queryKey: ["custom-models", id] });
+      const msg =
+        res.imported > 0
+          ? `Imported ${res.imported} model${res.imported === 1 ? "" : "s"} from /models${res.skipped ? ` (${res.skipped} already present)` : ""}.`
+          : res.total > 0
+            ? `No new models — all ${res.total} were already registered.`
+            : "No models returned by /models.";
+      toast.success("Import complete", msg);
+    },
+    onError: (e: Error) => toast.error("Couldn't import models", e.message),
+  });
+
   const provider = providers.data?.providers.find((p) => p.id === id);
   const oauthProvider = oauthProviders.data?.providers.find((p) => p.provider === id);
   const myAccounts = (accounts.data?.accounts ?? []).filter((a) => a.provider === id);
@@ -128,11 +144,12 @@ export function ProviderDetailPage() {
   };
 
   const filteredModels = useMemo(() => {
-    if (!models.data?.models) return [];
-    if (!modelSearchQuery.trim()) return models.data.models;
+    const all = models.data?.models ?? [];
+    if (all.length === 0) return [];
+    if (!modelSearchQuery.trim()) return all;
     const lowerQ = modelSearchQuery.toLowerCase();
-    return models.data.models.filter(m => 
-      m.id.toLowerCase().includes(lowerQ) || 
+    return all.filter(m =>
+      m.id.toLowerCase().includes(lowerQ) ||
       (m.name && m.name.toLowerCase().includes(lowerQ)) ||
       (m.kind && m.kind.toLowerCase().includes(lowerQ))
     );
@@ -144,9 +161,10 @@ export function ProviderDetailPage() {
 
   const totalModelPages = Math.ceil(filteredModels.length / MODELS_PER_PAGE);
   const paginatedModels = filteredModels.slice(
-    (modelPage - 1) * MODELS_PER_PAGE, 
+    (modelPage - 1) * MODELS_PER_PAGE,
     modelPage * MODELS_PER_PAGE
   );
+  const modelList = models.data?.models ?? [];
 
   // Set default region when provider loads.
   useEffect(() => {
@@ -619,12 +637,27 @@ export function ProviderDetailPage() {
         </Card>
 
         {/* Available Models */}
-        {models.data?.models && models.data.models.length > 0 && (
+        {models.data && (
           <Card>
             <CardHeader
               title="Available Models"
-              description={`${models.data.models.length} model${models.data.models.length === 1 ? "" : "s"} configured for this provider.`}
+              description={`${modelList.length} model${modelList.length === 1 ? "" : "s"} configured for this provider.`}
+              action={
+                provider?.custom ? (
+                  <Button
+                    variant="secondary"
+                    className="h-8 px-3 text-xs"
+                    disabled={importModelsMut.isPending}
+                    onClick={() => importModelsMut.mutate()}
+                    title="Fetch the upstream /models listing and register each model"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    {importModelsMut.isPending ? "Fetching…" : "Fetch from /models"}
+                  </Button>
+                ) : undefined
+              }
             />
+            {modelList.length > 0 && (
             <div className="flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="relative w-full max-w-sm">
                 <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
@@ -694,9 +727,27 @@ export function ProviderDetailPage() {
                 )}
               </div>
             </div>
+            )}
             {filteredModels.length === 0 ? (
               <div className="px-6 py-12 text-center text-sm text-[var(--text-muted)] border-t border-[var(--border)]">
-                No models found matching "{modelSearchQuery}"
+                {modelList.length === 0 ? (
+                  <div className="flex flex-col items-center gap-3">
+                    <span>No models configured yet.</span>
+                    {provider?.custom && (
+                      <Button
+                        variant="secondary"
+                        className="h-8 px-3 text-xs"
+                        disabled={importModelsMut.isPending}
+                        onClick={() => importModelsMut.mutate()}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {importModelsMut.isPending ? "Fetching…" : "Fetch from /models"}
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <>No models found matching "{modelSearchQuery}"</>
+                )}
               </div>
             ) : (
               <div className={`grid grid-cols-1 gap-px overflow-hidden border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 lg:grid-cols-3 ${totalModelPages <= 1 ? "rounded-b-2xl" : ""}`}>

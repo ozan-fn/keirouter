@@ -332,6 +332,18 @@ func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials)
 // (e.g. a 400/404 for an unknown probe model) still proves the key was accepted.
 func (c *OpenAICompatible) chatAuthProbe(ctx context.Context, creds core.Credentials) error {
 	probeModel := firstCatalogModel(c.id)
+	// Custom/dynamic providers may have no catalog models until the user imports
+	// them. Sending a synthetic "test" model id to such endpoints triggers
+	// upstream403 model_not_allowed, which is misclassified as an auth failure.
+	// When no real model is known, skip the chat probe for custom providers and
+	// rely on the GET /models probe above. Built-in providers keep the "test"
+	// fallback so a bad key is still rejected when /models is publicly readable.
+	if probeModel == "" {
+		if IsCustomProviderID(c.id) {
+			return nil
+		}
+		probeModel = "test"
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model": probeModel,
 		"messages": []map[string]string{
@@ -368,7 +380,7 @@ func firstCatalogModel(provider string) string {
 			return m.ID
 		}
 	}
-	return "test"
+	return ""
 }
 
 func strictModelsValidation(provider string) bool {
