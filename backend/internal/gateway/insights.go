@@ -449,7 +449,16 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 
 		// Fetch upstream quota for providers that support it (e.g. Kiro) concurrently.
 		if qs := connectors.GetQuotaSource(a.Provider); qs != nil && !a.Disabled {
-			if creds, err := s.vault.Open(a); err == nil {
+			// Refresh OAuth access tokens before probing so expired tokens
+			// don't silently suppress the quota/credits detail box. Mirrors
+			// the refresh-then-probe pattern in validateAccountCredentials.
+			quotaAcc := a
+			if s.refresher != nil {
+				if refreshed, rerr := s.refresher.EnsureFresh(ctx, a); rerr == nil {
+					quotaAcc = refreshed
+				}
+			}
+			if creds, err := s.vault.Open(quotaAcc); err == nil {
 				wg.Add(1)
 				go func(idx int, qs connectors.QuotaSource, creds core.Credentials) {
 					defer wg.Done()
