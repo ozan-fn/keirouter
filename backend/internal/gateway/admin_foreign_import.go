@@ -154,6 +154,9 @@ func (s *Server) importN9router(ctx context.Context, doc map[string]json.RawMess
 
 	// Model aliases.
 	s.importN9routerAliases(ctx, doc, res)
+
+	// Custom models (user-registered model definitions on any provider).
+	s.importN9routerCustomModels(ctx, doc, res)
 }
 
 // n9routerNode is the subset of a 9router providerNode entry we read.
@@ -355,7 +358,7 @@ func (s *Server) importN9routerConnections(ctx context.Context, doc map[string]j
 		// codex workspaceId, base_url overrides, azure details, ...). These
 		// surface as creds.Extra at request time, so they MUST transfer for
 		// connectors like Qoder that require user_id to sign requests.
-		meta := psdToMetadata(c.Data)
+		meta := psdToMetadata(provider, c.Data)
 		// Top-level email is the canonical account email for OAuth providers;
 		// ensure it lands in metadata (qoder/cursor/cloudcode read it).
 		if c.Email != "" && meta["email"] == "" {
@@ -657,6 +660,62 @@ func (s *Server) importN9routerAliases(ctx context.Context, doc map[string]json.
 	}
 }
 
+// importN9routerCustomModels imports 9router's customModels (user-registered
+// model definitions attached to a provider alias) as KeiRouter CustomModels.
+func (s *Server) importN9routerCustomModels(ctx context.Context, doc map[string]json.RawMessage, res *foreignImportResult) {
+	raw, ok := doc["customModels"]
+	if !ok {
+		return
+	}
+	var models []struct {
+		ProviderAlias string `json:"providerAlias"`
+		ID            string `json:"id"`
+		Type          string `json:"type"`
+		Name          string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &models); err != nil {
+		res.Errors = append(res.Errors, "customModels: "+err.Error())
+		return
+	}
+	for _, m := range models {
+		if m.ID == "" || m.ProviderAlias == "" {
+			res.Skipped++
+			continue
+		}
+		providerID := mapN9routerProvider(m.ProviderAlias, nil)
+		if providerID == "" {
+			res.Skipped++
+			res.Errors = append(res.Errors, fmt.Sprintf("custom model %s: unknown provider %q", m.ID, m.ProviderAlias))
+			continue
+		}
+		kind := strings.TrimSpace(m.Type)
+		if kind == "" {
+			kind = "llm"
+		}
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			name = m.ID
+		}
+		cm := store.CustomModel{
+			ID:          uuid.NewString(),
+			TenantID:    adminTenant,
+			ProviderID:  providerID,
+			ModelID:     m.ID,
+			DisplayName: name,
+			Kind:        kind,
+			Source:      "imported",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+		if err := s.db.CustomProviders().CreateModel(ctx, cm); err != nil {
+			res.Skipped++
+			res.Errors = append(res.Errors, fmt.Sprintf("custom model %s/%s: %v", m.ProviderAlias, m.ID, err))
+			continue
+		}
+		s.reloadCustomModels(ctx, providerID)
+	}
+}
+
 // mapN9routerProvider resolves a 9router provider id (or a node id reference)
 // to a KeiRouter provider id. Returns "" when it cannot be resolved.
 func mapN9routerProvider(provider string, nodeIDMap map[string]string) string {
@@ -864,13 +923,35 @@ func normalizeOmniPayload(doc map[string]json.RawMessage) map[string]json.RawMes
 
 // ── helpers ──────────────────────────────────────────────────────────
 
+// psdKeyRemap maps 9router providerSpecificData keys to the KeiRouter metadata
+// keys each provider's connector reads from creds.Extra. 9router and KeiRouter
+// diverge on naming for a few providers (kiro stores authMethod/region without
+// the "kiro_" prefix; cursor uses machineId). Without this remap, imported
+// kiro accounts can't refresh tokens or fetch quota because the connector
+// looks for kiro_auth_method / kiro_region and finds auth_method / region.
+var psdKeyRemap = map[string]map[string]string{
+	"kiro": {
+		"authMethod": "kiro_auth_method",
+		"region":     "kiro_region",
+		"profileArn": "profile_arn",
+	},
+	"cursor": {
+		"machineId": "machine_id",
+		"ghostMode": "ghost_mode",
+	},
+	"qoder": {
+		"userId":    "user_id",
+		"machineId": "machine_id",
+	},
+}
+
 // psdToMetadata converts a 9router providerSpecificData map into KeiRouter
 // account metadata. Keys are normalized from camelCase to snake_case so that
-// provider-specific fields land on the keys connectors read from creds.Extra
-// (e.g. qoder userId → user_id, cursor machineId → machine_id, codex
-// workspaceId → workspace_id). Proxy-related keys are dropped because
-// KeiRouter models per-account proxying via ProxyPoolID, not metadata.
-func psdToMetadata(psd map[string]any) map[string]string {
+// provider-specific fields land on the keys connectors read from creds.Extra.
+// Provider-specific overrides (psdKeyRemap) take precedence over the generic
+// camelCase conversion. Proxy-related keys are dropped because KeiRouter
+// models per-account proxying via ProxyPoolID, not metadata.
+func psdToMetadata(provider string, psd map[string]any) map[string]string {
 	meta := map[string]string{}
 	if psd == nil {
 		return meta
@@ -883,6 +964,7 @@ func psdToMetadata(psd map[string]any) map[string]string {
 		"proxyPoolId":            true,
 		"vercelRelayUrl":         true,
 	}
+	remap := psdKeyRemap[provider]
 	for k, v := range psd {
 		if skip[k] {
 			continue
@@ -890,6 +972,12 @@ func psdToMetadata(psd map[string]any) map[string]string {
 		s := strVal(v)
 		if s == "" {
 			continue
+		}
+		if remap != nil {
+			if mapped, ok := remap[k]; ok {
+				meta[mapped] = s
+				continue
+			}
 		}
 		meta[camelToSnake(k)] = s
 	}

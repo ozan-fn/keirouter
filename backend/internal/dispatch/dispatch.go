@@ -94,6 +94,7 @@ type TokenRefresher interface {
 type HealthSource interface {
 	IsUnhealthy(ctx context.Context, accountID, model string) (bool, error)
 	MarkHealthy(ctx context.Context, accountID, model string) error
+	UnhealthyAccounts(ctx context.Context, accountIDs []string, model string) (map[string]bool, error)
 }
 
 // RoutingSource provides model-level cooldowns and chain rotation state.
@@ -101,6 +102,7 @@ type RoutingSource interface {
 	SetModelCooldown(ctx context.Context, accountID, model string, until time.Time) error
 	ClearModelCooldown(ctx context.Context, accountID, model string) error
 	IsModelCooldownActive(ctx context.Context, accountID, model string) (bool, error)
+	ActiveCooldowns(ctx context.Context, accountIDs []string, model string) (map[string]bool, error)
 	GetChainRotationState(ctx context.Context, chainID string) (store.ChainRotation, error)
 	SetChainRotationState(ctx context.Context, state store.ChainRotation) error
 	GetTargetRotationState(ctx context.Context, scopeKey string) (store.TargetRotation, error)
@@ -249,6 +251,20 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 		}
 		accs = d.applyAccountRouting(ctx, tenantID, target, accs, opts.accountRoutingForTarget(target.Provider))
 
+		accountIDs := make([]string, 0, len(accs))
+		for _, acc := range accs {
+			accountIDs = append(accountIDs, acc.ID)
+		}
+
+		var cooldownSet map[string]bool
+		if d.routing != nil && len(accountIDs) > 0 {
+			cooldownSet, _ = d.routing.ActiveCooldowns(ctx, accountIDs, target.Model)
+		}
+		var unhealthySet map[string]bool
+		if d.health != nil && len(accountIDs) > 0 {
+			unhealthySet, _ = d.health.UnhealthyAccounts(ctx, accountIDs, target.Model)
+		}
+
 		for _, acc := range accs {
 			// Account-level cooldown (global cooldown from NoteFailure).
 			if acc.CooldownUntil != nil && acc.CooldownUntil.After(now) {
@@ -257,27 +273,24 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 			}
 			// Skip accounts whose OAuth refresh token was permanently rejected;
 			// they need the user to re-authenticate before they can serve traffic.
+
 			if acc.NeedsReconnect {
 				lastReason = fmt.Sprintf("account %s needs reconnection (refresh token revoked)", acc.ID)
 				continue
 			}
 			// Model-level cooldown: skip this account only for this model.
-			if d.routing != nil {
-				locked, _ := d.routing.IsModelCooldownActive(ctx, acc.ID, target.Model)
-				if locked {
-					lastReason = fmt.Sprintf("account %s model %s on cooldown", acc.ID, target.Model)
-					continue
-				}
+
+			if cooldownSet != nil && cooldownSet[acc.ID] {
+				lastReason = fmt.Sprintf("account %s model %s on cooldown", acc.ID, target.Model)
+				continue
 			}
 			// Background health checker: deprioritize known-unhealthy accounts
 			// rather than hard-skipping them. They are held back as fallback
 			// candidates so that when no healthy account is available the
 			// request still reaches the provider — and a successful response
 			// lets NoteSuccess recover the health row.
-			isUnhealthy := false
-			if d.health != nil {
-				isUnhealthy, _ = d.health.IsUnhealthy(ctx, acc.ID, target.Model)
-			}
+
+			isUnhealthy := unhealthySet != nil && unhealthySet[acc.ID]
 			// Refresh an expiring OAuth access token before use, so the
 			// connector always receives a live token. A refresh failure skips
 			// this account and falls back to the next.
