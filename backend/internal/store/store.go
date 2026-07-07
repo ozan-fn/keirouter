@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -70,7 +71,7 @@ func Open(ctx context.Context, cfg config.DatabaseConfig, dataDir string) (*DB, 
 	if dialect == DialectSQLite {
 		maxOpen := cfg.MaxOpenConns
 		if maxOpen <= 0 {
-			maxOpen = 4
+			maxOpen = max(runtime.GOMAXPROCS(0), 8)
 		}
 		sqlDB.SetMaxOpenConns(maxOpen)
 		if cfg.MaxIdleConns > 0 {

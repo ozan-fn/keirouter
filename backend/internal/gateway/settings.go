@@ -14,6 +14,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/headroom"
+	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/ponytail"
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
 	"github.com/mydisha/keirouter/backend/internal/terse"
@@ -256,6 +257,10 @@ func (s *Server) adminTestHeadroom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "headroom_url is required to test the connection")
 		return
 	}
+	if err := httputil.ValidateBaseURL(url); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid headroom_url: URL blocked by security policy")
+		return
+	}
 
 	timeoutMs := es.HeadroomTimeoutMs
 	if body.TimeoutMs != nil {
@@ -380,6 +385,12 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "headroom_url is required when Headroom is enabled")
 		return
 	}
+	if strings.TrimSpace(current.HeadroomURL) != "" {
+		if err := httputil.ValidateBaseURL(current.HeadroomURL); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid headroom_url: URL blocked by security policy")
+			return
+		}
+	}
 	if patch.RoutingStrategy != nil {
 		normalized, ok := normalizeAccountRoutingStrategy(*patch.RoutingStrategy)
 		if !ok {
@@ -415,6 +426,12 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	}
 	if patch.OutboundProxyURL != nil {
 		current.OutboundProxyURL = *patch.OutboundProxyURL
+	}
+	if strings.TrimSpace(current.OutboundProxyURL) != "" {
+		if err := httputil.ValidateProxyURL(current.OutboundProxyURL); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid outbound_proxy_url: URL blocked by security policy")
+			return
+		}
 	}
 	if patch.OutboundNoProxy != nil {
 		current.OutboundNoProxy = *patch.OutboundNoProxy

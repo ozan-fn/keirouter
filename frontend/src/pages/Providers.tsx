@@ -118,8 +118,6 @@ export function ProvidersPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [customOpen, setCustomOpen] = useState(false);
 
-
-  // Count accounts per provider id so we can split connected vs available.
   const accountsByProvider = useMemo(() => {
     const map = new Map<string, Account[]>();
     for (const a of accounts.data?.accounts ?? []) {
@@ -368,14 +366,15 @@ function CreateCustomProviderModal({ open, onClose }: { open: boolean; onClose: 
 }
 
 function ProviderCard({ provider: p, accountCount }: { provider: Provider; accountCount: number }) {
-
   const navigate = useNavigate();
   const connected = accountCount > 0;
 
   return (
     <button
+      type="button"
       onClick={() => navigate(`/providers/${p.id}`)}
-      className="flex h-full flex-col items-start gap-3 bg-[var(--bg-elevated)] p-5 text-left transition-colors hover:bg-ink-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60 dark:hover:bg-ink-800/40"
+      aria-label={`Open ${p.display_name}`}
+      className="group relative flex h-full w-full flex-col items-start gap-3 rounded-none bg-[var(--bg-elevated)] p-5 text-left transition-colors hover:bg-ink-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/60 dark:hover:bg-ink-800/40"
     >
       <div className="flex w-full items-start justify-between gap-2">
         <ProviderIcon provider={p} />

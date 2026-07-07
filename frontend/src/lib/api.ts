@@ -786,6 +786,19 @@ export interface SQLiteRestoreResult {
   safety_backup: string;
 }
 
+export interface ForeignImportResult {
+  source: string;
+  imported: number;
+  skipped: number;
+  accounts: number;
+  custom_providers: number;
+  api_keys: number;
+  chains: number;
+  aliases: number;
+  proxy_pools: number;
+  errors?: string[];
+}
+
 class APIError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -1016,7 +1029,7 @@ export const api = {
   updateCustomProvider: (id: string, patch: { display_name?: string; alias?: string; base_url?: string }) =>
     request<CustomProvider>("PATCH", `/custom-providers/${id}`, patch),
   deleteCustomProvider: (id: string) =>
-    request<{ id: string; deleted: boolean }>("DELETE", `/custom-providers/${id}`),
+    request<{ id: string; deleted: boolean; accounts_disabled?: number }>("DELETE", `/custom-providers/${id}`),
 
   importModels: (id: string) =>
     request<{ provider_id: string; imported: number; skipped: number; total: number }>(
@@ -1194,6 +1207,11 @@ export const api = {
     ),
   importDatabase: (payload: Record<string, unknown>, passphrase?: string) =>
     request<{ imported: number }>("POST", "/settings/database", passphrase ? { ...payload, passphrase } : payload),
+
+  // Foreign config import: convert a 9router or OmniRoute backup JSON into
+  // KeiRouter records (accounts re-sealed, api keys re-hashed, combos → chains).
+  importForeignConfig: (source: "9router" | "omniroute", config: Record<string, unknown>) =>
+    request<ForeignImportResult>("POST", "/settings/database/import-foreign", { source, config }),
 
   sqliteStatus: () => request<SQLiteStatus>("GET", "/settings/sqlite"),
   backupSQLite: () => requestBlob("GET", "/settings/sqlite/backup"),

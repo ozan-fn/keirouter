@@ -19,17 +19,17 @@ import (
 
 // Config is the fully-resolved application configuration.
 type Config struct {
-	Server     ServerConfig     `koanf:"server"`
-	Database   DatabaseConfig   `koanf:"database"`
-	Security   SecurityConfig   `koanf:"security"`
-	Cache      CacheConfig      `koanf:"cache"`
-	Meter      MeterConfig      `koanf:"meter"`
-	Limits     LimitsConfig     `koanf:"limits"`
-	Health     HealthConfig     `koanf:"health"`
+	Server         ServerConfig         `koanf:"server"`
+	Database       DatabaseConfig       `koanf:"database"`
+	Security       SecurityConfig       `koanf:"security"`
+	Cache          CacheConfig          `koanf:"cache"`
+	Meter          MeterConfig          `koanf:"meter"`
+	Limits         LimitsConfig         `koanf:"limits"`
+	Health         HealthConfig         `koanf:"health"`
 	ProviderHealth ProviderHealthConfig `koanf:"provider_health"`
-	Log        LogConfig        `koanf:"log"`
-	Data       DataConfig       `koanf:"data"`
-	Guardrails GuardrailsConfig `koanf:"guardrails"`
+	Log            LogConfig            `koanf:"log"`
+	Data           DataConfig           `koanf:"data"`
+	Guardrails     GuardrailsConfig     `koanf:"guardrails"`
 }
 
 // ServerConfig controls the HTTP listener.
@@ -194,10 +194,10 @@ type ProviderHealthCapabilityConfig struct {
 
 // ProviderHealthProbeConfig configures one capability's probe payload.
 type ProviderHealthProbeConfig struct {
-	Enabled  bool   `koanf:"enabled"`
-	MaxTokens int   `koanf:"max_tokens"`
-	Prompt   string `koanf:"prompt"`
-	Input    string `koanf:"input"`
+	Enabled   bool   `koanf:"enabled"`
+	MaxTokens int    `koanf:"max_tokens"`
+	Prompt    string `koanf:"prompt"`
+	Input     string `koanf:"input"`
 }
 
 // LogConfig controls structured logging.
@@ -259,8 +259,8 @@ func Default() Config {
 		},
 		Database: DatabaseConfig{
 			Driver:       "sqlite",
-			MaxOpenConns: 4, // sqlite WAL permits concurrent readers; writes still serialize
-			MaxIdleConns: 4,
+			MaxOpenConns: 0,
+			MaxIdleConns: 0,
 		},
 		Security: SecurityConfig{
 			SessionTTL:       24 * time.Hour,
