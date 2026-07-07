@@ -80,11 +80,13 @@ func kiroModelPrices() []ModelPrice {
 	)
 	bases := []base{
 		// Claude Sonnet family (current + announced versions).
+		{"claude-sonnet-5", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
 		{"claude-sonnet-4.5", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
 		{"claude-sonnet-4.6", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
 		{"claude-sonnet-4.7", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
 		{"claude-sonnet-4.8", sonnetIn, sonnetOut, sonnetCached, sonnetWrite, 0},
 		// Claude Opus family.
+		{"claude-opus-4.5", opusIn, opusOut, opusCached, opusWrite, 0},
 		{"claude-opus-4.6", opusIn, opusOut, opusCached, opusWrite, 0},
 		{"claude-opus-4.7", opusIn, opusOut, opusCached, opusWrite, 0},
 		{"claude-opus-4.8", opusIn, opusOut, opusCached, opusWrite, 0},
