@@ -86,6 +86,7 @@ var providerModels = map[string][]ModelSpec{
 	"glm-cn": {m("glm-5.1", "GLM 5.1"), m("glm-5", "GLM 5"), m("glm-4.7", "GLM-4.7"), m("glm-4.6", "GLM-4.6"), m("glm-4.5-air", "GLM-4.5-Air")},
 	"kimi":   {m("kimi-k2.6", "Kimi K2.6"), m("kimi-k2.5", "Kimi K2.5"), m("kimi-k2.5-thinking", "Kimi K2.5 Thinking"), m("kimi-latest", "Kimi Latest")},
 	"minimax": {
+		m("MiniMax-M3", "MiniMax M3"),
 		m("MiniMax-M2.7", "MiniMax M2.7"), m("MiniMax-M2.5", "MiniMax M2.5"), m("MiniMax-M2.1", "MiniMax M2.1"),
 		k("minimax-image-01", "MiniMax Image 01", core.ServiceImage),
 	},
@@ -126,8 +127,15 @@ var providerModels = map[string][]ModelSpec{
 	},
 	"cohere": {m("command-a-03-2025", "Command A"), m("command-r-plus-08-2024", "Command R+"), m("command-r-08-2024", "Command R")},
 	"nvidia": {
-		m("minimaxai/minimax-m2.7", "Minimax M2.7"), m("z-ai/glm4.7", "GLM 4.7"),
+		m("minimaxai/minimax-m2.7", "MiniMax M2.7"), m("minimaxai/minimax-m3", "MiniMax M3"),
+		m("z-ai/glm-5.2", "GLM 5.2"), m("z-ai/glm4.7", "GLM 4.7"),
+		m("deepseek-ai/deepseek-v4-pro", "DeepSeek V4 Pro"), m("deepseek-ai/deepseek-v4-flash", "DeepSeek V4 Flash"),
+		m("moonshotai/kimi-k2.6", "Kimi K2.6"),
+		m("nvidia/nemotron-3-ultra-550b-a55b", "Nemotron 3 Ultra"),
 		emb("nvidia/nv-embedqa-e5-v5", "NV EmbedQA E5 v5", 1024),
+		k("nvidia/parakeet-ctc-1.1b-asr", "Parakeet CTC 1.1B", core.ServiceSTT),
+		k("fastpitch", "FastPitch", core.ServiceTTS),
+		k("tacotron2", "Tacotron2", core.ServiceTTS),
 	},
 	"nebius": {m("meta-llama/Llama-3.3-70B-Instruct", "Llama 3.3 70B Instruct"), emb("Qwen/Qwen3-Embedding-8B", "Qwen3 Embedding 8B", 4096)},
 	"siliconflow": {
