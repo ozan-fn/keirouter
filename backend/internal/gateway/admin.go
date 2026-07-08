@@ -48,7 +48,6 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Delete("/accounts/{id}", s.adminDeleteAccount)
 	r.Post("/accounts/{id}/test", s.adminTestAccount)
 	r.Get("/accounts/{id}/quota", s.adminAccountQuota)
-	r.Get("/accounts/{id}/codex-usage", s.adminCodexUsage)
 	r.Get("/accounts/{id}/codex-reset-credits", s.adminCodexResetCredits)
 	r.Post("/accounts/{id}/codex-consume-credit", s.adminCodexConsumeCredit)
 	r.Get("/accounts/{id}/codex-usage-details", s.adminCodexUsageDetails)
@@ -1370,7 +1369,7 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if resetErr == nil && resetCredits != nil {
+	if resetErr == nil {
 		result.ResetCredits = &codexResetCreditsData{
 			AvailableCount: resetCredits.AvailableCount,
 			Credits:        resetCredits.Credits,
@@ -1399,6 +1398,7 @@ func fetchCodexUsage(ctx context.Context, accessToken string, extra map[string]s
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("OpenAI-Beta", "codex-1")
 	req.Header.Set("originator", "codex_cli_rs")
+	req.Header.Set("User-Agent", "codex-cli-rs/0.1.0")
 	if accountID := codexAccountID(extra); accountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", accountID)
 	}
@@ -1410,48 +1410,98 @@ func fetchCodexUsage(ctx context.Context, accessToken string, extra map[string]s
 	}
 	defer resp.Body.Close()
 
-	var data struct {
-		Used       float64 `json:"used"`
-		Limit      float64 `json:"limit"`
-		Remaining  float64 `json:"remaining"`
-		ResetAt    string  `json:"reset_at"`
-		Unlimited  bool    `json:"unlimited"`
-		Message    string  `json:"message"`
-		Error      string  `json:"error"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		if resp.StatusCode >= 400 {
-			msg := data.Message
-			if msg == "" {
-				msg = data.Error
-			}
-			if msg == "" {
-				msg = fmt.Sprintf("Codex usage API unavailable (%d)", resp.StatusCode)
-			}
-			return nil, fmt.Errorf("%s", msg)
-		}
-		return nil, fmt.Errorf("decode response: %w", err)
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read response: %w", readErr)
 	}
 
 	if resp.StatusCode >= 400 {
-		msg := data.Message
+		var errData struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
+			Detail  string `json:"detail"`
+		}
+		_ = json.Unmarshal(bodyBytes, &errData)
+		msg := errData.Message
 		if msg == "" {
-			msg = data.Error
+			msg = errData.Error
 		}
 		if msg == "" {
-			msg = fmt.Sprintf("Codex usage API unavailable (%d)", resp.StatusCode)
+			msg = errData.Detail
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("Codex usage API unavailable (%d): %s", resp.StatusCode, string(bodyBytes))
 		}
 		return nil, fmt.Errorf("%s", msg)
 	}
 
-	return &codexUsageData{
-		Used:       data.Used,
-		Limit:      data.Limit,
-		Remaining:  data.Remaining,
-		ResetAt:    data.ResetAt,
-		Unlimited:  data.Unlimited,
-	}, nil
+	// Try multiple known response shapes. The wham/usage endpoint may return
+	// flat fields, nested under "rate_limit", "primary", or "usage".
+	var flat struct {
+		Used      float64 `json:"used"`
+		Limit     float64 `json:"limit"`
+		Remaining float64 `json:"remaining"`
+		ResetAt   string  `json:"reset_at"`
+		Unlimited bool    `json:"unlimited"`
+	}
+	if json.Unmarshal(bodyBytes, &flat) == nil && (flat.Used > 0 || flat.Limit > 0 || flat.Unlimited) {
+		return &codexUsageData{
+			Used: flat.Used, Limit: flat.Limit, Remaining: flat.Remaining,
+			ResetAt: flat.ResetAt, Unlimited: flat.Unlimited,
+		}, nil
+	}
+
+	var nested struct {
+		RateLimit struct {
+			Used      float64 `json:"used"`
+			Limit     float64 `json:"limit"`
+			Remaining float64 `json:"remaining"`
+			ResetAt   string  `json:"reset_at"`
+			Unlimited bool    `json:"unlimited"`
+		} `json:"rate_limit"`
+	}
+	if json.Unmarshal(bodyBytes, &nested) == nil && (nested.RateLimit.Used > 0 || nested.RateLimit.Limit > 0 || nested.RateLimit.Unlimited) {
+		return &codexUsageData{
+			Used: nested.RateLimit.Used, Limit: nested.RateLimit.Limit, Remaining: nested.RateLimit.Remaining,
+			ResetAt: nested.RateLimit.ResetAt, Unlimited: nested.RateLimit.Unlimited,
+		}, nil
+	}
+
+	var primary struct {
+		Primary struct {
+			Used      float64 `json:"used"`
+			Limit     float64 `json:"limit"`
+			Remaining float64 `json:"remaining"`
+			ResetAt   string  `json:"reset_at"`
+			Unlimited bool    `json:"unlimited"`
+		} `json:"primary"`
+	}
+	if json.Unmarshal(bodyBytes, &primary) == nil && (primary.Primary.Used > 0 || primary.Primary.Limit > 0 || primary.Primary.Unlimited) {
+		return &codexUsageData{
+			Used: primary.Primary.Used, Limit: primary.Primary.Limit, Remaining: primary.Primary.Remaining,
+			ResetAt: primary.Primary.ResetAt, Unlimited: primary.Primary.Unlimited,
+		}, nil
+	}
+
+	var usageNested struct {
+		Usage struct {
+			Used      float64 `json:"used"`
+			Limit     float64 `json:"limit"`
+			Remaining float64 `json:"remaining"`
+			ResetAt   string  `json:"reset_at"`
+			Unlimited bool    `json:"unlimited"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(bodyBytes, &usageNested) == nil && (usageNested.Usage.Used > 0 || usageNested.Usage.Limit > 0 || usageNested.Usage.Unlimited) {
+		return &codexUsageData{
+			Used: usageNested.Usage.Used, Limit: usageNested.Usage.Limit, Remaining: usageNested.Usage.Remaining,
+			ResetAt: usageNested.Usage.ResetAt, Unlimited: usageNested.Usage.Unlimited,
+		}, nil
+	}
+
+	// If all parse attempts yielded zero, return the raw body as error so the
+	// UI can surface it for debugging.
+	return nil, fmt.Errorf("unexpected response format: %s", string(bodyBytes))
 }
 
 // fetchCodexResetCredits retrieves available Codex rate-limit reset credits.
