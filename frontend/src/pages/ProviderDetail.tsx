@@ -2301,6 +2301,11 @@ function CodexResetCreditsSection({ accountId }: { accountId: string }) {
 
       {details && (
         <div className="space-y-3">
+          {details.error && (
+            <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+              {details.error}
+            </div>
+          )}
           {/* Usage Data */}
           {details.usage_data && (
             <div className="space-y-2">
