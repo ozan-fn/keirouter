@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult, type QuotaAccount } from "../lib/api";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult, type QuotaAccount, type CodexUsageDetails } from "../lib/api";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
 import { KilocodeConnectModal } from "../components/KilocodeConnectModal";
@@ -1312,6 +1312,9 @@ function AccountRow({
           )}
         </div>
       )}
+      
+      {/* Codex reset credits */}
+      {a.provider === "codex" && <CodexResetCreditsSection accountId={a.id} />}
     </div>
   );
 }
@@ -2227,8 +2230,207 @@ function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: (
   );
 }
 
-// ---- Account quota card -----------------------------------------------------
+// ---- Codex reset credits section --------------------------------------------
 
+function CodexResetCreditsSection({ accountId }: { accountId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [details, setDetails] = useState<CodexUsageDetails | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [consuming, setConsuming] = useState(false);
+  const toast = useToast();
+
+  const fetchDetails = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await api.codexUsageDetails(accountId);
+      setDetails(data);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const consumeCredit = async (redeemRequestId: string) => {
+    if (!redeemRequestId) {
+      toast.error("Cannot consume credit", "Missing redeem request ID");
+      return;
+    }
+    setConsuming(true);
+    try {
+      const result = await api.codexConsumeCredit(accountId, redeemRequestId);
+      if (result.ok) {
+        toast.success("Reset credit consumed", "Rate limit has been reset");
+        // Refresh the details
+        await fetchDetails();
+      } else if (result.no_credit) {
+        toast.error("No credits available", result.message || "No reset credits remaining");
+      } else {
+        toast.error("Failed to consume credit", result.message || "Unknown error");
+      }
+    } catch (e) {
+      toast.error("Failed to consume credit", (e as Error).message);
+    } finally {
+      setConsuming(false);
+    }
+  };
+
+  if (!expanded) {
+    return (
+      <button
+        onClick={() => { setExpanded(true); fetchDetails(); }}
+        className="mt-2 text-xs text-accent-600 hover:text-accent-700 dark:text-accent-400 dark:hover:text-accent-300"
+      >
+        View usage & reset credits →
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-medium text-[var(--text)]">Usage & Reset Credits</span>
+        <button
+          onClick={() => setExpanded(false)}
+          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+        >
+          ✕
+        </button>
+      </div>
+
+      {loading && <div className="text-xs text-[var(--text-muted)]">Loading...</div>}
+      {error && <div className="text-xs text-red-600 dark:text-red-400">{error}</div>}
+
+      {details && (
+        <div className="space-y-3">
+          {details.error && (
+            <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+              {details.error}
+            </div>
+          )}
+          {/* Usage Data */}
+          {details.usage_data && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-medium text-[var(--text)]">Rate Limit</div>
+                <Badge tone={details.usage_data.limit_reached ? "danger" : details.usage_data.allowed ? "success" : "neutral"}>
+                  {details.usage_data.plan_type}
+                </Badge>
+              </div>
+
+              {/* Primary window (5h rolling) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-[var(--text-muted)]">Primary (5h window)</span>
+                  <span className="font-medium text-[var(--text)]">{details.usage_data.primary_used_percent}%</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                  <div
+                    className={`h-full rounded-full ${details.usage_data.primary_used_percent > 80 ? "bg-red-500" : details.usage_data.primary_used_percent > 50 ? "bg-amber-500" : "bg-accent-500"}`}
+                    style={{ width: `${Math.max(2, details.usage_data.primary_used_percent)}%` }}
+                  />
+                </div>
+                {details.usage_data.primary_reset_at > 0 && (
+                  <div className="text-[10px] text-[var(--text-muted)]">
+                    Resets {new Date(details.usage_data.primary_reset_at * 1000).toLocaleString()}
+                  </div>
+                )}
+              </div>
+
+              {/* Secondary window (weekly) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-[var(--text-muted)]">Secondary (weekly)</span>
+                  <span className="font-medium text-[var(--text)]">{details.usage_data.secondary_used_percent}%</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                  <div
+                    className={`h-full rounded-full ${details.usage_data.secondary_used_percent > 80 ? "bg-red-500" : details.usage_data.secondary_used_percent > 50 ? "bg-amber-500" : "bg-accent-500"}`}
+                    style={{ width: `${Math.max(2, details.usage_data.secondary_used_percent)}%` }}
+                  />
+                </div>
+                {details.usage_data.secondary_reset_at > 0 && (
+                  <div className="text-[10px] text-[var(--text-muted)]">
+                    Resets {new Date(details.usage_data.secondary_reset_at * 1000).toLocaleString()}
+                  </div>
+                )}
+              </div>
+
+              {/* Credits */}
+              <div className="flex items-center justify-between border-t border-[var(--border)] pt-1.5 text-[11px]">
+                <span className="text-[var(--text-muted)]">Credits</span>
+                <span className="font-medium text-[var(--text)]">
+                  {details.usage_data.unlimited ? "Unlimited" : details.usage_data.credits_balance || "0"}
+                </span>
+              </div>
+
+              {/* Reset credits from usage endpoint */}
+              {details.usage_data.reset_credits_available > 0 && !details.reset_credits && (
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-[var(--text-muted)]">Reset credits available</span>
+                  <span className="font-medium text-[var(--text)]">{details.usage_data.reset_credits_available}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Reset Credits */}
+          {details.reset_credits && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-[var(--text)]">Reset Credits</div>
+              <div className="text-xs text-[var(--text-muted)]">
+                Available: <span className="font-medium text-[var(--text)]">{details.reset_credits.available_count}</span>
+              </div>
+
+              {details.reset_credits.credits.length === 0 ? (
+                <div className="text-xs text-[var(--text-muted)]">No reset credits available</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {details.reset_credits.credits.map((credit, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5"
+                    >
+                      <div className="flex-1 text-[11px]">
+                        <div className="flex items-center gap-2">
+                          <Badge tone={credit.status === "available" ? "success" : "neutral"}>{credit.status}</Badge>
+                          {credit.expires_at && (
+                            <span className="text-[var(--text-muted)]">
+                              expires {new Date(credit.expires_at).toLocaleDateString()}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {credit.status === "available" && (
+                        <button
+                          onClick={() => consumeCredit(credit.redeem_request_id || "")}
+                          disabled={consuming || !credit.redeem_request_id}
+                          className="ml-2 rounded-md border border-[var(--border)] px-2 py-0.5 text-[11px] font-medium text-accent-600 hover:bg-accent-50 disabled:opacity-40 dark:text-accent-400 dark:hover:bg-accent-900/20"
+                        >
+                          {consuming ? "..." : "Use"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={fetchDetails}
+            disabled={loading}
+            className="text-xs text-accent-600 hover:text-accent-700 dark:text-accent-400 dark:hover:text-accent-300"
+          >
+            {loading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ModelCell renders a single model in a structural hairline grid.
 function ModelCell({

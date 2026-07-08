@@ -44,11 +44,12 @@ func (GeminiCodec) ParseStreamLine(line []byte, _ string) ([]core.StreamChunk, e
 	var chunks []core.StreamChunk
 	if len(raw.Candidates) > 0 {
 		cand := raw.Candidates[0]
-		for _, p := range cand.Content.Parts {
+		for partIdx, p := range cand.Content.Parts {
 			switch {
 			case p.FunctionCall != nil:
 				chunks = append(chunks, core.StreamChunk{
-					Type: core.ChunkToolCall,
+					Type:  core.ChunkToolCall,
+					Index: partIdx,
 					ToolCall: &core.ToolCall{
 						ID:        geminiCallID(p.FunctionCall.Name),
 						Name:      p.FunctionCall.Name,

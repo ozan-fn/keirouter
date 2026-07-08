@@ -293,6 +293,10 @@ func mapRespRole(role string) core.Role {
 		return core.RoleSystem
 	case "tool":
 		return core.RoleTool
+	case "developer":
+		// OpenAI Responses API uses "developer" role for GPT-5/Codex system prompts.
+		// Treat as developer role which is semantically equivalent to system.
+		return core.RoleDeveloper
 	default:
 		return core.RoleUser
 	}
