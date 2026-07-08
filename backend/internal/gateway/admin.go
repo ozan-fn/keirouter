@@ -1311,11 +1311,19 @@ type codexUsageDetails struct {
 }
 
 type codexUsageData struct {
-	Used       float64 `json:"used"`
-	Limit      float64 `json:"limit"`
-	Remaining  float64 `json:"remaining"`
-	ResetAt    string  `json:"reset_at,omitempty"`
-	Unlimited  bool    `json:"unlimited"`
+	PlanType     string `json:"plan_type"`
+	Allowed      bool   `json:"allowed"`
+	LimitReached bool   `json:"limit_reached"`
+	PrimaryUsedPercent   int   `json:"primary_used_percent"`
+	PrimaryResetAt       int64 `json:"primary_reset_at"`
+	PrimaryWindowSeconds int64 `json:"primary_window_seconds"`
+	SecondaryUsedPercent   int   `json:"secondary_used_percent"`
+	SecondaryResetAt       int64 `json:"secondary_reset_at"`
+	SecondaryWindowSeconds int64 `json:"secondary_window_seconds"`
+	CreditsBalance string `json:"credits_balance"`
+	HasCredits     bool   `json:"has_credits"`
+	Unlimited      bool   `json:"unlimited"`
+	ResetCreditsAvailable int `json:"reset_credits_available"`
 }
 
 type codexResetCreditsData struct {
@@ -1389,6 +1397,8 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 }
 
 // fetchCodexUsage retrieves Codex usage data from the ChatGPT backend API.
+// The wham/usage endpoint returns rate limits as percentage-based windows
+// (primary = 5h rolling, secondary = weekly), plus credits and reset credits.
 func fetchCodexUsage(ctx context.Context, accessToken string, extra map[string]string) (*codexUsageData, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
 	if err != nil {
@@ -1435,73 +1445,52 @@ func fetchCodexUsage(ctx context.Context, accessToken string, extra map[string]s
 		return nil, fmt.Errorf("%s", msg)
 	}
 
-	// Try multiple known response shapes. The wham/usage endpoint may return
-	// flat fields, nested under "rate_limit", "primary", or "usage".
-	var flat struct {
-		Used      float64 `json:"used"`
-		Limit     float64 `json:"limit"`
-		Remaining float64 `json:"remaining"`
-		ResetAt   string  `json:"reset_at"`
-		Unlimited bool    `json:"unlimited"`
-	}
-	if json.Unmarshal(bodyBytes, &flat) == nil && (flat.Used > 0 || flat.Limit > 0 || flat.Unlimited) {
-		return &codexUsageData{
-			Used: flat.Used, Limit: flat.Limit, Remaining: flat.Remaining,
-			ResetAt: flat.ResetAt, Unlimited: flat.Unlimited,
-		}, nil
-	}
-
-	var nested struct {
+	var raw struct {
+		PlanType string `json:"plan_type"`
 		RateLimit struct {
-			Used      float64 `json:"used"`
-			Limit     float64 `json:"limit"`
-			Remaining float64 `json:"remaining"`
-			ResetAt   string  `json:"reset_at"`
-			Unlimited bool    `json:"unlimited"`
+			Allowed      bool `json:"allowed"`
+			LimitReached bool `json:"limit_reached"`
+			PrimaryWindow struct {
+				UsedPercent        int   `json:"used_percent"`
+				LimitWindowSeconds int64 `json:"limit_window_seconds"`
+				ResetAfterSeconds  int64 `json:"reset_after_seconds"`
+				ResetAt            int64 `json:"reset_at"`
+			} `json:"primary_window"`
+			SecondaryWindow struct {
+				UsedPercent        int   `json:"used_percent"`
+				LimitWindowSeconds int64 `json:"limit_window_seconds"`
+				ResetAfterSeconds  int64 `json:"reset_after_seconds"`
+				ResetAt            int64 `json:"reset_at"`
+			} `json:"secondary_window"`
 		} `json:"rate_limit"`
+		Credits struct {
+			HasCredits bool   `json:"has_credits"`
+			Unlimited  bool   `json:"unlimited"`
+			Balance    string `json:"balance"`
+		} `json:"credits"`
+		RateLimitResetCredits struct {
+			AvailableCount int `json:"available_count"`
+		} `json:"rate_limit_reset_credits"`
 	}
-	if json.Unmarshal(bodyBytes, &nested) == nil && (nested.RateLimit.Used > 0 || nested.RateLimit.Limit > 0 || nested.RateLimit.Unlimited) {
-		return &codexUsageData{
-			Used: nested.RateLimit.Used, Limit: nested.RateLimit.Limit, Remaining: nested.RateLimit.Remaining,
-			ResetAt: nested.RateLimit.ResetAt, Unlimited: nested.RateLimit.Unlimited,
-		}, nil
-	}
-
-	var primary struct {
-		Primary struct {
-			Used      float64 `json:"used"`
-			Limit     float64 `json:"limit"`
-			Remaining float64 `json:"remaining"`
-			ResetAt   string  `json:"reset_at"`
-			Unlimited bool    `json:"unlimited"`
-		} `json:"primary"`
-	}
-	if json.Unmarshal(bodyBytes, &primary) == nil && (primary.Primary.Used > 0 || primary.Primary.Limit > 0 || primary.Primary.Unlimited) {
-		return &codexUsageData{
-			Used: primary.Primary.Used, Limit: primary.Primary.Limit, Remaining: primary.Primary.Remaining,
-			ResetAt: primary.Primary.ResetAt, Unlimited: primary.Primary.Unlimited,
-		}, nil
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	var usageNested struct {
-		Usage struct {
-			Used      float64 `json:"used"`
-			Limit     float64 `json:"limit"`
-			Remaining float64 `json:"remaining"`
-			ResetAt   string  `json:"reset_at"`
-			Unlimited bool    `json:"unlimited"`
-		} `json:"usage"`
-	}
-	if json.Unmarshal(bodyBytes, &usageNested) == nil && (usageNested.Usage.Used > 0 || usageNested.Usage.Limit > 0 || usageNested.Usage.Unlimited) {
-		return &codexUsageData{
-			Used: usageNested.Usage.Used, Limit: usageNested.Usage.Limit, Remaining: usageNested.Usage.Remaining,
-			ResetAt: usageNested.Usage.ResetAt, Unlimited: usageNested.Usage.Unlimited,
-		}, nil
-	}
-
-	// If all parse attempts yielded zero, return the raw body as error so the
-	// UI can surface it for debugging.
-	return nil, fmt.Errorf("unexpected response format: %s", string(bodyBytes))
+	return &codexUsageData{
+		PlanType:               raw.PlanType,
+		Allowed:                raw.RateLimit.Allowed,
+		LimitReached:           raw.RateLimit.LimitReached,
+		PrimaryUsedPercent:     raw.RateLimit.PrimaryWindow.UsedPercent,
+		PrimaryResetAt:         raw.RateLimit.PrimaryWindow.ResetAt,
+		PrimaryWindowSeconds:   raw.RateLimit.PrimaryWindow.LimitWindowSeconds,
+		SecondaryUsedPercent:   raw.RateLimit.SecondaryWindow.UsedPercent,
+		SecondaryResetAt:       raw.RateLimit.SecondaryWindow.ResetAt,
+		SecondaryWindowSeconds: raw.RateLimit.SecondaryWindow.LimitWindowSeconds,
+		CreditsBalance:         raw.Credits.Balance,
+		HasCredits:             raw.Credits.HasCredits,
+		Unlimited:              raw.Credits.Unlimited,
+		ResetCreditsAvailable:  raw.RateLimitResetCredits.AvailableCount,
+	}, nil
 }
 
 // fetchCodexResetCredits retrieves available Codex rate-limit reset credits.

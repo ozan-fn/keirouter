@@ -2309,38 +2309,66 @@ function CodexResetCreditsSection({ accountId }: { accountId: string }) {
           {/* Usage Data */}
           {details.usage_data && (
             <div className="space-y-2">
-              <div className="text-xs font-medium text-[var(--text)]">Usage</div>
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-medium text-[var(--text)]">Rate Limit</div>
+                <Badge tone={details.usage_data.limit_reached ? "danger" : details.usage_data.allowed ? "success" : "neutral"}>
+                  {details.usage_data.plan_type}
+                </Badge>
+              </div>
+
+              {/* Primary window (5h rolling) */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-[var(--text-muted)]">Used</span>
-                  <span className="font-medium text-[var(--text)]">{details.usage_data.used.toLocaleString()}</span>
+                  <span className="text-[var(--text-muted)]">Primary (5h window)</span>
+                  <span className="font-medium text-[var(--text)]">{details.usage_data.primary_used_percent}%</span>
                 </div>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-[var(--text-muted)]">Limit</span>
-                  <span className="font-medium text-[var(--text)]">
-                    {details.usage_data.unlimited ? "Unlimited" : details.usage_data.limit.toLocaleString()}
-                  </span>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                  <div
+                    className={`h-full rounded-full ${details.usage_data.primary_used_percent > 80 ? "bg-red-500" : details.usage_data.primary_used_percent > 50 ? "bg-amber-500" : "bg-accent-500"}`}
+                    style={{ width: `${Math.max(2, details.usage_data.primary_used_percent)}%` }}
+                  />
                 </div>
-                {!details.usage_data.unlimited && (
-                  <>
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-[var(--text-muted)]">Remaining</span>
-                      <span className="font-medium text-[var(--text)]">{details.usage_data.remaining.toLocaleString()}</span>
-                    </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
-                      <div 
-                        className="h-full rounded-full bg-accent-500"
-                        style={{ width: `${Math.max(2, Math.round((details.usage_data.used / details.usage_data.limit) * 100))}%` }}
-                      />
-                    </div>
-                    {details.usage_data.reset_at && (
-                      <div className="text-[10px] text-[var(--text-muted)]">
-                        Resets {new Date(details.usage_data.reset_at).toLocaleDateString()}
-                      </div>
-                    )}
-                  </>
+                {details.usage_data.primary_reset_at > 0 && (
+                  <div className="text-[10px] text-[var(--text-muted)]">
+                    Resets {new Date(details.usage_data.primary_reset_at * 1000).toLocaleString()}
+                  </div>
                 )}
               </div>
+
+              {/* Secondary window (weekly) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-[var(--text-muted)]">Secondary (weekly)</span>
+                  <span className="font-medium text-[var(--text)]">{details.usage_data.secondary_used_percent}%</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)]">
+                  <div
+                    className={`h-full rounded-full ${details.usage_data.secondary_used_percent > 80 ? "bg-red-500" : details.usage_data.secondary_used_percent > 50 ? "bg-amber-500" : "bg-accent-500"}`}
+                    style={{ width: `${Math.max(2, details.usage_data.secondary_used_percent)}%` }}
+                  />
+                </div>
+                {details.usage_data.secondary_reset_at > 0 && (
+                  <div className="text-[10px] text-[var(--text-muted)]">
+                    Resets {new Date(details.usage_data.secondary_reset_at * 1000).toLocaleString()}
+                  </div>
+                )}
+              </div>
+
+              {/* Credits */}
+              <div className="flex items-center justify-between border-t border-[var(--border)] pt-1.5 text-[11px]">
+                <span className="text-[var(--text-muted)]">Credits</span>
+                <span className="font-medium text-[var(--text)]">
+                  {details.usage_data.unlimited ? "Unlimited" : details.usage_data.credits_balance || "0"}
+                </span>
+              </div>
+
+              {/* Reset credits from usage endpoint */}
+              {details.usage_data.reset_credits_available > 0 && !details.reset_credits && (
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-[var(--text-muted)]">Reset credits available</span>
+                  <span className="font-medium text-[var(--text)]">{details.usage_data.reset_credits_available}</span>
+                </div>
+              )}
             </div>
           )}
 

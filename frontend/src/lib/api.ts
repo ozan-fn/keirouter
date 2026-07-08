@@ -473,11 +473,19 @@ export interface CodexConsumeResult {
 }
 
 export interface CodexUsageData {
-  used: number;
-  limit: number;
-  remaining: number;
-  reset_at?: string;
+  plan_type: string;
+  allowed: boolean;
+  limit_reached: boolean;
+  primary_used_percent: number;
+  primary_reset_at: number;
+  primary_window_seconds: number;
+  secondary_used_percent: number;
+  secondary_reset_at: number;
+  secondary_window_seconds: number;
+  credits_balance: string;
+  has_credits: boolean;
   unlimited: boolean;
+  reset_credits_available: number;
 }
 
 export interface CodexUsageDetails {
