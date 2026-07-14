@@ -8,20 +8,20 @@ class Keirouter < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/mydisha/keirouter/releases/download/v0.1.26/keirouter_v0.1.26_darwin_arm64.tar.gz"
-      sha256 "d3daf4d531fc8571df484d3256ea9a01b6d7bf3f0e508ec6f61cc4462d160d3f"
+      sha256 "506e554ed2d59b34449890ba6d5ab5f316c6636b8361b5c978247ab89f6a2b62"
     else
       url "https://github.com/mydisha/keirouter/releases/download/v0.1.26/keirouter_v0.1.26_darwin_amd64.tar.gz"
-      sha256 "ffb2154ebef4dd1351f2796a2a300f89569249c0eeec43c7ab063b4e15d6dfbc"
+      sha256 "776cdb563c98546a4a9b4f2a96a05627c1dfbf3aa6bb74381f3aafac4d8674a9"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/mydisha/keirouter/releases/download/v0.1.26/keirouter_v0.1.26_linux_arm64.tar.gz"
-      sha256 "fff9b2b74c704ea3a45faf914428b2b523d13dd980fc222acca45bc18f553273"
+      sha256 "7f8370457101e9251a014b45876724f6ba823200981c10a5dc8a4d735acf853b"
     else
       url "https://github.com/mydisha/keirouter/releases/download/v0.1.26/keirouter_v0.1.26_linux_amd64.tar.gz"
-      sha256 "6b2d645238ba798dea02db486d2767f6ee71d8599118dfb35dba74984b826912"
+      sha256 "466cfe4cbea4a419a9d36140e47bd7d19a3aa2b5d0fc6ea6d4b31eb3299fd74a"
     end
   end
 
