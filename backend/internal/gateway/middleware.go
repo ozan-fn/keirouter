@@ -2,13 +2,13 @@ package gateway
 
 import (
 	"context"
-	"errors"
-	"fmt"
+	// "errors" // ponytail: unused when auth disabled
+	// "fmt" // ponytail: unused when auth disabled
 	"net"
 	"net/http"
 	"strings"
 
-	"github.com/mydisha/keirouter/backend/internal/identity"
+	// "github.com/mydisha/keirouter/backend/internal/identity" // ponytail: unused when auth disabled
 	"github.com/mydisha/keirouter/backend/internal/store"
 )
 
@@ -28,8 +28,9 @@ func authedKey(ctx context.Context) (store.APIKey, bool) {
 // It rejects unauthenticated requests with 401.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r) // ponytail: auth disabled, remove this line to re-enable
+		next.ServeHTTP(w, r) // ponytail: auth disabled, uncomment block below to re-enable
 		return
+		/* auth disabled
 		token := extractToken(r)
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "missing API key")
@@ -54,6 +55,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		ctx := context.WithValue(r.Context(), apiKeyCtxKey, key)
 		next.ServeHTTP(w, r.WithContext(ctx))
+		*/
 	})
 }
 
