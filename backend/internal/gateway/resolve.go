@@ -44,6 +44,15 @@ type LatencyReader interface {
 	AvgLatencyMS(ctx context.Context, tenantID string, targets []dispatch.Target) map[string]int
 }
 
+// isKiroModel reports whether a bare model name should auto-route to kr/.
+// ponytail: simple prefix check, expand if needed
+func isKiroModel(model string) bool {
+	return strings.HasPrefix(model, "claude-") ||
+		strings.HasPrefix(model, "gpt-") ||
+		strings.HasPrefix(model, "gemini-") ||
+		strings.HasPrefix(model, "qwen")
+}
+
 // resolveTargets turns an inbound model string into an ordered fallback chain.
 //
 // Four forms are supported, in priority order:
@@ -61,6 +70,13 @@ func resolveTargets(ctx context.Context, chains ChainSource, aliases AliasSource
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return resolveResult{}, errBadModel("model is required")
+	}
+
+	// ponytail: auto-prefix kr/ for bare kiro models (claude-*, gpt-*, etc.)
+	if !strings.Contains(model, "/") && !strings.HasPrefix(model, "chain:") {
+		if isKiroModel(model) {
+			model = "kr/" + model
+		}
 	}
 
 	// chain:<name>
