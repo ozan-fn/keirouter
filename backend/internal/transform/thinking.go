@@ -6,29 +6,48 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
-// thinkStart and thinkEnd are the XML tags some models (MiMo, QwQ, etc.)
+// thinkStart and thinkEnd are the XML tags some models (MiMo, QwQ, Kiro, etc.)
 // embed in the content field to demarcate reasoning/thinking blocks.
+// Supports both <think> and <thinking> variants.
 const (
-	thinkStart = "<think>"
-	thinkEnd   = "</think>"
+	thinkStart     = "<think>"
+	thinkEnd       = "</think>"
+	thinkingStart  = "<thinking>"
+	thinkingEnd    = "</thinking>"
 )
 
-// StripThinkTags extracts content enclosed in <think> tags from raw text.
+// findFirstTag returns the index and tag pair (start, end) for whichever tag appears first.
+// Returns -1, "", "" if no tag found.
+func findFirstTag(s string) (idx int, start, end string) {
+	thinkIdx := strings.Index(s, thinkStart)
+	thinkingIdx := strings.Index(s, thinkingStart)
+	
+	if thinkIdx >= 0 && (thinkingIdx < 0 || thinkIdx < thinkingIdx) {
+		return thinkIdx, thinkStart, thinkEnd
+	}
+	if thinkingIdx >= 0 {
+		return thinkingIdx, thinkingStart, thinkingEnd
+	}
+	return -1, "", ""
+}
+
+// StripThinkTags extracts content enclosed in <think> or <thinking> tags from raw text.
 // It returns any thinking content found (as a ChunkThinking Delta if non-empty)
 // and the remaining text with the tags removed. For non-streaming use where the
 // full content is available at once.
 func StripThinkTags(content string) (thinkingChunks []core.StreamChunk, cleanContent string) {
-	if !strings.Contains(content, thinkStart) {
+	if !strings.Contains(content, thinkStart) && !strings.Contains(content, thinkingStart) {
 		return nil, content
 	}
 
 	var out strings.Builder
 	pos := 0
 	inThink := false
+	var currentEnd string
 
 	for pos < len(content) {
 		if inThink {
-			if endIdx := strings.Index(content[pos:], thinkEnd); endIdx >= 0 {
+			if endIdx := strings.Index(content[pos:], currentEnd); endIdx >= 0 {
 				thinkingText := content[pos : pos+endIdx]
 				if thinkingText != "" {
 					thinkingChunks = append(thinkingChunks, core.StreamChunk{
@@ -36,7 +55,7 @@ func StripThinkTags(content string) (thinkingChunks []core.StreamChunk, cleanCon
 						Delta: thinkingText,
 					})
 				}
-				pos += endIdx + len(thinkEnd)
+				pos += endIdx + len(currentEnd)
 				inThink = false
 				continue
 			}
@@ -51,9 +70,11 @@ func StripThinkTags(content string) (thinkingChunks []core.StreamChunk, cleanCon
 			return thinkingChunks, out.String()
 		}
 
-		if startIdx := strings.Index(content[pos:], thinkStart); startIdx >= 0 {
-			out.WriteString(content[pos : pos+startIdx])
-			pos += startIdx + len(thinkStart)
+		idx, startTag, endTag := findFirstTag(content[pos:])
+		if idx >= 0 {
+			out.WriteString(content[pos : pos+idx])
+			pos += idx + len(startTag)
+			currentEnd = endTag
 			inThink = true
 			continue
 		}
@@ -66,15 +87,16 @@ func StripThinkTags(content string) (thinkingChunks []core.StreamChunk, cleanCon
 	return thinkingChunks, out.String()
 }
 
-// ThinkTagState tracks stateful extraction of think tags across streaming
-// content chunks. Because <think> and </think> tags may arrive split across
-// multiple SSE events, the parser buffers potential tag prefixes/suffixes.
+// ThinkTagState tracks stateful extraction of thinking tags across streaming
+// content chunks. Supports both <think> and <thinking> tags. Tags may arrive
+// split across multiple SSE events, so the parser buffers potential tag prefixes/suffixes.
 //
 // Flush() must be called when the stream ends to emit any remaining buffered
 // content.
 type ThinkTagState struct {
 	thinkingMode bool
 	buf          string // buffered text that might be part of a tag
+	currentEnd   string // which end tag we're looking for (</think> or </thinking>)
 }
 
 // ProcessFeed ingests one streaming content delta and returns thinking and/or
@@ -100,9 +122,9 @@ func (ts *ThinkTagState) ProcessFeed(delta string) []core.StreamChunk {
 
 	for len(ts.buf) > 0 {
 		if !ts.thinkingMode {
-			// Not in thinking mode — look for start tag.
-
-			if idx := strings.Index(ts.buf, thinkStart); idx >= 0 {
+			// Not in thinking mode — look for start tag (either <think> or <thinking>).
+			idx, startTag, endTag := findFirstTag(ts.buf)
+			if idx >= 0 {
 				// Emit text before the tag.
 				if idx > 0 {
 					chunks = append(chunks, core.StreamChunk{
@@ -110,7 +132,8 @@ func (ts *ThinkTagState) ProcessFeed(delta string) []core.StreamChunk {
 						Delta: ts.buf[:idx],
 					})
 				}
-				ts.buf = ts.buf[idx+len(thinkStart):]
+				ts.buf = ts.buf[idx+len(startTag):]
+				ts.currentEnd = endTag
 				ts.thinkingMode = true
 				continue
 			}
@@ -134,7 +157,7 @@ func (ts *ThinkTagState) ProcessFeed(delta string) []core.StreamChunk {
 		}
 
 		// In thinking mode — look for end tag.
-		if idx := strings.Index(ts.buf, thinkEnd); idx >= 0 {
+		if idx := strings.Index(ts.buf, ts.currentEnd); idx >= 0 {
 			thinkingText := ts.buf[:idx]
 			if thinkingText != "" {
 				chunks = append(chunks, core.StreamChunk{
@@ -142,13 +165,13 @@ func (ts *ThinkTagState) ProcessFeed(delta string) []core.StreamChunk {
 					Delta: thinkingText,
 				})
 			}
-			ts.buf = ts.buf[idx+len(thinkEnd):]
+			ts.buf = ts.buf[idx+len(ts.currentEnd):]
 			ts.thinkingMode = false
 			continue
 		}
 
 		// No end tag. Check for partial end tag suffix.
-		partial := longestTagSuffix(ts.buf)
+		partial := longestTagSuffix(ts.buf, ts.currentEnd)
 		if partial == len(ts.buf) {
 			return chunks // entirely potential suffix
 		}
@@ -188,27 +211,29 @@ func (ts *ThinkTagState) Flush() []core.StreamChunk {
 }
 
 // longestTagPrefix returns the length of the longest prefix of s that matches
-// a prefix of <think>. Used to detect partial tag arrivals in streaming.
+// a prefix of <think> or <thinking>. Used to detect partial tag arrivals in streaming.
 func longestTagPrefix(s string) int {
-	tag := thinkStart
 	max := 0
-	// Check from longest possible match down to 1.
-	for l := min(len(s), len(tag)); l > 0; l-- {
-		if s[len(s)-l:] == tag[:l] {
-			max = l
-			break
+	// Check both possible start tags
+	for _, tag := range []string{thinkStart, thinkingStart} {
+		for l := min(len(s), len(tag)); l > 0; l-- {
+			if s[len(s)-l:] == tag[:l] {
+				if l > max {
+					max = l
+				}
+				break
+			}
 		}
 	}
 	return max
 }
 
 // longestTagSuffix returns the length of the longest suffix of s that matches
-// a prefix of </think>. Used to detect partial end tag arrivals in thinking mode.
-func longestTagSuffix(s string) int {
-	tag := thinkEnd // </think>
+// a prefix of </think> or </thinking>. Used to detect partial end tag arrivals in thinking mode.
+func longestTagSuffix(s string, endTag string) int {
 	max := 0
-	for l := min(len(s), len(tag)); l > 0; l-- {
-		if s[len(s)-l:] == tag[:l] {
+	for l := min(len(s), len(endTag)); l > 0; l-- {
+		if s[len(s)-l:] == endTag[:l] {
 			max = l
 			break
 		}

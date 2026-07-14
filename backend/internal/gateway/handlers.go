@@ -400,14 +400,11 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	// field instead of using a structured reasoning_content field.
 	thinkFilter := &transform.ThinkTagState{}
 	renderChunk := func(cleaned core.StreamChunk) {
-		// Route thinking chunks through the filter; tool calls and others
-		// pass through directly.
+		// Route text chunks through the think-tag filter to extract embedded
+		// XML thinking blocks (MiMo, QwQ, Kiro). Thinking chunks from
+		// providers with native reasoning support pass through directly.
 		if cleaned.Type == core.ChunkText {
 			for _, fc := range thinkFilter.ProcessFeed(cleaned.Delta) {
-				if fc.Type == core.ChunkThinking {
-					// Thinking content is consumed internally — not sent to client.
-					continue
-				}
 				events, rerr := streamCodec.RenderStreamChunk(fc, state)
 				if rerr != nil {
 					s.log.Warn("failed to render stream chunk", "err", rerr)
@@ -457,12 +454,8 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	// Flush any remaining buffered tool calls and think-tag buffer.
 	sanitizer.Flush(renderChunk)
 
-	// Flush think-tag state — emit any remaining buffered text.
-
+	// Flush think-tag state — emit any remaining buffered text or thinking.
 	for _, fc := range thinkFilter.Flush() {
-		if fc.Type == core.ChunkThinking {
-			continue
-		}
 		events, _ := streamCodec.RenderStreamChunk(fc, state)
 		for _, ev := range events {
 			_, _ = bw.Write(ev)
