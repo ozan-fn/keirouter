@@ -8,35 +8,44 @@ import (
 
 // thinkStart and thinkEnd are the XML tags some models (MiMo, QwQ, Kiro, etc.)
 // embed in the content field to demarcate reasoning/thinking blocks.
-// Supports both <think> and <thinking> variants.
-const (
-	thinkStart     = "<think>"
-	thinkEnd       = "</think>"
-	thinkingStart  = "<thinking>"
-	thinkingEnd    = "</thinking>"
+// Supports <think>, <thinking>, and <thinking_mode> variants.
+var (
+	thinkTags = [][2]string{
+		{"<think>", "</think>"},
+		{"<thinking>", "</thinking>"},
+		{"<thinking_mode>", "</thinking_mode>"},
+	}
 )
 
 // findFirstTag returns the index and tag pair (start, end) for whichever tag appears first.
 // Returns -1, "", "" if no tag found.
 func findFirstTag(s string) (idx int, start, end string) {
-	thinkIdx := strings.Index(s, thinkStart)
-	thinkingIdx := strings.Index(s, thinkingStart)
+	firstIdx := -1
+	var firstStart, firstEnd string
 	
-	if thinkIdx >= 0 && (thinkingIdx < 0 || thinkIdx < thinkingIdx) {
-		return thinkIdx, thinkStart, thinkEnd
+	for _, tag := range thinkTags {
+		if i := strings.Index(s, tag[0]); i >= 0 && (firstIdx < 0 || i < firstIdx) {
+			firstIdx = i
+			firstStart = tag[0]
+			firstEnd = tag[1]
+		}
 	}
-	if thinkingIdx >= 0 {
-		return thinkingIdx, thinkingStart, thinkingEnd
-	}
-	return -1, "", ""
+	return firstIdx, firstStart, firstEnd
 }
 
-// StripThinkTags extracts content enclosed in <think> or <thinking> tags from raw text.
+// StripThinkTags extracts content enclosed in <think>, <thinking>, or <thinking_mode> tags from raw text.
 // It returns any thinking content found (as a ChunkThinking Delta if non-empty)
 // and the remaining text with the tags removed. For non-streaming use where the
 // full content is available at once.
 func StripThinkTags(content string) (thinkingChunks []core.StreamChunk, cleanContent string) {
-	if !strings.Contains(content, thinkStart) && !strings.Contains(content, thinkingStart) {
+	hasTag := false
+	for _, tag := range thinkTags {
+		if strings.Contains(content, tag[0]) {
+			hasTag = true
+			break
+		}
+	}
+	if !hasTag {
 		return nil, content
 	}
 
@@ -211,13 +220,12 @@ func (ts *ThinkTagState) Flush() []core.StreamChunk {
 }
 
 // longestTagPrefix returns the length of the longest prefix of s that matches
-// a prefix of <think> or <thinking>. Used to detect partial tag arrivals in streaming.
+// a prefix of any supported start tag. Used to detect partial tag arrivals in streaming.
 func longestTagPrefix(s string) int {
 	max := 0
-	// Check both possible start tags
-	for _, tag := range []string{thinkStart, thinkingStart} {
-		for l := min(len(s), len(tag)); l > 0; l-- {
-			if s[len(s)-l:] == tag[:l] {
+	for _, tag := range thinkTags {
+		for l := min(len(s), len(tag[0])); l > 0; l-- {
+			if s[len(s)-l:] == tag[0][:l] {
 				if l > max {
 					max = l
 				}
