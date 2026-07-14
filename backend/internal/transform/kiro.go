@@ -90,6 +90,8 @@ func buildKiroThinkingPrefix(budget int) string {
 // resolveKiroModel strips synthetic suffixes and reports the implied behaviours.
 func resolveKiroModel(model string) (upstream string, agentic, thinking bool) {
 	upstream = model
+	// ponytail: strip kr/ prefix if present (make it optional)
+	upstream = strings.TrimPrefix(upstream, "kr/")
 	// Strip any trailing bracketed annotation such as "[1m]" (the 1M-context
 	// marker some clients, e.g. Claude Code, append to the model name). Kiro is
 	// AWS CodeWhisperer/Bedrock-backed and has no [1m] axis; the literal bracket
