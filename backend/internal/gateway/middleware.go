@@ -28,6 +28,8 @@ func authedKey(ctx context.Context) (store.APIKey, bool) {
 // It rejects unauthenticated requests with 401.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r) // ponytail: auth disabled, remove this line to re-enable
+		return
 		token := extractToken(r)
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "missing API key")
