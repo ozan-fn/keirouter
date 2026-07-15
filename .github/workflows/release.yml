@@ -24,7 +24,7 @@ jobs:
           - goos: windows
             goarch: amd64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v5
         with:
@@ -64,7 +64,7 @@ jobs:
             chmod 755 "${ARCH}/keirouter"
           fi
 
-          cp -r frontend/dist "${ARCH}/frontend/"
+          cp -r frontend/dist "${ARCH}/frontend/dist"
 
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip -r "${ARCH}.zip" "${ARCH}"
@@ -94,14 +94,18 @@ jobs:
           mv "${ARCH}" ftp-deploy
           touch ftp-deploy/up
 
+      # FIX: `secrets` tidak bisa dipakai langsung di `if:`. Solusi resmi
+      # GitHub: masukkan secret ke `env` step, lalu cek via `env.X` di `if:`.
       - name: Upload to FTP
-        if: matrix.goos == 'linux' && secrets.FTP_HOST != ''
+        if: matrix.goos == 'linux' && env.FTP_HOST != ''
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_HOST }}
           username: ${{ secrets.FTP_USER }}
           password: ${{ secrets.FTP_PASSWORD }}
-          local-dir: ./ftp-deploy
+          local-dir: ./ftp-deploy/
           server-dir: /go/
 
   release:
@@ -109,7 +113,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -131,74 +135,3 @@ jobs:
             --verify-tag \
             release-assets/*
 
-  homebrew:
-    name: Update Homebrew Formula
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: ${{ github.repository_owner }}/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-
-      - name: Update formula
-        run: |
-          VER="${{ github.ref_name }}"
-          VER_NUMBER="${VER#v}"
-
-          LINUX_AMD64="keirouter-${VER}-linux-amd64.tar.gz"
-          LINUX_AMD64_URL="https://github.com/${{ github.repository }}/releases/download/${VER}/${LINUX_AMD64}"
-
-          wget -q "${LINUX_AMD64_URL}"
-          LINUX_AMD64_SHA=$(sha256sum "${LINUX_AMD64}" | cut -d' ' -f1)
-
-          mkdir -p Formula
-          cat > Formula/keirouter.rb <<'EOF'
-          class Keirouter < Formula
-            desc "API gateway with automatic load balancing and provider failover"
-            homepage "https://github.com/${{ github.repository }}"
-            version "${VER_NUMBER}"
-            license "AGPL-3.0"
-
-            on_linux do
-              if Hardware::CPU.intel?
-                url "${LINUX_AMD64_URL}"
-                sha256 "${LINUX_AMD64_SHA}"
-              end
-            end
-
-            def install
-              bin.install "keirouter"
-              (share/"keirouter").install "frontend"
-            end
-
-            def caveats
-              <<~EOS
-                Quick start:
-                  keirouter -bootstrap    # create your first API key
-                  keirouter start         # start server on :20180
-
-                Dashboard: http://localhost:20180  (default password: keirouter)
-              EOS
-            end
-
-            test do
-              assert_match "KeiRouter", shell_output("#{bin}/keirouter --help 2>&1")
-            end
-          end
-          EOF
-
-          # Lakukan substitusi variabel bash ke dalam template
-          sed -i "s|\${{ github.repository }}|${{ github.repository }}|g" Formula/keirouter.rb
-          sed -i "s|\${VER_NUMBER}|${VER_NUMBER}|g" Formula/keirouter.rb
-          sed -i "s|\${LINUX_AMD64_URL}|${LINUX_AMD64_URL}|g" Formula/keirouter.rb
-          sed -i "s|\${LINUX_AMD64_SHA}|${LINUX_AMD64_SHA}|g" Formula/keirouter.rb
-
-          echo "Updated Formula/keirouter.rb for ${VER}"
-
-      - name: Commit updated formula
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          branch: main
-          commit_message: "chore: update Homebrew formula for ${{ github.ref_name }}"
-          file_pattern: Formula/keirouter.rb
