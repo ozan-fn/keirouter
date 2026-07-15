@@ -61,7 +61,7 @@ jobs:
             mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }}.exe "${ARCH}/keirouter.exe"
           else
             mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }} "${ARCH}/keirouter"
-            chmod 700 "${ARCH}/keirouter"
+            chmod 755 "${ARCH}/keirouter"
           fi
 
           cp -r frontend/dist "${ARCH}/frontend/"
@@ -69,10 +69,10 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip -r "${ARCH}.zip" "${ARCH}"
             echo "ASSET=${ARCH}.zip" >> $GITHUB_ENV
-           else
-             tar czf "${ARCH}.tar.gz" "${ARCH}"
-             echo "ASSET=${ARCH}.tar.gz" >> $GITHUB_ENV
-           fi
+          else
+            tar czf "${ARCH}.tar.gz" "${ARCH}"
+            echo "ASSET=${ARCH}.tar.gz" >> $GITHUB_ENV
+          fi
 
       - name: Generate checksum
         run: sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
@@ -86,7 +86,7 @@ jobs:
             ${{ env.ASSET }}.sha256
 
       - name: Extract and prepare for FTP
-        if: ${{ matrix.goos == 'linux' }}
+        if: matrix.goos == 'linux'
         run: |
           VER="${{ github.ref_name }}"
           ARCH="keirouter-${VER}-${{ matrix.goos }}-${{ matrix.goarch }}"
@@ -95,8 +95,8 @@ jobs:
           touch ftp-deploy/up
 
       - name: Upload to FTP
-        if: ${{ matrix.goos == 'linux' }}
-        uses: SamKirkland/FTP-Deploy-Action@4.3.4
+        if: matrix.goos == 'linux' && secrets.FTP_HOST != ''
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_HOST }}
           username: ${{ secrets.FTP_USER }}
