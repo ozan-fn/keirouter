@@ -2,9 +2,16 @@ package connectors
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
@@ -395,7 +402,7 @@ func TestKiroEndpointRetryable(t *testing.T) {
 		kind core.ErrorKind
 		want bool
 	}{
-		{core.ErrRateLimit, true},
+		{core.ErrRateLimit, false},
 		{core.ErrUpstream, true},
 		{core.ErrTimeout, true},
 		{core.ErrAuth, false},
@@ -408,4 +415,81 @@ func TestKiroEndpointRetryable(t *testing.T) {
 			t.Errorf("kiroEndpointRetryable(%s) = %v, want %v", tc.kind, got, tc.want)
 		}
 	}
+}
+
+func TestKiroRateLimitDoesNotFailOverToAnotherHost(t *testing.T) {
+	var secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	c := NewKiro("kiro", "")
+	_, err := c.openStreamWithFailover(context.Background(), "model", []byte("{}"), nil,
+		[]string{first.URL, second.URL})
+	require.Error(t, err)
+	require.Equal(t, core.ErrRateLimit, core.AsProviderError(err).Kind)
+	require.Equal(t, int32(0), secondCalls.Load())
+}
+
+func TestKiroAccountSlotRejectsConcurrentRequest(t *testing.T) {
+	c := NewKiro("kiro", "")
+	secondConnector := NewKiro("kiro", "")
+	creds := core.Credentials{AccountID: "account-1"}
+
+	release, err := c.acquireAccountSlot(context.Background(), creds, "model")
+	require.NoError(t, err)
+
+	_, err = secondConnector.acquireAccountSlot(context.Background(), creds, "model")
+	require.Error(t, err)
+	pe := core.AsProviderError(err)
+	require.Equal(t, core.ErrRateLimit, pe.Kind)
+	require.Equal(t, 2*time.Second, pe.RetryAfter)
+
+	release()
+	releaseAgain, err := c.acquireAccountSlot(context.Background(), creds, "model")
+	require.NoError(t, err)
+	releaseAgain()
+}
+
+func TestKiroQuotaEndpointRetryableStopsOnRateLimit(t *testing.T) {
+	require.False(t, kiroQuotaEndpointRetryable(&core.ProviderError{Kind: core.ErrRateLimit}))
+	require.False(t, kiroQuotaEndpointRetryable(&core.ProviderError{Kind: core.ErrQuotaExhausted}))
+	require.True(t, kiroQuotaEndpointRetryable(&core.ProviderError{Kind: core.ErrAuth}))
+	require.True(t, kiroQuotaEndpointRetryable(&core.ProviderError{Kind: core.ErrUpstream}))
+}
+
+func TestKiroMetadataCachesReturnCopies(t *testing.T) {
+	accountID := "cache-account"
+	kiroModelCache.Delete(accountID)
+	kiroQuotaCache.Delete(accountID)
+	t.Cleanup(func() {
+		kiroModelCache.Delete(accountID)
+		kiroQuotaCache.Delete(accountID)
+	})
+
+	storeKiroModels(accountID, []ModelSpec{{ID: "model-1"}})
+	models, ok := loadKiroModels(accountID)
+	require.True(t, ok)
+	models[0].ID = "mutated"
+	modelsAgain, ok := loadKiroModels(accountID)
+	require.True(t, ok)
+	require.Equal(t, "model-1", modelsAgain[0].ID)
+
+	kiroQuotaCache.Store(accountID, kiroQuotaCacheEntry{
+		expiresAt: time.Now().Add(time.Minute),
+		quota:     &QuotaResult{PlanName: "plan", Quotas: []QuotaEntry{{ResourceType: "credit", Limit: 100}}},
+	})
+	quota, ok := loadKiroQuota(accountID)
+	require.True(t, ok)
+	quota.Quotas[0].Limit = 0
+	quotaAgain, ok := loadKiroQuota(accountID)
+	require.True(t, ok)
+	require.Equal(t, 100, quotaAgain.Quotas[0].Limit)
 }

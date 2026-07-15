@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -27,6 +29,27 @@ type Kiro struct {
 	codec       transform.KiroCodec
 }
 
+const (
+	kiroModelCacheTTL = 5 * time.Minute
+	kiroQuotaCacheTTL = 30 * time.Second
+)
+
+type kiroModelCacheEntry struct {
+	expiresAt time.Time
+	models    []ModelSpec
+}
+
+type kiroQuotaCacheEntry struct {
+	expiresAt time.Time
+	quota     *QuotaResult
+}
+
+var (
+	kiroAccountSlots sync.Map
+	kiroModelCache   sync.Map
+	kiroQuotaCache   sync.Map
+)
+
 // NewKiro builds a Kiro connector.
 func NewKiro(id, defaultBaseURL string) *Kiro {
 	return &Kiro{id: id, defaultBase: defaultBaseURL}
@@ -36,11 +59,9 @@ func (c *Kiro) ID() string            { return c.id }
 func (c *Kiro) Dialect() core.Dialect { return core.DialectKiro }
 
 // kiroEndpoints are the interchangeable regional surfaces of the Kiro
-// generateAssistantResponse service. They are attempted in order so a transient
-// rate-limit or edge failure on one host can be retried on the next before the
-// account is taken out of rotation. The list is not extra quota: the hosts are
-// alternate front doors to one regional service, so rotating them is edge-level
-// failover only.
+// generateAssistantResponse service. They are attempted in order only for edge
+// and transport failures. The hosts share account-level limits, so a 429 must
+// never be retried against another host.
 var kiroEndpoints = []string{
 	"https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
 	"https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
@@ -192,16 +213,16 @@ func orderAmazonFirst(endpoints []string) []string {
 }
 
 // kiroEndpointRetryable reports whether an endpoint failure is worth retrying on
-// an alternate Kiro host. Only rate-limit, upstream 5xx, and transport/timeout
-// errors qualify; auth, bad-request, and quota errors are returned to the caller
-// immediately since another host would reject them the same way.
+// an alternate Kiro host. Only upstream 5xx and transport/timeout errors qualify;
+// account-level rate limits, auth, bad-request, and quota errors are returned to
+// the caller immediately since another host would reject them the same way.
 func kiroEndpointRetryable(err error) bool {
 	pe := core.AsProviderError(err)
 	if pe == nil {
 		return false
 	}
 	switch pe.Kind {
-	case core.ErrRateLimit, core.ErrUpstream, core.ErrTimeout:
+	case core.ErrUpstream, core.ErrTimeout:
 		return true
 	default:
 		return false
@@ -209,11 +230,9 @@ func kiroEndpointRetryable(err error) bool {
 }
 
 // openStreamWithFailover opens the binary eventstream POST against each
-// candidate endpoint in order. A retryable failure (rate-limit, 5xx, transport)
-// advances to the next host; non-retryable failures (auth, bad request, quota)
-// are returned at once. The last error is returned when every host is
-// exhausted, so the dispatcher only applies a cooldown after a genuine,
-// service-wide failure rather than a single edge hiccup.
+// candidate endpoint in order. A retryable edge failure (5xx or transport)
+// advances to the next host; account-level and request-level rejections are
+// returned at once. The last error is returned when every host is exhausted.
 func (c *Kiro) openStreamWithFailover(ctx context.Context, model string, body []byte, headers map[string]string, endpoints []string) (*http.Response, error) {
 	var lastErr error
 	for i, url := range endpoints {
@@ -228,6 +247,37 @@ func (c *Kiro) openStreamWithFailover(ctx context.Context, model string, body []
 		}
 	}
 	return nil, lastErr
+}
+
+// acquireAccountSlot limits an account to one in-flight upstream operation. This
+// closes the race where generations and metadata probes are dispatched before
+// the first 429 has had a chance to put the account into cooldown.
+func (c *Kiro) acquireAccountSlot(ctx context.Context, creds core.Credentials, model string) (func(), error) {
+	if creds.AccountID == "" {
+		return func() {}, nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	value, _ := kiroAccountSlots.LoadOrStore(creds.AccountID, make(chan struct{}, 1))
+	slot := value.(chan struct{})
+	select {
+	case slot <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-slot }) }, nil
+	default:
+		return nil, &core.ProviderError{
+			Kind:       core.ErrRateLimit,
+			Provider:   c.id,
+			Model:      model,
+			StatusCode: http.StatusTooManyRequests,
+			RetryAfter: 2 * time.Second,
+			Message:    "another request is already in flight for this account",
+		}
+	}
 }
 
 // headers builds the AWS SDK + CodeWhisperer headers Kiro expects.
@@ -265,6 +315,11 @@ func (c *Kiro) Validate(ctx context.Context, creds core.Credentials) error {
 	if token == "" {
 		return fmt.Errorf("validation failed for %s: no access token", c.id)
 	}
+	releaseAccount, err := c.acquireAccountSlot(ctx, creds, "validate")
+	if err != nil {
+		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+	}
+	defer releaseAccount()
 	// Use ListAvailableModels to verify the token. Region defaults to us-east-1.
 	region := creds.Extra["kiro_region"]
 	if region == "" {
@@ -281,7 +336,7 @@ func (c *Kiro) Validate(ctx context.Context, creds core.Credentials) error {
 	} else if isKiroExternalIDP(creds) {
 		h["TokenType"] = "EXTERNAL_IDP"
 	}
-	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, h)
+	_, err = doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, h)
 	if err != nil {
 		return fmt.Errorf("validation failed for %s: %w", c.id, err)
 	}
@@ -308,6 +363,17 @@ func (c *Kiro) ListModels(ctx context.Context, creds core.Credentials) ([]ModelS
 	token := kiroAPIKey(creds)
 	if token == "" {
 		return nil, fmt.Errorf("kiro: ListModels: no access token")
+	}
+	if cached, ok := loadKiroModels(creds.AccountID); ok {
+		return cached, nil
+	}
+	releaseAccount, err := c.acquireAccountSlot(ctx, creds, "list-models")
+	if err != nil {
+		return nil, fmt.Errorf("kiro: ListModels: %w", err)
+	}
+	defer releaseAccount()
+	if cached, ok := loadKiroModels(creds.AccountID); ok {
+		return cached, nil
 	}
 	region := creds.Extra["kiro_region"]
 	if region == "" {
@@ -372,7 +438,34 @@ func (c *Kiro) ListModels(ctx context.Context, creds core.Credentials) ([]ModelS
 			out = append(out, ModelSpec{ID: upstream + "-thinking-agentic", Name: display + " (Thinking + Agentic)", Kind: core.ServiceLLM})
 		}
 	}
+	storeKiroModels(creds.AccountID, out)
 	return out, nil
+}
+
+func loadKiroModels(accountID string) ([]ModelSpec, bool) {
+	if accountID == "" {
+		return nil, false
+	}
+	value, ok := kiroModelCache.Load(accountID)
+	if !ok {
+		return nil, false
+	}
+	entry := value.(kiroModelCacheEntry)
+	if time.Now().After(entry.expiresAt) {
+		kiroModelCache.Delete(accountID)
+		return nil, false
+	}
+	return append([]ModelSpec(nil), entry.models...), true
+}
+
+func storeKiroModels(accountID string, models []ModelSpec) {
+	if accountID == "" {
+		return
+	}
+	kiroModelCache.Store(accountID, kiroModelCacheEntry{
+		expiresAt: time.Now().Add(kiroModelCacheTTL),
+		models:    append([]ModelSpec(nil), models...),
+	})
 }
 
 // ---- Quota fetching ---------------------------------------------------------
@@ -388,6 +481,17 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	token := kiroAPIKey(creds)
 	if token == "" {
 		return &QuotaResult{Message: "No credential; cannot fetch quota."}, nil
+	}
+	if cached, ok := loadKiroQuota(creds.AccountID); ok {
+		return cached, nil
+	}
+	releaseAccount, err := c.acquireAccountSlot(ctx, creds, "quota")
+	if err != nil {
+		return nil, err
+	}
+	defer releaseAccount()
+	if cached, ok := loadKiroQuota(creds.AccountID); ok {
+		return cached, nil
 	}
 	region := creds.Extra["kiro_region"]
 	if region == "" {
@@ -422,10 +526,13 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	url1 := fmt.Sprintf("https://codewhisperer.us-east-1.amazonaws.com/getUsageLimits?%s", params)
 	body, err := doJSONMethod(ctx, http.MethodGet, c.id, "quota", url1, nil, authHeaders)
 	if err == nil {
-		return parseKiroQuota(body)
+		return c.cacheKiroQuota(creds.AccountID, body)
 	}
 	if isAuthError(err) {
 		sawAuthError = true
+	}
+	if !kiroQuotaEndpointRetryable(err) {
+		return nil, err
 	}
 
 	// Attempt 2: POST on codewhisperer endpoint. Only include profileArn when
@@ -448,10 +555,13 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	}
 	body, err = doJSON(ctx, c.id, "quota", "https://codewhisperer.us-east-1.amazonaws.com", postJSON, postHeaders)
 	if err == nil {
-		return parseKiroQuota(body)
+		return c.cacheKiroQuota(creds.AccountID, body)
 	}
 	if isAuthError(err) {
 		sawAuthError = true
+	}
+	if !kiroQuotaEndpointRetryable(err) {
+		return nil, err
 	}
 
 	// Attempt 3: GET on q endpoint, including profileArn only when set.
@@ -462,7 +572,7 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	url3 := fmt.Sprintf("https://q.%s.amazonaws.com/getUsageLimits?%s", region, qParams)
 	body, err = doJSONMethod(ctx, http.MethodGet, c.id, "quota", url3, nil, authHeaders)
 	if err == nil {
-		return parseKiroQuota(body)
+		return c.cacheKiroQuota(creds.AccountID, body)
 	}
 	if isAuthError(err) {
 		sawAuthError = true
@@ -481,6 +591,53 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 		}
 	}
 	return &QuotaResult{Message: "Unable to fetch Kiro usage right now."}, nil
+}
+
+func kiroQuotaEndpointRetryable(err error) bool {
+	pe := core.AsProviderError(err)
+	switch pe.Kind {
+	case core.ErrAuth, core.ErrBadRequest, core.ErrUpstream, core.ErrTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func loadKiroQuota(accountID string) (*QuotaResult, bool) {
+	if accountID == "" {
+		return nil, false
+	}
+	value, ok := kiroQuotaCache.Load(accountID)
+	if !ok {
+		return nil, false
+	}
+	entry := value.(kiroQuotaCacheEntry)
+	if time.Now().After(entry.expiresAt) {
+		kiroQuotaCache.Delete(accountID)
+		return nil, false
+	}
+	return cloneKiroQuota(entry.quota), true
+}
+
+func (c *Kiro) cacheKiroQuota(accountID string, body []byte) (*QuotaResult, error) {
+	quota, err := parseKiroQuota(body)
+	if err != nil || accountID == "" {
+		return quota, err
+	}
+	kiroQuotaCache.Store(accountID, kiroQuotaCacheEntry{
+		expiresAt: time.Now().Add(kiroQuotaCacheTTL),
+		quota:     cloneKiroQuota(quota),
+	})
+	return quota, nil
+}
+
+func cloneKiroQuota(quota *QuotaResult) *QuotaResult {
+	if quota == nil {
+		return nil
+	}
+	copy := *quota
+	copy.Quotas = append([]QuotaEntry(nil), quota.Quotas...)
+	return &copy
 }
 
 // isAuthError checks if a provider error is an auth failure (401/403).
@@ -698,21 +855,27 @@ func (c *Kiro) Chat(ctx context.Context, req *core.ChatRequest, creds core.Crede
 // Stream performs a streaming call, parsing the AWS EventStream into canonical
 // chunks.
 func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
+	releaseAccount, err := c.acquireAccountSlot(ctx, creds, req.Model)
+	if err != nil {
+		return nil, err
+	}
+
 	// Account-bound auth uses only its resolved profile ARN; OAuth/social auth
 	// can fall back to the shared profile for its auth method.
 	profileArn := kiroResolveProfileArn(creds)
 	body, err := c.codec.RenderRequestWithProfile(req, profileArn)
 
 	if err != nil {
+		releaseAccount()
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 
 	// Kiro returns a binary eventstream, not SSE; use a plain streaming POST.
-	// Try each interchangeable endpoint in turn so a transient rate-limit or
-	// edge failure on one host is retried on the next before the error is
-	// surfaced to the dispatcher (which would otherwise cool the account down).
+	// Try an alternate endpoint only for transport or edge failures. Account-level
+	// rejections such as 429 are surfaced immediately so cooldown can take effect.
 	resp, err := c.openStreamWithFailover(ctx, req.Model, body, c.headers(creds), c.endpoints(creds))
 	if err != nil {
+		releaseAccount()
 		// On an upstream rejection (e.g. CodeWhisperer's 400 "Improperly formed
 		// request"), the offending field is opaque. When KIRO_DEBUG is set, dump
 		// the rendered request body so the exact payload can be inspected. The
@@ -724,6 +887,7 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 	go func() {
 		defer close(out)
 		defer resp.Body.Close()
+		defer releaseAccount()
 
 		ttft := newTTFTTracker(cfg)
 
