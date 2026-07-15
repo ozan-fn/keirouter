@@ -53,10 +53,23 @@ func isKiroAPIKey(creds core.Credentials) bool {
 	return creds.Extra["kiro_auth_method"] == "api_key"
 }
 
+func isKiroExternalIDP(creds core.Credentials) bool {
+	return creds.Extra["kiro_auth_method"] == "external_idp"
+}
+
+func usesKiroCodeWhispererSurface(creds core.Credentials) bool {
+	switch creds.Extra["kiro_auth_method"] {
+	case "api_key", "external_idp", "idc":
+		return true
+	default:
+		return false
+	}
+}
+
 // Public default CodeWhisperer profile ARNs (us-east-1), keyed by auth method.
 // Used when an OAuth/social connection could not resolve its own profileArn.
-// Builder ID / IDC sign-ins and social (Google/GitHub/imported) sign-ins map to
-// different shared profiles. Kiro upstream now rejects a generateAssistantResponse
+// Builder ID and social (Google/GitHub/imported) sign-ins map to different
+// shared profiles. Kiro upstream now rejects a generateAssistantResponse
 // request without a profileArn (400 "profileArn is required for this request."),
 // so an OAuth/social connection must always carry one.
 const (
@@ -66,7 +79,7 @@ const (
 
 // kiroDefaultProfileArn resolves the shared default profileArn for a given OAuth
 // auth method. Social sign-ins (Google/GitHub/imported Kiro IDE tokens) map to
-// the social profile; Builder ID / IDC map to the builder-id profile.
+// the social profile; Builder ID maps to the builder-id profile.
 func kiroDefaultProfileArn(authMethod string) string {
 	switch authMethod {
 	case "google", "github", "imported", "social":
@@ -77,17 +90,15 @@ func kiroDefaultProfileArn(authMethod string) string {
 }
 
 // kiroResolveProfileArn returns the profileArn to attach to a chat request. For
-// API-key auth, only an ARN actually resolved for the key is used — never the
-// shared default, since an ARN not owned by the key's account is rejected with
-// 403. For OAuth/social auth the connection's resolved ARN is preferred, falling
-// back to the shared default keyed by auth method so the request always carries
-// a profileArn (the upstream 400s without one).
+// account-bound auth, only an ARN actually resolved for the credential is used.
+// For OAuth/social auth the connection's resolved ARN is preferred, falling
+// back to the shared default keyed by auth method.
 func kiroResolveProfileArn(creds core.Credentials) string {
 	resolved := creds.Extra["kiro_profile_arn"]
 	if resolved == "" {
 		resolved = creds.Extra["profile_arn"]
 	}
-	if isKiroAPIKey(creds) {
+	if usesKiroCodeWhispererSurface(creds) {
 		return resolved
 	}
 	if resolved != "" {
@@ -111,10 +122,8 @@ func kiroAPIKey(creds core.Credentials) string {
 // connector default) leads. The remaining known regional surfaces are appended
 // as failover hosts only when the primary is itself a known Kiro production
 // surface; a custom base URL (a relay, proxy, or test server) is used verbatim
-// so operator overrides are never bypassed. API-key credentials are validated
-// against the CodeWhisperer (amazonaws.com) surface and are rejected by the
-// kiro.dev gateway with 401/403, so for API-key auth the amazonaws hosts are
-// pulled to the front.
+// so operator overrides are never bypassed. Account-bound credentials use the
+// regional CodeWhisperer surface, so amazonaws.com hosts are pulled to the front.
 func (c *Kiro) endpoints(creds core.Credentials) []string {
 	primary := creds.BaseURL
 	if primary == "" {
@@ -133,10 +142,24 @@ func (c *Kiro) endpoints(creds core.Credentials) []string {
 			list = append(list, e)
 		}
 	}
-	if isKiroAPIKey(creds) {
+	if usesKiroCodeWhispererSurface(creds) {
+		region := strings.TrimSpace(creds.Extra["kiro_region"])
+		if region == "" {
+			region = "us-east-1"
+		}
+		for i, endpoint := range list {
+			list[i] = regionalizeKiroEndpoint(endpoint, region)
+		}
 		list = orderAmazonFirst(list)
 	}
 	return list
+}
+
+func regionalizeKiroEndpoint(endpoint, region string) string {
+	if region == "" || region == "us-east-1" || !strings.Contains(endpoint, "amazonaws.com") {
+		return endpoint
+	}
+	return strings.Replace(endpoint, ".us-east-1.amazonaws.com", "."+region+".amazonaws.com", 1)
 }
 
 // isKnownKiroEndpoint reports whether url is one of the built-in Kiro regional
@@ -228,6 +251,9 @@ func (c *Kiro) headers(creds core.Credentials) map[string]string {
 		}
 	} else if creds.AccessToken != "" {
 		h["Authorization"] = bearer(creds.AccessToken)
+		if isKiroExternalIDP(creds) {
+			h["TokenType"] = "EXTERNAL_IDP"
+		}
 	}
 	return mergeHeaders(h, creds.Headers)
 }
@@ -235,7 +261,8 @@ func (c *Kiro) headers(creds core.Credentials) map[string]string {
 // Validate probes the Kiro upstream by calling ListAvailableModels. If the
 // access token is missing or rejected, an error is returned.
 func (c *Kiro) Validate(ctx context.Context, creds core.Credentials) error {
-	if creds.AccessToken == "" {
+	token := kiroAPIKey(creds)
+	if token == "" {
 		return fmt.Errorf("validation failed for %s: no access token", c.id)
 	}
 	// Use ListAvailableModels to verify the token. Region defaults to us-east-1.
@@ -245,9 +272,14 @@ func (c *Kiro) Validate(ctx context.Context, creds core.Credentials) error {
 	}
 	url := fmt.Sprintf("https://q.%s.amazonaws.com/ListAvailableModels?origin=AI_EDITOR", region)
 	h := map[string]string{
-		"Authorization": bearer(creds.AccessToken),
+		"Authorization": bearer(token),
 		"Accept":        "application/json",
 		"User-Agent":    "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+	}
+	if isKiroAPIKey(creds) {
+		h["tokentype"] = "API_KEY"
+	} else if isKiroExternalIDP(creds) {
+		h["TokenType"] = "EXTERNAL_IDP"
 	}
 	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", url, nil, h)
 	if err != nil {
@@ -273,14 +305,15 @@ type kiroModelEntry struct {
 // model into synthetic variants (-thinking, -agentic, -thinking-agentic).
 // Implements LiveModelSource.
 func (c *Kiro) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
-	if creds.AccessToken == "" {
+	token := kiroAPIKey(creds)
+	if token == "" {
 		return nil, fmt.Errorf("kiro: ListModels: no access token")
 	}
 	region := creds.Extra["kiro_region"]
 	if region == "" {
 		region = "us-east-1"
 	}
-	profileArn := creds.Extra["kiro_profile_arn"]
+	profileArn := kiroResolveProfileArn(creds)
 
 	params := "origin=AI_EDITOR"
 	if profileArn != "" {
@@ -289,9 +322,14 @@ func (c *Kiro) ListModels(ctx context.Context, creds core.Credentials) ([]ModelS
 	url := fmt.Sprintf("https://q.%s.amazonaws.com/ListAvailableModels?%s", region, params)
 
 	h := map[string]string{
-		"Authorization": bearer(creds.AccessToken),
+		"Authorization": bearer(token),
 		"Accept":        "application/json",
 		"User-Agent":    "AWS-SDK-JS/3.0.0 kiro-ide/1.0.0",
+	}
+	if isKiroAPIKey(creds) {
+		h["tokentype"] = "API_KEY"
+	} else if isKiroExternalIDP(creds) {
+		h["TokenType"] = "EXTERNAL_IDP"
 	}
 	body, err := doJSONMethod(ctx, http.MethodGet, c.id, "list-models", url, nil, h)
 	if err != nil {
@@ -358,17 +396,9 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	authMethod := creds.Extra["kiro_auth_method"]
 	isAPIKey := authMethod == "api_key"
 
-	profileArn := creds.Extra["profile_arn"]
-	if profileArn == "" {
-		profileArn = creds.Extra["kiro_profile_arn"]
-	}
-	// For API-key auth, only ever send a profileArn that was actually resolved
-	// for this connection — injecting the shared placeholder ARN makes
-	// CodeWhisperer 403 the request ("bearer token invalid"). OAuth/social may
-	// fall back to the default placeholder.
-	if profileArn == "" && !isAPIKey {
-		profileArn = kiroDefaultProfileArn(authMethod)
-	}
+	profileArn := kiroResolveProfileArn(creds)
+	// Account-bound auth only sends a profileArn resolved for the credential.
+	// OAuth/social connections may use their shared profile fallback.
 
 	authHeaders := map[string]string{
 		"Authorization":    bearer(token),
@@ -381,6 +411,8 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	// is rejected (401/403).
 	if isAPIKey {
 		authHeaders["tokentype"] = "API_KEY"
+	} else if isKiroExternalIDP(creds) {
+		authHeaders["TokenType"] = "EXTERNAL_IDP"
 	}
 
 	sawAuthError := false
@@ -411,6 +443,8 @@ func (c *Kiro) FetchQuota(ctx context.Context, creds core.Credentials) (*QuotaRe
 	}
 	if isAPIKey {
 		postHeaders["tokentype"] = "API_KEY"
+	} else if isKiroExternalIDP(creds) {
+		postHeaders["TokenType"] = "EXTERNAL_IDP"
 	}
 	body, err = doJSON(ctx, c.id, "quota", "https://codewhisperer.us-east-1.amazonaws.com", postJSON, postHeaders)
 	if err == nil {
@@ -664,11 +698,8 @@ func (c *Kiro) Chat(ctx context.Context, req *core.ChatRequest, creds core.Crede
 // Stream performs a streaming call, parsing the AWS EventStream into canonical
 // chunks.
 func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
-	// Every Kiro chat request must carry a profileArn — the upstream rejects a
-	// request without one (400 "profileArn is required for this request."). For
-	// API-key auth only the ARN resolved for the key is sent (a foreign ARN
-	// 403s). For OAuth/social the connection's resolved ARN is used, falling
-	// back to the shared default profile for the auth method.
+	// Account-bound auth uses only its resolved profile ARN; OAuth/social auth
+	// can fall back to the shared profile for its auth method.
 	profileArn := kiroResolveProfileArn(creds)
 	body, err := c.codec.RenderRequestWithProfile(req, profileArn)
 

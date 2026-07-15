@@ -229,6 +229,17 @@ func TestKiroEndpoints_APIKeyPrefersAmazon(t *testing.T) {
 	}
 }
 
+func TestKiroEndpoints_ExternalIDPUsesRegionalAmazonSurface(t *testing.T) {
+	c := NewKiro("kiro", kiroEndpoints[0])
+	got := c.endpoints(core.Credentials{Extra: map[string]string{
+		"kiro_auth_method": "external_idp",
+		"kiro_region":      "eu-west-1",
+	}})
+	if !strings.Contains(got[0], "amazonaws.com") || !strings.Contains(got[0], ".eu-west-1.") {
+		t.Fatalf("external_idp should lead with the regional amazon endpoint, got %v", got)
+	}
+}
+
 func TestKiroEndpoints_CredentialBaseURLLeads(t *testing.T) {
 	c := NewKiro("kiro", kiroEndpoints[0])
 	custom := "https://relay.example.com/generateAssistantResponse"
@@ -289,6 +300,20 @@ func TestKiroHeaders_OAuthHasNoTokenType(t *testing.T) {
 	}
 }
 
+func TestKiroHeaders_ExternalIDPMarker(t *testing.T) {
+	c := NewKiro("kiro", kiroEndpoints[0])
+	h := c.headers(core.Credentials{
+		AccessToken: "microsoft-token",
+		Extra:       map[string]string{"kiro_auth_method": "external_idp"},
+	})
+	if h["Authorization"] != "Bearer microsoft-token" {
+		t.Errorf("external identity token should be sent as bearer, got %q", h["Authorization"])
+	}
+	if h["TokenType"] != "EXTERNAL_IDP" {
+		t.Errorf("external identity requests must carry TokenType=EXTERNAL_IDP, got %q", h["TokenType"])
+	}
+}
+
 func TestKiroResolveProfileArn(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -301,9 +326,9 @@ func TestKiroResolveProfileArn(t *testing.T) {
 			want:  kiroDefaultProfileArnBuilderID,
 		},
 		{
-			name:  "oauth idc falls back to builder-id default",
+			name:  "idc without resolved arn injects no default",
 			creds: core.Credentials{Extra: map[string]string{"kiro_auth_method": "idc"}},
-			want:  kiroDefaultProfileArnBuilderID,
+			want:  "",
 		},
 		{
 			name:  "imported social falls back to social default",
@@ -347,6 +372,11 @@ func TestKiroResolveProfileArn(t *testing.T) {
 		{
 			name:  "api_key without resolved arn injects no default",
 			creds: core.Credentials{Extra: map[string]string{"kiro_auth_method": "api_key"}},
+			want:  "",
+		},
+		{
+			name:  "external_idp without resolved arn injects no default",
+			creds: core.Credentials{Extra: map[string]string{"kiro_auth_method": "external_idp"}},
 			want:  "",
 		},
 	}
