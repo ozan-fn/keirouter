@@ -64,15 +64,15 @@ jobs:
             chmod 755 "${ARCH}/keirouter"
           fi
 
-          cp -r frontend/dist "${ARCH}/frontend"
+          cp -r frontend/dist "${ARCH}/frontend/"
 
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip -r "${ARCH}.zip" "${ARCH}"
             echo "ASSET=${ARCH}.zip" >> $GITHUB_ENV
-          else
-            tar czf "${ARCH}.tar.gz" "${ARCH}"
-            echo "ASSET=${ARCH}.tar.gz" >> $GITHUB_ENV
-          fi
+           else
+             tar czf "${ARCH}.tar.gz" "${ARCH}"
+             echo "ASSET=${ARCH}.tar.gz" >> $GITHUB_ENV
+           fi
 
       - name: Generate checksum
         run: sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
@@ -85,38 +85,24 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
 
-      - name: Upload to FTP
-        if: ${{ matrix.goos == 'linux' }}
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_PORT: ${{ secrets.FTP_PORT }}
-          FTP_USER: ${{ secrets.FTP_USER }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      - name: Extract and prepare for FTP
+        if: ${{ matrix.goos == 'linux' && secrets.FTP_HOST != '' }}
         run: |
-          if [ -z "$FTP_HOST" ]; then
-            echo "FTP credentials not configured, skipping upload"
-            exit 0
-          fi
           VER="${{ github.ref_name }}"
           ARCH="keirouter-${VER}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          tar xzf "${ARCH}.tar.gz"
+          mv "${ARCH}" ftp-deploy
+          touch ftp-deploy/up
 
-          sudo apt-get update && sudo apt-get install -y lftp
-
-           tar xzf "${ARCH}.tar.gz"
-           cd "${ARCH}"
-           chmod 755 keirouter
-
-           lftp <<'EOF'
-           set ftp:ssl-allow no
-           open ${FTP_HOST}:${FTP_PORT:-21}
-           user ${FTP_USER} ${FTP_PASSWORD}
-           mkdir -p go
-           cd go
-           rm -rf frontend keirouter
-           mirror -R . .
-           touch up
-           bye
-           EOF
+      - name: Upload to FTP
+        if: ${{ matrix.goos == 'linux' && secrets.FTP_HOST != '' }}
+        uses: SamKirkland/FTP-Deploy-Action@4.3.4
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./ftp-deploy
+          server-dir: /go/
 
   release:
     name: Create Release
