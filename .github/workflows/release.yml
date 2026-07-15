@@ -61,9 +61,10 @@ jobs:
             mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }}.exe "${ARCH}/keirouter.exe"
           else
             mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }} "${ARCH}/keirouter"
-            chmod 755 "${ARCH}/keirouter"
+            chmod 700 "${ARCH}/keirouter"
           fi
 
+          mkdir -p "${ARCH}/frontend"
           cp -r frontend/dist "${ARCH}/frontend/dist"
 
           if [ "${{ matrix.goos }}" = "windows" ]; then
