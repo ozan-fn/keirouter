@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  GO_VERSION: "1.24"
+  GO_VERSION: "1.26"
   NODE_VERSION: "20"
 
 jobs:
@@ -19,18 +19,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
           - goos: linux
             goarch: amd64
-          - goos: linux
-            goarch: arm64
           - goos: windows
             goarch: amd64
-          - goos: windows
-            goarch: arm64
     steps:
       - uses: actions/checkout@v5
 
@@ -55,38 +47,73 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          MATRIX_GOOS: ${{ matrix.goos }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          BIN=keirouter
-          if [ "${MATRIX_GOOS}" = "windows" ]; then BIN=keirouter.exe; fi
           cd backend
-          go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o "../${BIN}" ./cmd/keirouter
+          go build -ldflags="-s -w" -o ../keirouter-${{ matrix.goos }}-${{ matrix.goarch }}$( [[ "${{ matrix.goos }}" == "windows" ]] && echo ".exe" || echo "" ) ./cmd/keirouter
 
-      - name: Package
+      - name: Create archive
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          mkdir -p dist/keirouter/frontend
-          cp -R frontend/dist dist/keirouter/frontend/
-          if [ "${MATRIX_GOOS}" = "windows" ]; then
-            ARCHIVE="keirouter_${VERSION}_${MATRIX_GOOS}_${MATRIX_GOARCH}.zip"
-            cp keirouter.exe dist/keirouter/
-            ( cd dist && zip -qr "../${ARCHIVE}" keirouter )
+          VER="${{ github.ref_name }}"
+          ARCH="keirouter-${VER}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "${ARCH}"
+          
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }}.exe "${ARCH}/keirouter.exe"
           else
-            ARCHIVE="keirouter_${VERSION}_${MATRIX_GOOS}_${MATRIX_GOARCH}.tar.gz"
-            cp keirouter dist/keirouter/
-            ( cd dist && tar -czf "../${ARCHIVE}" keirouter )
+            mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }} "${ARCH}/keirouter"
+            chmod 755 "${ARCH}/keirouter"
           fi
-          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
-        env:
-          MATRIX_GOOS: ${{ matrix.goos }}
-          MATRIX_GOARCH: ${{ matrix.goarch }}
+          
+          cp -r frontend/dist "${ARCH}/frontend"
+          
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -r "${ARCH}.zip" "${ARCH}"
+            echo "ASSET=${ARCH}.zip" >> $GITHUB_ENV
+          else
+            tar czf "${ARCH}.tar.gz" "${ARCH}"
+            echo "ASSET=${ARCH}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Generate checksum
+        run: sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: keirouter-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ${{ env.ARCHIVE }}
+          name: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+
+      - name: Upload to FTP
+        if: ${{ matrix.goos == 'linux' }}
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_PORT: ${{ secrets.FTP_PORT }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          if [ -z "$FTP_HOST" ]; then
+            echo "FTP credentials not configured, skipping upload"
+            exit 0
+          fi
+          VER="${{ github.ref_name }}"
+          ARCH="keirouter-${VER}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          
+          sudo apt-get update && sudo apt-get install -y lftp
+          
+          tar xzf "${ARCH}.tar.gz"
+          cd "${ARCH}"
+          chmod 700 keirouter
+          touch up
+          
+          lftp -c "
+            set ftp:ssl-allow no;
+            open -u $FTP_USER,$FTP_PASSWORD $FTP_HOST:${FTP_PORT:-21};
+            cd go;
+            rm -rf keirouter frontend up;
+            mirror -R --verbose . .;
+          " || true
 
   release:
     name: Create Release
@@ -94,139 +121,83 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          ref: main
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
 
-      - name: Generate checksums
+      - name: Prepare release assets
         run: |
-          cd artifacts
-          sha256sum *.tar.gz *.zip > checksums.txt
-          cat checksums.txt
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec mv {} release-assets/ \;
 
-      - name: Generate changelog
-        id: changelog
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: --latest --strip header
+      - name: Create Release
         env:
-          OUTPUT: CHANGES.md
-
-      - name: Bump VERSION file
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          echo "${VERSION}" > backend/internal/version/VERSION
-          echo "VERSION file updated to ${VERSION}"
+          gh release create ${{ github.ref_name }} \
+            --title "KeiRouter ${{ github.ref_name }}" \
+            --generate-notes \
+            release-assets/*
 
-      - name: Update CHANGELOG.md
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          NEW_ENTRY=$(cat CHANGES.md)
-
-          # Prepend the new release entry after the header
-          {
-            echo "# Changelog"
-            echo ""
-            echo "All notable changes to this project will be documented in this file."
-            echo ""
-            echo "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),"
-            echo "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)."
-            echo ""
-            echo "${NEW_ENTRY}"
-            # Append existing entries (skip the header lines)
-            if [ -f CHANGELOG.md ]; then
-              tail -n +8 CHANGELOG.md
-            fi
-          } > CHANGELOG.new
-          mv CHANGELOG.new CHANGELOG.md
-          echo "CHANGELOG.md updated for ${VERSION}"
-          head -20 CHANGELOG.md
-
-      - name: Commit CHANGELOG.md and VERSION
-        uses: stefanzweifel/git-auto-commit-action@v5
+  homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
         with:
-          branch: main
-          commit_message: "docs: update CHANGELOG.md and VERSION for ${{ github.ref_name }}"
-          file_pattern: CHANGELOG.md backend/internal/version/VERSION
+          repository: ${{ github.repository_owner }}/homebrew-tap
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: CHANGES.md
-          files: |
-            artifacts/*.tar.gz
-            artifacts/*.zip
-            artifacts/checksums.txt
-
-      - name: Update Homebrew formula
+      - name: Update formula
         run: |
-          VER="${GITHUB_REF#refs/tags/v}"
-
-          DARWIN_ARM64=$(grep "darwin_arm64" artifacts/checksums.txt | awk '{print $1}')
-          DARWIN_AMD64=$(grep "darwin_amd64" artifacts/checksums.txt | awk '{print $1}')
-          LINUX_ARM64=$(grep "linux_arm64" artifacts/checksums.txt | awk '{print $1}')
-          LINUX_AMD64=$(grep "linux_amd64" artifacts/checksums.txt | awk '{print $1}')
-
+          VER="${{ github.ref_name }}"
+          VER_NUMBER="${VER#v}"
+          
+          LINUX_AMD64="keirouter-${VER}-linux-amd64.tar.gz"
+          LINUX_AMD64_URL="https://github.com/${{ github.repository }}/releases/download/${VER}/${LINUX_AMD64}"
+          
+          wget -q "${LINUX_AMD64_URL}"
+          LINUX_AMD64_SHA=$(sha256sum "${LINUX_AMD64}" | cut -d' ' -f1)
+          
           cat > Formula/keirouter.rb <<EOF
-          # Auto-updated by release.yml on tag v${VER}. Do not edit manually.
           class Keirouter < Formula
-            desc "AI API router — unified gateway for 20+ LLM providers with fallback, caching, and dashboard"
-            homepage "https://github.com/mydisha/keirouter"
-            version "${VER}"
-            license "MIT"
-
-            on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_darwin_arm64.tar.gz"
-                sha256 "${DARWIN_ARM64}"
-              else
-                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_darwin_amd64.tar.gz"
-                sha256 "${DARWIN_AMD64}"
-              end
-            end
-
+            desc "API gateway with automatic load balancing and provider failover"
+            homepage "https://github.com/${{ github.repository }}"
+            version "${VER_NUMBER}"
+            license "AGPL-3.0"
+          
             on_linux do
-              if Hardware::CPU.arm?
-                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_linux_arm64.tar.gz"
-                sha256 "${LINUX_ARM64}"
-              else
-                url "https://github.com/mydisha/keirouter/releases/download/v${VER}/keirouter_v${VER}_linux_amd64.tar.gz"
-                sha256 "${LINUX_AMD64}"
+              if Hardware::CPU.intel?
+                url "${LINUX_AMD64_URL}"
+                sha256 "${LINUX_AMD64_SHA}"
               end
             end
-
+          
             def install
               bin.install "keirouter"
               (share/"keirouter").install "frontend"
             end
-
+          
             def caveats
               <<~EOS
                 Quick start:
                   keirouter -bootstrap    # create your first API key
                   keirouter start         # start server on :20180
-
+          
                 Dashboard: http://localhost:20180  (default password: keirouter)
               EOS
             end
-
+          
             test do
               assert_match "KeiRouter", shell_output("\#{bin}/keirouter --help 2>&1")
             end
           end
           EOF
-
-          # Strip leading whitespace from heredoc (GitHub Actions indents the block)
-          sed -i 's/^          //' Formula/keirouter.rb
-
-          echo "Updated Formula/keirouter.rb for v${VER}"
+          
+          echo "Updated Formula/keirouter.rb for ${VER}"
           cat Formula/keirouter.rb
 
       - name: Commit updated formula
