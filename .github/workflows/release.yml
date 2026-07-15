@@ -102,21 +102,21 @@ jobs:
 
           sudo apt-get update && sudo apt-get install -y lftp
 
-          tar xzf "${ARCH}.tar.gz"
-          cd "${ARCH}"
-          chmod 755 keirouter
+           tar xzf "${ARCH}.tar.gz"
+           cd "${ARCH}"
+           chmod 755 keirouter
 
-          lftp <<EOF
-set ftp:ssl-allow no
-open ${FTP_HOST}:${FTP_PORT:-21}
-user ${FTP_USER} ${FTP_PASSWORD}
-mkdir -p go
-cd go
-rm -rf frontend keirouter
-mirror -R . .
-touch up
-bye
-EOF
+           lftp <<'EOF'
+           set ftp:ssl-allow no
+           open ${FTP_HOST}:${FTP_PORT:-21}
+           user ${FTP_USER} ${FTP_PASSWORD}
+           mkdir -p go
+           cd go
+           rm -rf frontend keirouter
+           mirror -R . .
+           touch up
+           bye
+           EOF
 
   release:
     name: Create Release
