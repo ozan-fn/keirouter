@@ -25,6 +25,7 @@ type antStreamEvent struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
 		Thinking    string `json:"thinking"`
+		Signature   string `json:"signature"`
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
@@ -83,6 +84,8 @@ func (AnthropicCodec) ParseStreamLine(line []byte, _ string) ([]core.StreamChunk
 			return []core.StreamChunk{{Type: core.ChunkText, Delta: ev.Delta.Text}}, nil
 		case "thinking_delta":
 			return []core.StreamChunk{{Type: core.ChunkThinking, Delta: ev.Delta.Thinking}}, nil
+		case "signature_delta":
+			return []core.StreamChunk{{Type: core.ChunkThinking, Signature: ev.Delta.Signature}}, nil
 		case "input_json_delta":
 			return []core.StreamChunk{{
 				Type:     core.ChunkToolCall,
@@ -159,9 +162,29 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 		}))
 	}
 
+	closeThinkingBlock := func() {
+		if thinkOpen, _ := state.Custom["think_open"].(bool); thinkOpen {
+			idx := state.Custom["think_index"]
+			sig, _ := state.Custom["think_signature"].(string)
+			// Only emit signature_delta if we have a non-empty signature from upstream.
+			if sig != "" {
+				events = append(events, antEvent("content_block_delta", map[string]any{
+					"type": "content_block_delta", "index": idx,
+					"delta": map[string]any{"type": "signature_delta", "signature": sig},
+				}))
+			}
+			events = append(events, antEvent("content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": idx,
+			}))
+			state.Custom["think_open"] = false
+		}
+	}
+
 	switch chunk.Type {
 	case core.ChunkText:
 		ensureOpen()
+		// Close any open thinking block before starting/continuing text.
+		closeThinkingBlock()
 		// Close any open tool block before starting/continuing text.
 		if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
 			events = append(events, antEvent("content_block_stop", map[string]any{
@@ -172,28 +195,63 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 		}
 		if !state.OpenedBlock {
 			state.OpenedBlock = true
+			if state.Custom == nil {
+				state.Custom = map[string]any{}
+			}
+			state.Custom["text_index"] = state.ToolIndex
 			events = append(events, antEvent("content_block_start", map[string]any{
-				"type": "content_block_start", "index": 0,
+				"type": "content_block_start", "index": state.ToolIndex,
 				"content_block": map[string]any{"type": "text", "text": ""},
 			}))
+			state.ToolIndex++
 		}
 		events = append(events, antEvent("content_block_delta", map[string]any{
-			"type": "content_block_delta", "index": 0,
+			"type": "content_block_delta", "index": state.Custom["text_index"],
 			"delta": map[string]any{"type": "text_delta", "text": chunk.Delta},
 		}))
 
 	case core.ChunkThinking:
 		ensureOpen()
-		events = append(events, antEvent("content_block_delta", map[string]any{
-			"type": "content_block_delta", "index": 0,
-			"delta": map[string]any{"type": "thinking_delta", "thinking": chunk.Delta},
-		}))
+		// Close any open tool block before starting/continuing thinking.
+		if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
+			events = append(events, antEvent("content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": state.ToolIndex,
+			}))
+			state.Custom["tool_open"] = false
+			state.ToolIndex++
+		}
+		// Open thinking block if not already open.
+		if state.Custom == nil {
+			state.Custom = map[string]any{}
+		}
+		if thinkOpen, _ := state.Custom["think_open"].(bool); !thinkOpen {
+			state.Custom["think_open"] = true
+			state.Custom["think_index"] = state.ToolIndex
+			events = append(events, antEvent("content_block_start", map[string]any{
+				"type": "content_block_start", "index": state.ToolIndex,
+				"content_block": map[string]any{"type": "thinking", "thinking": "", "signature": ""},
+			}))
+			state.ToolIndex++
+		}
+		// Store signature from upstream (signature_delta event).
+		if chunk.Signature != "" {
+			state.Custom["think_signature"] = chunk.Signature
+		}
+		// Emit thinking delta (skip signature-only chunks).
+		if chunk.Delta != "" {
+			events = append(events, antEvent("content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": state.Custom["think_index"],
+				"delta": map[string]any{"type": "thinking_delta", "thinking": chunk.Delta},
+			}))
+		}
 
 	case core.ChunkToolCall:
 		ensureOpen()
 		if chunk.ToolCall == nil {
 			break
 		}
+		// Close any open thinking block before starting tool use.
+		closeThinkingBlock()
 
 		// First chunk for a tool call (carries ID and Name) — open a new
 		// tool_use content block. Close any previously open tool block first.
@@ -246,7 +304,8 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 		}
 
 	case core.ChunkFinish:
-		// Close any open tool block, then any open text block.
+		// Close any open thinking block, then tool block, then text block.
+		closeThinkingBlock()
 		if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
 			events = append(events, antEvent("content_block_stop", map[string]any{
 				"type": "content_block_stop", "index": state.ToolIndex,
@@ -255,9 +314,14 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 		}
 		if state.OpenedBlock {
 			events = append(events, antEvent("content_block_stop", map[string]any{
-				"type": "content_block_stop", "index": 0,
+				"type": "content_block_stop", "index": state.Custom["text_index"],
 			}))
 		}
+		// Mark that finish was processed so RenderStreamDone doesn't emit message_delta again.
+		if state.Custom == nil {
+			state.Custom = map[string]any{}
+		}
+		state.Custom["finish_sent"] = true
 		events = append(events, antEvent("message_delta", map[string]any{
 			"type":  "message_delta",
 			"delta": map[string]any{"stop_reason": renderAntStop(chunk.FinishReason)},
@@ -270,9 +334,67 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 	return events, nil
 }
 
-// RenderStreamDone emits the terminal message_stop event.
-func (AnthropicCodec) RenderStreamDone(_ *StreamState) [][]byte {
-	return [][]byte{antEvent("message_stop", map[string]any{"type": "message_stop"})}
+// RenderStreamDone closes any open blocks, emits message_delta, then emits the terminal message_stop event.
+func (AnthropicCodec) RenderStreamDone(state *StreamState) [][]byte {
+	var events [][]byte
+	
+	if state == nil || state.Custom == nil {
+		// Emit message_delta + message_stop if no state
+		events = append(events, antEvent("message_delta", map[string]any{
+			"type":  "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn"},
+			"usage": map[string]int{"output_tokens": 0},
+		}))
+		events = append(events, antEvent("message_stop", map[string]any{"type": "message_stop"}))
+		return [][]byte(events)
+	}
+	
+	// Close any open thinking block.
+	if thinkOpen, _ := state.Custom["think_open"].(bool); thinkOpen {
+		idx := state.Custom["think_index"]
+		sig, _ := state.Custom["think_signature"].(string)
+		// Only emit signature_delta if we have a non-empty signature from upstream.
+		if sig != "" {
+			events = append(events, antEvent("content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": idx,
+				"delta": map[string]any{"type": "signature_delta", "signature": sig},
+			}))
+		}
+		events = append(events, antEvent("content_block_stop", map[string]any{
+			"type": "content_block_stop", "index": idx,
+		}))
+	}
+	
+	// Close any open tool block.
+	if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
+		events = append(events, antEvent("content_block_stop", map[string]any{
+			"type": "content_block_stop", "index": state.ToolIndex,
+		}))
+	}
+	
+	// Close any open text block.
+	if state.OpenedBlock {
+		if textIdx, ok := state.Custom["text_index"]; ok {
+			events = append(events, antEvent("content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": textIdx,
+			}))
+		}
+	}
+	
+	// Emit message_delta with stop_reason and usage (required before message_stop).
+	// Skip if ChunkFinish already sent it (avoid double message_delta).
+	if finishSent, _ := state.Custom["finish_sent"].(bool); !finishSent {
+		events = append(events, antEvent("message_delta", map[string]any{
+			"type":  "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn"},
+			"usage": map[string]int{"output_tokens": 0},
+		}))
+	}
+	
+	// Emit terminal message_stop.
+	events = append(events, antEvent("message_stop", map[string]any{"type": "message_stop"}))
+	
+	return [][]byte(events)
 }
 
 // antEvent formats a named Anthropic SSE event: "event: <name>\ndata: <json>\n\n".
