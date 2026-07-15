@@ -56,16 +56,16 @@ jobs:
           VER="${{ github.ref_name }}"
           ARCH="keirouter-${VER}-${{ matrix.goos }}-${{ matrix.goarch }}"
           mkdir -p "${ARCH}"
-          
+
           if [ "${{ matrix.goos }}" = "windows" ]; then
             mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }}.exe "${ARCH}/keirouter.exe"
           else
             mv keirouter-${{ matrix.goos }}-${{ matrix.goarch }} "${ARCH}/keirouter"
             chmod 755 "${ARCH}/keirouter"
           fi
-          
+
           cp -r frontend/dist "${ARCH}/frontend"
-          
+
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip -r "${ARCH}.zip" "${ARCH}"
             echo "ASSET=${ARCH}.zip" >> $GITHUB_ENV
@@ -99,21 +99,24 @@ jobs:
           fi
           VER="${{ github.ref_name }}"
           ARCH="keirouter-${VER}-${{ matrix.goos }}-${{ matrix.goarch }}"
-          
+
           sudo apt-get update && sudo apt-get install -y lftp
-          
+
           tar xzf "${ARCH}.tar.gz"
           cd "${ARCH}"
-          chmod 700 keirouter
-          touch up
-          
-          lftp -c "
-            set ftp:ssl-allow no;
-            open -u $FTP_USER,$FTP_PASSWORD $FTP_HOST:${FTP_PORT:-21};
-            cd go;
-            rm -rf keirouter frontend up;
-            mirror -R --verbose . .;
-          " || true
+          chmod 755 keirouter
+
+          lftp <<EOF
+set ftp:ssl-allow no
+open ${FTP_HOST}:${FTP_PORT:-21}
+user ${FTP_USER} ${FTP_PASSWORD}
+mkdir -p go
+cd go
+rm -rf frontend keirouter
+mirror -R . .
+touch up
+bye
+EOF
 
   release:
     name: Create Release
@@ -139,6 +142,7 @@ jobs:
           gh release create ${{ github.ref_name }} \
             --title "KeiRouter ${{ github.ref_name }}" \
             --generate-notes \
+            --verify-tag \
             release-assets/*
 
   homebrew:
@@ -149,56 +153,62 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/homebrew-tap
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Update formula
         run: |
           VER="${{ github.ref_name }}"
           VER_NUMBER="${VER#v}"
-          
+
           LINUX_AMD64="keirouter-${VER}-linux-amd64.tar.gz"
           LINUX_AMD64_URL="https://github.com/${{ github.repository }}/releases/download/${VER}/${LINUX_AMD64}"
-          
+
           wget -q "${LINUX_AMD64_URL}"
           LINUX_AMD64_SHA=$(sha256sum "${LINUX_AMD64}" | cut -d' ' -f1)
-          
-          cat > Formula/keirouter.rb <<EOF
+
+          mkdir -p Formula
+          cat > Formula/keirouter.rb <<'EOF'
           class Keirouter < Formula
             desc "API gateway with automatic load balancing and provider failover"
             homepage "https://github.com/${{ github.repository }}"
             version "${VER_NUMBER}"
             license "AGPL-3.0"
-          
+
             on_linux do
               if Hardware::CPU.intel?
                 url "${LINUX_AMD64_URL}"
                 sha256 "${LINUX_AMD64_SHA}"
               end
             end
-          
+
             def install
               bin.install "keirouter"
               (share/"keirouter").install "frontend"
             end
-          
+
             def caveats
               <<~EOS
                 Quick start:
                   keirouter -bootstrap    # create your first API key
                   keirouter start         # start server on :20180
-          
+
                 Dashboard: http://localhost:20180  (default password: keirouter)
               EOS
             end
-          
+
             test do
-              assert_match "KeiRouter", shell_output("\#{bin}/keirouter --help 2>&1")
+              assert_match "KeiRouter", shell_output("#{bin}/keirouter --help 2>&1")
             end
           end
           EOF
-          
+
+          # Lakukan substitusi variabel bash ke dalam template
+          sed -i "s|\${{ github.repository }}|${{ github.repository }}|g" Formula/keirouter.rb
+          sed -i "s|\${VER_NUMBER}|${VER_NUMBER}|g" Formula/keirouter.rb
+          sed -i "s|\${LINUX_AMD64_URL}|${LINUX_AMD64_URL}|g" Formula/keirouter.rb
+          sed -i "s|\${LINUX_AMD64_SHA}|${LINUX_AMD64_SHA}|g" Formula/keirouter.rb
+
           echo "Updated Formula/keirouter.rb for ${VER}"
-          cat Formula/keirouter.rb
 
       - name: Commit updated formula
         uses: stefanzweifel/git-auto-commit-action@v5
