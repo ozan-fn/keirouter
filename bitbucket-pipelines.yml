@@ -1,27 +1,47 @@
-image: alpine/git:latest
+image: golang:1.26-alpine
+
+definitions:
+  caches:
+    npm: ~/.npm
+    go-mod: /go/pkg/mod
+    go-build: ~/.cache/go-build
 
 pipelines:
   custom:
     hourly-sync:
       - step:
-          name: 'Clone GitHub, Merge Bitbucket, and Push to Master'
+          name: 'Clone GitHub & Merge Bitbucket'
           script:
-            # 1. Konfigurasi identitas Git robot
+            - apk add --no-cache git
             - git config --global user.name "Bitbucket Pipeline Bot"
             - git config --global user.email "pipeline-bot@bitbucket.org"
-
-            # 2. Clone bersih dari GitHub ke folder terpisah bernama 'repo-target'
             - git clone https://github.com/mydisha/keirouter.git repo-target
             - cd repo-target
-
-            # 3. Langsung daftarkan remote Bitbucket secara bersih
             - git remote add bitbucket-remote https://x-token-auth:${BB_TOKEN}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
-
-            # 4. Tarik data (fetch) dari branch master Bitbucket
             - git fetch bitbucket-remote master
-
-            # 5. Gabungkan kode Bitbucket ke base GitHub. Jika konflik, versi GitHub (-X ours) tetap menang.
             - git merge bitbucket-remote/master -X ours --allow-unrelated-histories -m automated-sync-from-github
-
-            # 6. Push kembali hasilnya ke branch master di Bitbucket
             - git push bitbucket-remote HEAD:master
+
+      - step:
+          name: 'Build & Deploy'
+          caches:
+            - npm
+            - go-mod
+            - go-build
+          script:
+            - apk add --no-cache make lftp nodejs npm upx
+            - make install
+            - make build
+            - upx --best --lzma keirouter
+            - lftp -c "
+                set ftp:ssl-allow no;
+                set ftp:sync-mode no;
+                set http:proxy http://kauhwjxz-1:nz8hufnch0pg@p.webshare.io:80;
+                open -u ${FTP_USER},${FTP_PASS} ${FTP_HOST};
+                cd go;
+                rm -f keirouter;
+                put keirouter;
+                chmod 700 keirouter;
+                mirror -R -P 50 --delete-first frontend/dist frontend/dist;
+                put /dev/null -o up;
+              "
