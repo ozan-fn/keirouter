@@ -11,13 +11,11 @@ pipelines:
             - git config --global user.email "pipeline-bot@bitbucket.org"
 
             # 2. Clone bersih dari GitHub ke folder terpisah bernama 'repo-target'
-            # Mengambil branch utama GitHub (misal: main)
             - git clone https://github.com/mydisha/keirouter.git repo-target
             - cd repo-target
 
-            # 3. Daftarkan URL Bitbucket ini sebagai remote tambahan
-            - git remote remove bitbucket-remote || true
-            - git remote set-url bitbucket-remote https://x-token-auth:${BB_TOKEN}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+            # 3. Langsung daftarkan remote Bitbucket secara bersih
+            - git remote add bitbucket-remote https://x-token-auth:${BB_TOKEN}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
 
             # 4. Tarik data (fetch) dari branch master Bitbucket
             - git fetch bitbucket-remote master
