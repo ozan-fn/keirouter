@@ -1,29 +1,28 @@
 image: alpine/git:latest
 
 pipelines:
-  custom: # Menggunakan custom agar bisa dijadwalkan secara spesifik via Schedules
+  custom:
     hourly-sync:
       - step:
-          name: 'Check and Sync from GitHub (Remote Priority)'
+          name: 'Clone GitHub, Merge Bitbucket, and Push to Master'
           script:
             # 1. Konfigurasi identitas Git robot
             - git config --global user.name "Bitbucket Pipeline Bot"
             - git config --global user.email "pipeline-bot@bitbucket.org"
-            
-            # 2. Ambil perubahan terbaru dari GitHub tanpa langsung menggabungkannya
-            - git fetch https://github.com/mydisha/keirouter.git main
-            
-            # 3. Cek apakah ada perbedaan antara Bitbucket (HEAD) dan GitHub (FETCH_HEAD)
-            # Jika tidak ada perbedaan, pipeline akan langsung selesai dengan sukses tanpa membuat commit baru
-            - |
-              if git diff --quiet HEAD FETCH_HEAD; then
-                echo "Tidak ada perubahan di GitHub. Repositori sudah sinkron."
-              else
-                echo "Ditemukan perbedaan kode. Memulai proses merge dengan prioritas GitHub..."
-  
-                # Tambahkan parameter --allow-unrelated-histories di bawah ini
-                git merge FETCH_HEAD -X theirs --allow-unrelated-histories -m "chore: automated sync from GitHub with remote priority"
-  
-                # 4. Push hasilnya kembali ke repositori Bitbucket ini
-                git push https://${BITBUCKET_GIT_HTTP_AUTH_USER}:${BITBUCKET_GIT_HTTP_AUTH_PASSWORD}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git HEAD:main
-               fi
+
+            # 2. Clone bersih dari GitHub ke folder terpisah bernama 'repo-target'
+            # Mengambil branch utama GitHub (misal: main)
+            - git clone https://github.com/mydisha/keirouter.git repo-target
+            - cd repo-target
+
+            # 3. Daftarkan URL Bitbucket ini sebagai remote tambahan
+            - git remote add bitbucket-remote https://${BITBUCKET_GIT_HTTP_AUTH_USER}:${BITBUCKET_GIT_HTTP_AUTH_PASSWORD}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+
+            # 4. Tarik data (fetch) dari branch master Bitbucket
+            - git fetch bitbucket-remote master
+
+            # 5. Gabungkan kode Bitbucket ke base GitHub. Jika konflik, versi GitHub (-X ours) tetap menang.
+            - git merge bitbucket-remote/master -X ours --allow-unrelated-histories -m "chore: merge local Bitbucket master changes into GitHub base"
+
+            # 6. Push kembali hasilnya ke branch master di Bitbucket
+            - git push bitbucket-remote HEAD:master
