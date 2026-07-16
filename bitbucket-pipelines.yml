@@ -1,0 +1,29 @@
+image: alpine/git:latest
+
+pipelines:
+  custom: # Menggunakan custom agar bisa dijadwalkan secara spesifik via Schedules
+    hourly-sync:
+      - step:
+          name: 'Check and Sync from GitHub (Remote Priority)'
+          script:
+            # 1. Konfigurasi identitas Git robot
+            - git config --global user.name "Bitbucket Pipeline Bot"
+            - git config --global user.email "pipeline-bot@bitbucket.org"
+            
+            # 2. Ambil perubahan terbaru dari GitHub tanpa langsung menggabungkannya
+            - git fetch https://github.com/mydisha/keirouter.git main
+            
+            # 3. Cek apakah ada perbedaan antara Bitbucket (HEAD) dan GitHub (FETCH_HEAD)
+            # Jika tidak ada perbedaan, pipeline akan langsung selesai dengan sukses tanpa membuat commit baru
+            - |
+              if git diff --quiet HEAD FETCH_HEAD; then
+                echo "Tidak ada perubahan di GitHub. Repositori sudah sinkron."
+              else
+                echo "Ditemukan perbedaan kode. Memulai proses merge dengan prioritas GitHub..."
+                
+                # Jalankan merge. Jika ada konflik pada baris yang sama, kode GitHub (-X theirs) otomatis menang.
+                git merge FETCH_HEAD -X theirs -m "chore: automated sync from GitHub with remote priority"
+                
+                # 4. Push hasilnya kembali ke repositori Bitbucket ini
+                git push https://${BITBUCKET_GIT_HTTP_AUTH_USER}:${BITBUCKET_GIT_HTTP_AUTH_PASSWORD}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git HEAD:main
+              fi
