@@ -16,7 +16,7 @@ pipelines:
             - cd repo-target
 
             # 3. Daftarkan URL Bitbucket ini sebagai remote tambahan
-            - git remote set-url bitbucket-remote https://x-token-auth:${BB_TOKEN}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+            # - git remote set-url bitbucket-remote https://x-token-auth:${BB_TOKEN}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
 
             # 4. Tarik data (fetch) dari branch master Bitbucket
             - git fetch bitbucket-remote master
