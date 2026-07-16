@@ -1,0 +1,27 @@
+image: alpine/git:latest
+
+pipelines:
+  custom:
+    hourly-sync:
+      - step:
+          name: 'Clone GitHub, Merge Bitbucket, and Push to Master'
+          script:
+            # 1. Konfigurasi identitas Git robot
+            - git config --global user.name "Bitbucket Pipeline Bot"
+            - git config --global user.email "pipeline-bot@bitbucket.org"
+
+            # 2. Clone bersih dari GitHub ke folder terpisah bernama 'repo-target'
+            - git clone https://github.com/mydisha/keirouter.git repo-target
+            - cd repo-target
+
+            # 3. Langsung daftarkan remote Bitbucket secara bersih
+            - git remote add bitbucket-remote https://x-token-auth:${BB_TOKEN}@bitbucket.org/${BITBUCKET_REPO_OWNER}/${BITBUCKET_REPO_SLUG}.git
+
+            # 4. Tarik data (fetch) dari branch master Bitbucket
+            - git fetch bitbucket-remote master
+
+            # 5. Gabungkan kode Bitbucket ke base GitHub. Jika konflik, versi GitHub (-X ours) tetap menang.
+            - git merge bitbucket-remote/master -X ours --allow-unrelated-histories -m automated-sync-from-github
+
+            # 6. Push kembali hasilnya ke branch master di Bitbucket
+            - git push bitbucket-remote HEAD:master
