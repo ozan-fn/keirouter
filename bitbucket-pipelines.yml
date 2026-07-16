@@ -22,7 +22,7 @@ pipelines:
             - git fetch bitbucket-remote master
 
             # 5. Gabungkan kode Bitbucket ke base GitHub. Jika konflik, versi GitHub (-X ours) tetap menang.
-            - git merge bitbucket-remote/master -X ours --allow-unrelated-histories -m "chore: merge local Bitbucket master changes into GitHub base"
+            - git merge bitbucket-remote/master -X ours --allow-unrelated-histories -m automated-sync-from-github
 
             # 6. Push kembali hasilnya ke branch master di Bitbucket
             - git push bitbucket-remote HEAD:master
