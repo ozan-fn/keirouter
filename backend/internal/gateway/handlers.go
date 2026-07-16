@@ -485,12 +485,21 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	sanitizer.Flush(renderChunk)
 
 	// Flush think-tag state — emit any remaining buffered text.
-
 	for _, fc := range thinkFilter.Flush() {
 		if fc.Type == core.ChunkThinking {
 			continue
 		}
 		events, _ := streamCodec.RenderStreamChunk(fc, state)
+		for _, ev := range events {
+			_, _ = bw.Write(ev)
+		}
+	}
+
+	// Ensure finish_reason is always emitted. Some providers omit the final
+	// finish_reason chunk — synthesize "stop" when the upstream never sent one.
+	if streamErr == nil {
+		finishChunk := core.StreamChunk{Type: core.ChunkFinish, FinishReason: core.FinishStop}
+		events, _ := streamCodec.RenderStreamChunk(finishChunk, state)
 		for _, ev := range events {
 			_, _ = bw.Write(ev)
 		}

@@ -9,8 +9,8 @@ import (
 // thinkStart and thinkEnd are the XML tags some models (MiMo, QwQ, etc.)
 // embed in the content field to demarcate reasoning/thinking blocks.
 const (
-	thinkStart = "<think>"
-	thinkEnd   = "</think>"
+	thinkStart = "<thinking>"
+	thinkEnd   = "</thinking>"
 )
 
 // StripThinkTags extracts content enclosed in <think> tags from raw text.
