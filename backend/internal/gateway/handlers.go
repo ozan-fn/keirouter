@@ -417,10 +417,6 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 		// pass through directly.
 		if cleaned.Type == core.ChunkText {
 			for _, fc := range thinkFilter.ProcessFeed(cleaned.Delta) {
-				if fc.Type == core.ChunkThinking {
-					// Thinking content is consumed internally — not sent to client.
-					continue
-				}
 				events, rerr := streamCodec.RenderStreamChunk(fc, state)
 				if rerr != nil {
 					s.log.Warn("failed to render stream chunk", "err", rerr)
@@ -486,9 +482,6 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 
 	// Flush think-tag state — emit any remaining buffered text.
 	for _, fc := range thinkFilter.Flush() {
-		if fc.Type == core.ChunkThinking {
-			continue
-		}
 		events, _ := streamCodec.RenderStreamChunk(fc, state)
 		for _, ev := range events {
 			_, _ = bw.Write(ev)
