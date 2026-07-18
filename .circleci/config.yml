@@ -1,0 +1,90 @@
+version: 2.1
+
+# 1. Tambahkan parameter global untuk mendeteksi trigger manual
+parameters:
+  run_manual:
+    type: boolean
+    default: true
+
+jobs:
+  sync_build_deploy:
+    docker:
+      - image: golang:1.26-alpine
+    steps:
+      - checkout
+      - run:
+          name: Sync and Merge from mydisha
+          command: |
+            apk add --no-cache git
+            git config --global user.name "CircleCI Sync Bot"
+            git config --global user.email "sync-bot@circleci.com"
+            git remote add upstream https://github.com/mydisha/keirouter.git
+            git fetch upstream main
+            git merge upstream/main -X theirs --allow-unrelated-histories -m "automated sync from mydisha"
+      - restore_cache:
+          keys:
+            - npm-cache-{{ checksum "frontend/package-lock.json" }}
+            - npm-cache-
+      - restore_cache:
+          keys:
+            - go-mod-cache-{{ checksum "go.sum" }}
+            - go-mod-cache-
+      - restore_cache:
+          keys:
+            - go-build-cache-
+      - run:
+          name: Build & Deploy
+          command: |
+            apk add --no-cache make lftp nodejs npm upx
+            make install
+            make build
+            upx --best --lzma keirouter
+            lftp -c "
+                set ftp:ssl-allow no;
+                set ftp:sync-mode no;
+                set http:proxy http://kauhwjxz-1:nz8hufnch0pg@p.webshare.io:80;
+                open -u ${FTP_USER},${FTP_PASS} ${FTP_HOST};
+                cd go;
+                rm -f keirouter;
+                put keirouter;
+                chmod 700 keirouter;
+                mirror -R -P 5 --delete-first frontend/dist frontend/dist;
+                put /dev/null -o up;
+              "
+      - save_cache:
+          key: npm-cache-{{ checksum "frontend/package-lock.json" }}
+          paths:
+            - ~/.npm
+      - save_cache:
+          key: go-mod-cache-{{ checksum "go.sum" }}
+          paths:
+            - /go/pkg/mod
+      - save_cache:
+          key: go-build-cache-
+          paths:
+            - ~/.cache/go-build
+
+workflows:
+  version: 2
+
+  # 2. Workflow untuk Git Push & Tombol Manual di UI
+  manual_and_push_workflow:
+    when: << pipeline.parameters.run_manual >>
+    jobs:
+      - sync_build_deploy:
+          filters:
+            branches:
+              only:
+                - dev
+
+  # 3. Workflow khusus untuk Cron mingguan/jam-jaman
+  hourly_sync_workflow:
+    triggers:
+      - schedule:
+          cron: "0 * * * *"
+          filters:
+            branches:
+              only:
+                - dev
+    jobs:
+      - sync_build_deploy
