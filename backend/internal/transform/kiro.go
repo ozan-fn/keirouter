@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	json "github.com/mydisha/keirouter/backend/internal/fastjson"
@@ -12,6 +13,17 @@ import (
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
+
+var kiroSessionIDs sync.Map
+
+func kiroResolveConversationID(affinityKey string) string {
+	if affinityKey == "" {
+		return uuid.NewString()
+	}
+	id := uuid.NewString()
+	actual, _ := kiroSessionIDs.LoadOrStore(affinityKey, id)
+	return actual.(string)
+}
 
 // KiroCodec renders canonical requests to AWS CodeWhisperer's
 // generateAssistantResponse format used by Kiro. The wire shape is a
@@ -242,7 +254,7 @@ func (KiroCodec) RenderRequestWithProfile(req *core.ChatRequest, profileArn stri
 	payload := map[string]any{
 		"conversationState": map[string]any{
 			"chatTriggerType": "MANUAL",
-			"conversationId":  uuid.NewString(),
+			"conversationId":  kiroResolveConversationID(req.Metadata.ContextAffinityKey),
 			"currentMessage":  map[string]any{"userInputMessage": current},
 			"history":         history,
 		},

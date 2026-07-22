@@ -871,6 +871,67 @@ func (c *Kiro) Chat(ctx context.Context, req *core.ChatRequest, creds core.Crede
 	return &core.ChatResponse{Model: req.Model, Message: msg, FinishReason: finish, Usage: usage}, nil
 }
 
+// pipeKiroResponse reads an HTTP eventstream response into a buffered channel,
+// converting frames to canonical chunks. The caller is responsible for closing
+// resp.Body after draining the returned channel.
+func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *core.ChatRequest, ttft *ttftTracker) <-chan core.StreamChunk {
+	ch := make(chan core.StreamChunk, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		parser := newEventStreamParser(resp.Body)
+		seenTools := map[string]bool{}
+		hasTool := false
+		usageSeen := false
+		outputChars := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			frame, ferr := parser.next()
+			if ferr != nil {
+				if ferr != errEventStreamEOF {
+					ch <- core.StreamChunk{
+						Type: core.ChunkError,
+						Err:  &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: ferr.Error(), Cause: ferr},
+					}
+				}
+				break
+			}
+			if frame == nil {
+				continue
+			}
+			for _, chunk := range kiroFrameToChunks(frame, seenTools, &hasTool) {
+				if chunk.Type == core.ChunkUsage {
+					usageSeen = true
+				}
+				if chunk.Type == core.ChunkText || chunk.Type == core.ChunkThinking {
+					outputChars += len(chunk.Delta)
+				}
+				if ttft != nil {
+					ttft.maybeReport(chunk)
+				}
+				select {
+				case ch <- chunk:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if !usageSeen {
+			if u := estimateKiroUsage(req, outputChars); u != nil {
+				select {
+				case ch <- core.StreamChunk{Type: core.ChunkUsage, Usage: u}:
+				case <-ctx.Done():
+				}
+			}
+		}
+	}()
+	return ch
+}
+
 // Stream performs a streaming call, parsing the AWS EventStream into canonical
 // chunks. After the first response is fully buffered it is passed through the
 // integrity gate: if the model returned only an ellipsis, a short future-action
@@ -901,65 +962,9 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 		defer close(out)
 		defer releaseAccount()
 
-		// Drain the first attempt into a buffer so the integrity gate can
-		// inspect the full response before committing to the client.
-		firstCh := make(chan core.StreamChunk, 64)
-		go func() {
-			defer close(firstCh)
-			defer resp.Body.Close()
-			ttft := newTTFTTracker(cfg)
-			parser := newEventStreamParser(resp.Body)
-			seenTools := map[string]bool{}
-			hasTool := false
-			usageSeen := false
-			outputChars := 0
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-				frame, ferr := parser.next()
-				if ferr != nil {
-					if ferr != errEventStreamEOF {
-						firstCh <- core.StreamChunk{
-							Type: core.ChunkError,
-							Err:  &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: ferr.Error(), Cause: ferr},
-						}
-					}
-					break
-				}
-				if frame == nil {
-					continue
-				}
-				for _, ch := range kiroFrameToChunks(frame, seenTools, &hasTool) {
-					if ch.Type == core.ChunkUsage {
-						usageSeen = true
-					}
-					if ch.Type == core.ChunkText || ch.Type == core.ChunkThinking {
-						outputChars += len(ch.Delta)
-					}
-					ttft.maybeReport(ch)
-					select {
-					case firstCh <- ch:
-					case <-ctx.Done():
-						return
-					}
-				}
-			}
-			if !usageSeen {
-				if u := estimateKiroUsage(req, outputChars); u != nil {
-					select {
-					case firstCh <- core.StreamChunk{Type: core.ChunkUsage, Usage: u}:
-					case <-ctx.Done():
-					}
-				}
-			}
-		}()
+		ttft := newTTFTTracker(cfg)
+		chunks, content, hasTool, toolErr := drainKiroStream(c.pipeKiroResponse(ctx, resp, req, ttft))
 
-		chunks, content, hasTool, toolErr := drainKiroStream(firstCh)
-
-		// Integrity gate: check whether a retry is warranted.
 		kind := kiroIntegrityKind(content, hasTool, toolErr)
 		if kind != "" {
 			repairedReq := kiroAppendRepair(req, kind)
@@ -967,58 +972,7 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 			if rerr == nil {
 				resp2, rerr2 := c.openStreamWithFailover(ctx, req.Model, repairedBody, c.headers(creds), c.endpoints(creds))
 				if rerr2 == nil {
-					retryCh := make(chan core.StreamChunk, 64)
-					go func() {
-						defer close(retryCh)
-						defer resp2.Body.Close()
-						parser2 := newEventStreamParser(resp2.Body)
-						seenTools2 := map[string]bool{}
-						hasTool2 := false
-						usageSeen2 := false
-						outputChars2 := 0
-						for {
-							select {
-							case <-ctx.Done():
-								return
-							default:
-							}
-							frame, ferr := parser2.next()
-							if ferr != nil {
-								if ferr != errEventStreamEOF {
-									retryCh <- core.StreamChunk{
-										Type: core.ChunkError,
-										Err:  &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: ferr.Error(), Cause: ferr},
-									}
-								}
-								break
-							}
-							if frame == nil {
-								continue
-							}
-							for _, ch := range kiroFrameToChunks(frame, seenTools2, &hasTool2) {
-								if ch.Type == core.ChunkUsage {
-									usageSeen2 = true
-								}
-								if ch.Type == core.ChunkText || ch.Type == core.ChunkThinking {
-									outputChars2 += len(ch.Delta)
-								}
-								select {
-								case retryCh <- ch:
-								case <-ctx.Done():
-									return
-								}
-							}
-						}
-						if !usageSeen2 {
-							if u := estimateKiroUsage(repairedReq, outputChars2); u != nil {
-								select {
-								case retryCh <- core.StreamChunk{Type: core.ChunkUsage, Usage: u}:
-								case <-ctx.Done():
-								}
-							}
-						}
-					}()
-					retryChunks, _, _, _ := drainKiroStream(retryCh)
+					retryChunks, _, _, _ := drainKiroStream(c.pipeKiroResponse(ctx, resp2, repairedReq, nil))
 					if len(retryChunks) > 0 {
 						chunks = retryChunks
 					}
@@ -1026,7 +980,6 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 			}
 		}
 
-		// Forward the winning buffer to the caller.
 		for _, ch := range chunks {
 			select {
 			case out <- ch:
