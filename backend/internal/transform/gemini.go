@@ -44,11 +44,17 @@ type gemPart struct {
 	FunctionCall     *gemFunctionCall   `json:"functionCall,omitempty"`
 	FunctionResponse *gemFunctionResult `json:"functionResponse,omitempty"`
 	InlineData       *gemInlineData     `json:"inlineData,omitempty"`
+	FileData         *gemFileData       `json:"fileData,omitempty"`
 }
 
 type gemInlineData struct {
 	MIMEType string `json:"mimeType"`
 	Data     string `json:"data"`
+}
+
+type gemFileData struct {
+	MIMEType string `json:"mimeType,omitempty"`
+	FileURI  string `json:"fileUri"`
 }
 
 type gemFunctionCall struct {
@@ -127,6 +133,11 @@ func parseGemContent(c gemContent) core.Message {
 			msg.Content = append(msg.Content, core.ContentPart{
 				Type:  core.PartImage,
 				Media: &core.MediaPayload{MIMEType: p.InlineData.MIMEType, Data: p.InlineData.Data},
+			})
+		case p.FileData != nil:
+			msg.Content = append(msg.Content, core.ContentPart{
+				Type:  core.PartImage,
+				Media: &core.MediaPayload{MIMEType: p.FileData.MIMEType, URL: p.FileData.FileURI},
 			})
 		case p.Text != "":
 			msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: p.Text})
@@ -240,7 +251,11 @@ func renderGemContent(m core.Message, callIDToName map[string]string) gemContent
 			}})
 		case core.PartImage:
 			if p.Media != nil {
-				c.Parts = append(c.Parts, gemPart{InlineData: &gemInlineData{MIMEType: p.Media.MIMEType, Data: p.Media.Data}})
+				if p.Media.Data != "" {
+					c.Parts = append(c.Parts, gemPart{InlineData: &gemInlineData{MIMEType: p.Media.MIMEType, Data: p.Media.Data}})
+				} else if p.Media.URL != "" {
+					c.Parts = append(c.Parts, gemPart{FileData: &gemFileData{MIMEType: p.Media.MIMEType, FileURI: p.Media.URL}})
+				}
 			}
 		}
 	}

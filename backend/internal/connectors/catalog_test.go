@@ -72,6 +72,45 @@ func TestModelsByKind(t *testing.T) {
 	}
 }
 
+func TestMediaCatalogCompleteness(t *testing.T) {
+	// Video providers must surface video-tagged models.
+	wantVideo := []string{"xai"}
+	video := ModelsByKind(core.ServiceVideo)
+	gotVideo := map[string]bool{}
+	for _, pm := range video {
+		if pm.Model.Kind != core.ServiceVideo {
+			t.Errorf("ModelsByKind(video) returned non-video model %q", pm.Model.ID)
+		}
+		gotVideo[pm.Provider] = true
+	}
+	for _, id := range wantVideo {
+		if !gotVideo[id] {
+			t.Errorf("expected video provider %q in catalog", id)
+		}
+	}
+
+	// ImageToText providers must surface image_to_text-tagged models.
+	// (vertex is tagged too but stays Hidden, so it is intentionally not
+	// surfaced in the media catalog.)
+	wantI2T := []string{
+		"anthropic", "gemini", "groq", "mistral", "minimax",
+		"openrouter", "vercel-ai-gateway", "xai", "kimchi",
+	}
+	i2t := ModelsByKind(core.ServiceImageToText)
+	gotI2T := map[string]bool{}
+	for _, pm := range i2t {
+		if pm.Model.Kind != core.ServiceImageToText {
+			t.Errorf("ModelsByKind(image_to_text) returned wrong-kind model %q", pm.Model.ID)
+		}
+		gotI2T[pm.Provider] = true
+	}
+	for _, id := range wantI2T {
+		if !gotI2T[id] {
+			t.Errorf("expected image_to_text provider %q in catalog", id)
+		}
+	}
+}
+
 func TestFindModel(t *testing.T) {
 	if _, ok := FindModel("openai", "gpt-4o"); !ok {
 		t.Error("expected to find openai/gpt-4o")
@@ -121,6 +160,43 @@ func TestCommandCodeCatalogVisible(t *testing.T) {
 	}
 	if len(ModelsForProvider("commandcode")) == 0 {
 		t.Fatal("commandcode should have static models")
+	}
+}
+
+func TestCatalogHasNewProviders(t *testing.T) {
+	// Providers added for coverage parity. Each must exist, expose static
+	// models, and (since they use drivable dialects) get a live connector.
+	cases := []struct {
+		id       string
+		alias    string
+		authKind string
+	}{
+		{"venice", "vn", "api_key"},
+		{"featherless", "fl", "api_key"},
+		{"perplexity-agent", "pa", "api_key"},
+		{"mmf", "mmf", "none"},
+		{"clinepass", "clinepass", "oauth"},
+		{"grok-cli", "gcli", "oauth"},
+	}
+	r := DefaultRegistry()
+	for _, c := range cases {
+		spec, ok := SpecByID(c.id)
+		if !ok {
+			t.Errorf("catalog missing provider %q", c.id)
+			continue
+		}
+		if spec.AuthKind != c.authKind {
+			t.Errorf("%s: AuthKind = %q, want %q", c.id, spec.AuthKind, c.authKind)
+		}
+		if s, ok := SpecByAlias(c.alias); !ok || s.ID != c.id {
+			t.Errorf("alias %q should resolve to %q, got %q ok=%v", c.alias, c.id, s.ID, ok)
+		}
+		if len(ModelsForProvider(c.id)) == 0 {
+			t.Errorf("%s should have static models", c.id)
+		}
+		if !r.Has(c.id) {
+			t.Errorf("registry should have connector for %q", c.id)
+		}
 	}
 }
 

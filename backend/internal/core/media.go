@@ -61,8 +61,8 @@ type TranscriptionRequest struct {
 
 // TranscriptionResponse is the canonical transcription result.
 type TranscriptionResponse struct {
-	Text     string `json:"text"`
-	Language string `json:"language,omitempty"`
+	Text     string  `json:"text"`
+	Language string  `json:"language,omitempty"`
 	Duration float64 `json:"duration,omitempty"`
 }
 
@@ -113,6 +113,65 @@ type SearchResult struct {
 type SearchResponse struct {
 	Query   string         `json:"query"`
 	Results []SearchResult `json:"results"`
+}
+
+// ---- Video generation -------------------------------------------------------
+
+// VideoRequest is a canonical text-to-video request. Video generation is an
+// asynchronous job upstream: submission returns a request id and a status, and
+// the caller polls for completion. Body carries the raw client payload so
+// provider-specific knobs (duration, aspect_ratio, resolution, ...) pass
+// through untouched.
+type VideoRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt,omitempty"`
+	// Body carries provider-specific JSON fields that are not modeled above.
+	// The connector rewrites its model field for each resolved routing attempt.
+	Body []byte `json:"-"`
+	// ContentType is the original JSON media type.
+	ContentType string `json:"-"`
+}
+
+// VideoStatusRequest polls an in-flight video job by its upstream request id.
+type VideoStatusRequest struct {
+	Model     string `json:"model"`
+	RequestID string `json:"request_id"`
+}
+
+// VideoResponse is the canonical video-generation result. It mirrors the async
+// job shape: a request id to poll, a status, and (when done) the output url(s).
+type VideoResponse struct {
+	Model     string   `json:"model,omitempty"`
+	RequestID string   `json:"request_id,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	URLs      []string `json:"urls,omitempty"`
+	// Raw is the untouched upstream JSON, passed back verbatim so clients get
+	// every provider-specific field without lossy re-shaping.
+	Raw []byte `json:"-"`
+	// AccountID pins subsequent job polling to the credential that submitted it.
+	AccountID string `json:"-"`
+}
+
+// ---- Image understanding (image-to-text) ------------------------------------
+
+// ImageUnderstandingRequest asks a vision model to describe or answer questions
+// about an input image. Images are carried as URLs or base64 data URIs.
+type ImageUnderstandingRequest struct {
+	Model string `json:"model"`
+	// Prompt is the question/instruction about the image(s).
+	Prompt string `json:"prompt"`
+	// Images holds image URLs or base64 data URIs (data:image/...;base64,...).
+	Images []string `json:"images"`
+	// MaxTokens caps the generated description length.
+	MaxTokens int `json:"max_tokens,omitempty"`
+}
+
+// ImageUnderstandingResponse carries the model's textual answer.
+type ImageUnderstandingResponse struct {
+	Model string `json:"model"`
+	Text  string `json:"text"`
+	Usage Usage  `json:"usage"`
 }
 
 // ---- Web fetch --------------------------------------------------------------

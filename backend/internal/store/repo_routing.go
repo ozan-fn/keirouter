@@ -114,6 +114,47 @@ func (r *RoutingRepo) ActiveCooldowns(ctx context.Context, accountIDs []string, 
 	return out, rows.Err()
 }
 
+// ActiveCooldownExpirations returns the latest active model cooldown per
+// account for model or '__all__'. It is used to calculate the earliest safe
+// retry instead of polling with fixed sleeps.
+func (r *RoutingRepo) ActiveCooldownExpirations(ctx context.Context, accountIDs []string, model string) (map[string]time.Time, error) {
+	out := make(map[string]time.Time)
+	if len(accountIDs) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(accountIDs))
+	args := make([]any, 0, len(accountIDs)+3)
+	for i, id := range accountIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, model, "__all__", formatTime(time.Now()))
+
+	q := r.db.rebind(`SELECT account_id, MAX(cooldown_until) FROM model_cooldowns
+		WHERE account_id IN (` + strings.Join(placeholders, ",") + `)
+		  AND model IN (?, ?)
+		  AND cooldown_until > ?
+		GROUP BY account_id`)
+
+	rows, err := r.db.sql.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: active model cooldown expirations: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			continue
+		}
+		if until := parseTime(raw); !until.IsZero() {
+			out[id] = until
+		}
+	}
+	return out, rows.Err()
+}
+
 // ExpireModelCooldowns removes all expired model cooldowns (garbage collection).
 func (r *RoutingRepo) ExpireModelCooldowns(ctx context.Context) (int64, error) {
 	q := r.db.rebind(`DELETE FROM model_cooldowns WHERE cooldown_until < ?`)

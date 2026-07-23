@@ -55,13 +55,13 @@ func ClassifyError(pe *core.ProviderError) ProviderErrorType {
 			return ProviderErrorNetwork
 		}
 		return ProviderErrorProvider5xx
+	case core.ErrModelUnavailable, core.ErrCapability:
+		return ProviderErrorUnsupported
 	case core.ErrBadRequest:
 		if isUnsupportedMessage(pe.Message) {
 			return ProviderErrorUnsupported
 		}
 		return ProviderErrorBadRequest
-	case core.ErrCapability:
-		return ProviderErrorUnsupported
 	default:
 		// ErrInternal, ErrBudgetBlocked, ErrPolicyBlocked — not provider
 		// failures, but surface as unknown for accounting completeness.

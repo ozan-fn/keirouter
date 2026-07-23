@@ -2,6 +2,7 @@ package transform
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -280,5 +281,156 @@ func TestSanitizeToolArgs_PassthroughValidArgs(t *testing.T) {
 
 	if args["limit"] != float64(50) {
 		t.Errorf("valid limit should pass through, got %v", args["limit"])
+	}
+}
+
+// TestToolArgSanitizer_SnapshotVsDelta verifies that full-snapshot argument
+// retransmissions (where each chunk re-sends the ENTIRE accumulated arguments)
+// are replaced rather than concatenated, while true incremental deltas are
+// appended verbatim. Some providers (GLM, certain OpenAI-compatible gateways)
+// send snapshots; others (Kiro, Cursor) send true deltas.
+func TestToolArgSanitizer_SnapshotVsDelta(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing string
+		fragment string
+		want     string
+	}{
+		{"empty buffer, first fragment", "", `{"file_path":"/a"}`, `{"file_path":"/a"}`},
+		{"delta append", `{"file_path":`, `"/a"}`, `{"file_path":"/a"}`},
+		{"snapshot repeat", `{"file_path":"/a"}`, `{"file_path":"/a"}`, `{"file_path":"/a"}`},
+		{"snapshot growth", `{"file_path":"/a"`, `{"file_path":"/a"}`, `{"file_path":"/a"}`},
+		{"snapshot longer", `{"file_path":"/a","limit":1`, `{"file_path":"/a","limit":100}`, `{"file_path":"/a","limit":100}`},
+		{"nested object delta", `{"config":`, `{"enabled":true}`, `{"config":{"enabled":true}`},
+		{"delta with repeated chars", `{"command":"ls -l`, `l"}`, `{"command":"ls -ll"}`},
+		{"delta with repeated prefix", `{"path":"/home/user`, `/home/user2"}`, `{"path":"/home/user/home/user2"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &toolBuffer{}
+			buf.args.WriteString(tt.existing)
+			buf.argsLen = len(tt.existing)
+			appendToolArgs(buf, tt.fragment)
+			if got := buf.args.String(); got != tt.want {
+				t.Errorf("appendToolArgs(%q, %q) = %q, want %q", tt.existing, tt.fragment, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestToolArgSanitizer_SnapshotStream simulates a provider that sends full
+// argument snapshots on every chunk (GLM-style). The sanitizer must replace
+// the buffer each time, not concatenate.
+func TestToolArgSanitizer_SnapshotStream(t *testing.T) {
+	s := NewToolArgSanitizer()
+	var emitted []core.StreamChunk
+	emit := func(c core.StreamChunk) { emitted = append(emitted, c) }
+
+	// Provider sends snapshot growth: each chunk re-sends the full args.
+	s.Process(core.StreamChunk{
+		Type: core.ChunkToolCall, Index: 0,
+		ToolCall: &core.ToolCall{ID: "tc1", Name: "Read", Arguments: json.RawMessage(`{"file_path":"/a"}`)},
+	}, emit)
+	s.Process(core.StreamChunk{
+		Type: core.ChunkToolCall, Index: 0,
+		ToolCall: &core.ToolCall{ID: "tc1", Arguments: json.RawMessage(`{"file_path":"/a","limit":100}`)},
+	}, emit)
+	s.Process(core.StreamChunk{
+		Type: core.ChunkToolCall, Index: 0,
+		ToolCall: &core.ToolCall{ID: "tc1", Arguments: json.RawMessage(`{"file_path":"/a","limit":100,"offset":0}`)},
+	}, emit)
+
+	s.Flush(emit)
+
+	if len(emitted) != 1 {
+		t.Fatalf("expected 1 emitted tool call, got %d", len(emitted))
+	}
+	args := string(emitted[0].ToolCall.Arguments)
+	// Must NOT contain concatenated snapshots.
+	if strings.Count(args, "file_path") != 1 {
+		t.Errorf("snapshot duplication detected: %s", args)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+		t.Fatalf("args not valid JSON: %v (%s)", err, args)
+	}
+	if parsed["limit"] != float64(100) {
+		t.Errorf("expected limit 100, got %v", parsed["limit"])
+	}
+}
+
+// multiple times does not re-emit already-flushed tool calls. This prevents
+// duplicate tool calls when upstream providers send duplicate ChunkFinish
+// events (e.g. some OpenAI-compatible gateways).
+func TestToolArgSanitizer_DoubleFlushIsIdempotent(t *testing.T) {
+	s := NewToolArgSanitizer()
+	var emitted []core.StreamChunk
+	emit := func(c core.StreamChunk) { emitted = append(emitted, c) }
+
+	// Buffer a tool call.
+	s.Process(core.StreamChunk{
+		Type:  core.ChunkToolCall,
+		Index: 0,
+		ToolCall: &core.ToolCall{
+			ID: "tc1", Name: "Read",
+			Arguments: json.RawMessage(`{"file_path":"/a"}`),
+		},
+	}, emit)
+
+	// First flush — emits the tool call.
+	s.Flush(emit)
+	if len(emitted) != 1 {
+		t.Fatalf("first flush: expected 1 emitted, got %d", len(emitted))
+	}
+
+	// Second flush — must be a no-op.
+	s.Flush(emit)
+	if len(emitted) != 1 {
+		t.Fatalf("second flush: expected still 1 emitted (idempotent), got %d", len(emitted))
+	}
+
+	// Third flush — still a no-op.
+	s.Flush(emit)
+	if len(emitted) != 1 {
+		t.Fatalf("third flush: expected still 1 emitted (idempotent), got %d", len(emitted))
+	}
+}
+
+// TestToolArgSanitizer_DuplicateChunkFinishDoesNotDoubleEmit verifies that
+// a duplicate ChunkFinish from upstream does not cause double-emission of
+// buffered tool calls.
+func TestToolArgSanitizer_DuplicateChunkFinishDoesNotDoubleEmit(t *testing.T) {
+	s := NewToolArgSanitizer()
+	var emitted []core.StreamChunk
+	emit := func(c core.StreamChunk) { emitted = append(emitted, c) }
+
+	// Buffer a tool call.
+	s.Process(core.StreamChunk{
+		Type:  core.ChunkToolCall,
+		Index: 0,
+		ToolCall: &core.ToolCall{
+			ID: "tc1", Name: "Read",
+			Arguments: json.RawMessage(`{"file_path":"/a"}`),
+		},
+	}, emit)
+
+	// First ChunkFinish — flushes and emits.
+	s.Process(core.StreamChunk{Type: core.ChunkFinish, FinishReason: core.FinishToolCalls}, emit)
+	if len(emitted) != 2 { // tool call + finish
+		t.Fatalf("after first finish: expected 2 emitted (tool+finish), got %d", len(emitted))
+	}
+
+	// Duplicate ChunkFinish — must NOT re-emit the tool call.
+	s.Process(core.StreamChunk{Type: core.ChunkFinish, FinishReason: core.FinishToolCalls}, emit)
+
+	var toolCalls int
+	for _, c := range emitted {
+		if c.Type == core.ChunkToolCall {
+			toolCalls++
+		}
+	}
+	if toolCalls != 1 {
+		t.Fatalf("duplicate finish caused double-emission: expected 1 tool call, got %d", toolCalls)
 	}
 }

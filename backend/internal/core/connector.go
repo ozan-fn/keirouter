@@ -119,6 +119,25 @@ type FetchConnector interface {
 	Fetch(ctx context.Context, req *FetchRequest, creds Credentials) (*FetchResponse, error)
 }
 
+// VideoConnector is implemented by providers that generate video. Generation
+// is asynchronous: GenerateVideo submits the job and returns a request id plus
+// status, and PollVideo checks progress until the output url(s) are ready. The
+// connector forwards the client payload transparently and passes the upstream
+// response back verbatim.
+type VideoConnector interface {
+	// GenerateVideo submits a video-generation job. It must never be
+	// auto-retried on a network error to avoid duplicate submissions.
+	GenerateVideo(ctx context.Context, req *VideoRequest, creds Credentials) (*VideoResponse, error)
+	// PollVideo returns the current state of an in-flight video job.
+	PollVideo(ctx context.Context, req *VideoStatusRequest, creds Credentials) (*VideoResponse, error)
+}
+
+// ImageUnderstandingConnector is implemented by providers whose vision models
+// can describe or answer questions about an input image (image-to-text).
+type ImageUnderstandingConnector interface {
+	UnderstandImage(ctx context.Context, req *ImageUnderstandingRequest, creds Credentials) (*ImageUnderstandingResponse, error)
+}
+
 // DirectStreamable is optionally implemented by connectors that can return the
 // raw upstream SSE stream as an io.ReadCloser. The pipeline uses this for
 // zero-copy same-dialect streaming: when the client dialect matches the

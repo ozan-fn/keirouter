@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,39 @@ func TestHTTPStatusErrorParsesRetryAfterHTTPDate(t *testing.T) {
 	pe := core.AsProviderError(httpStatusError("kiro", "model", resp, []byte("limited")))
 	require.Greater(t, pe.RetryAfter, 85*time.Second)
 	require.LessOrEqual(t, pe.RetryAfter, 90*time.Second)
+}
+
+func TestHTTPStatusErrorClassifiesMissingModel(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{}}
+	pe := core.AsProviderError(httpStatusError("openai", "missing", resp, []byte(`{"error":"not found"}`)))
+	require.Equal(t, core.ErrModelUnavailable, pe.Kind)
+	require.Equal(t, core.FailureScopeModel, pe.EffectiveScope())
+	require.True(t, pe.Fallbackable())
+}
+
+func TestTransportErrorScopesRetry(t *testing.T) {
+	networkErr := transportError(context.Background(), "openai", "gpt-4o", errors.New("dial failed"))
+	pe := core.AsProviderError(networkErr)
+	require.Equal(t, core.ErrUpstream, pe.Kind)
+	require.Equal(t, core.FailureScopeNetwork, pe.EffectiveScope())
+	require.False(t, shouldRetryFreshConnection(context.Background(), networkErr))
+
+	staleErr := transportError(context.Background(), "openai", "gpt-4o", errors.New("http: server closed idle connection"))
+	require.True(t, shouldRetryFreshConnection(context.Background(), staleErr))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledErr := transportError(ctx, "openai", "gpt-4o", context.Canceled)
+	pe = core.AsProviderError(canceledErr)
+	require.Equal(t, core.ErrClientCanceled, pe.Kind)
+	require.Equal(t, core.FailureScopeRequest, pe.EffectiveScope())
+	require.False(t, shouldRetryFreshConnection(ctx, canceledErr))
+}
+
+func TestRetryTransportForcesFreshConnection(t *testing.T) {
+	transport, ok := retryClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.True(t, transport.DisableKeepAlives)
 }
 
 func TestOpenAICompatible_BadRequestNotFallbackable(t *testing.T) {

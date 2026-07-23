@@ -127,6 +127,8 @@ func sanitizeUpstreamError(err error) string {
 		return "upstream provider timed out"
 	case core.ErrCapability:
 		return "requested capability is unavailable"
+	case core.ErrModelUnavailable:
+		return "requested upstream model is unavailable"
 	case core.ErrBudgetBlocked:
 		return "request blocked by budget policy"
 	case core.ErrPolicyBlocked:

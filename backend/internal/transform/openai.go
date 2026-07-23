@@ -354,7 +354,9 @@ const (
 // injection scope. DeepSeek's thinking-capable models (including those served
 // via OpenAI-compatible aggregators like OpenRouter, SiliconFlow, Fireworks)
 // require it on every assistant turn. Kimi models require it only on turns
-// that carry tool_calls. Other providers don't need it at all.
+// that carry tool_calls. GLM/Zhipu and MiniMax models also emit structured
+// reasoning_content and need it echoed back to maintain thinking context.
+// Other providers don't need it at all.
 func reasoningEchoScope(providerID, model string) reasoningScope {
 	m := strings.ToLower(model)
 	if providerID == "deepseek" || strings.Contains(m, "deepseek") {
@@ -364,6 +366,18 @@ func reasoningEchoScope(providerID, model string) reasoningScope {
 	// on assistant turns with tool_calls.
 	if strings.HasPrefix(m, "kimi-") || strings.HasPrefix(m, "moonshot/kimi-") {
 		return reasoningToolCalls
+	}
+	// GLM/Zhipu models (glm-5.2, glm-4.7, zai-org/glm-*, etc.) emit structured
+	// reasoning_content and expect it echoed back on follow-up turns, similar
+	// to DeepSeek. Without this, the model may skip reasoning or reject the
+	// request, causing clients to retry and potentially duplicate responses.
+	if providerID == "glm" || providerID == "glm-cn" || providerID == "zai" ||
+		strings.Contains(m, "glm-") || strings.Contains(m, "zai-org/glm") {
+		return reasoningAll
+	}
+	// MiniMax models (minimax-m1, abab6.5-chat, etc.) also use reasoning_content.
+	if strings.Contains(m, "minimax") || strings.Contains(m, "abab") {
+		return reasoningAll
 	}
 	return reasoningNone
 }
@@ -430,6 +444,12 @@ func renderOAIRequestForProvider(req *core.ChatRequest, providerID string, scope
 	}
 	if isDeepSeekTarget(providerID, req.Model) {
 		applyDeepSeekRequestFixes(out, req, providerID)
+	} else if scope != reasoningNone {
+		// Non-DeepSeek reasoning providers (GLM, Kimi, MiniMax, etc.) still
+		// need thinking type + reasoning_effort forwarded. DeepSeek has its
+		// own fixes above; this path handles the rest without duplicating
+		// provider-specific hacks.
+		applyGenericReasoningConfig(out, req)
 	}
 	if providerID == "codebuddy" {
 		applyCodebuddyRequestFixes(out, req)
@@ -525,19 +545,41 @@ func applyCodebuddyRequestFixes(out *oaiRequest, req *core.ChatRequest) {
 	}
 }
 
+// applyGenericReasoningConfig forwards reasoning_effort and thinking type to
+// any provider that supports reasoning-mode requests. This was previously
+// DeepSeek-only, but GLM, Kimi, MiniMax, and other reasoning providers also
+// need these fields to emit structured reasoning_content.
+func applyGenericReasoningConfig(out *oaiRequest, req *core.ChatRequest) {
+	if req.Reasoning == nil {
+		return
+	}
+	effort := strings.ToLower(req.Reasoning.Effort)
+	switch effort {
+	case "none", "off", "disabled":
+		out.Thinking = &oaiThinking{Type: "disabled"}
+		out.ReasoningEffort = ""
+	case "", "auto", "adaptive":
+		out.Thinking = &oaiThinking{Type: "enabled"}
+		out.ReasoningEffort = ""
+	case "xhigh":
+		out.Thinking = &oaiThinking{Type: "enabled"}
+		out.ReasoningEffort = "max"
+	default:
+		out.Thinking = &oaiThinking{Type: "enabled"}
+		out.ReasoningEffort = effort
+	}
+}
+
 func applyDeepSeekThinking(out *oaiRequest, req *core.ChatRequest, providerID string) {
+	applyGenericReasoningConfig(out, req)
 	if req.Reasoning != nil {
-		effort := strings.ToLower(req.Reasoning.Effort)
-		if effort == "none" || effort == "off" {
-			out.Thinking = &oaiThinking{Type: "disabled"}
+		switch strings.ToLower(req.Reasoning.Effort) {
+		case "none", "off", "disabled":
 			out.ReasoningEffort = ""
-		} else {
-			out.Thinking = &oaiThinking{Type: "enabled"}
-			if effort == "max" || effort == "xhigh" {
-				out.ReasoningEffort = "max"
-			} else {
-				out.ReasoningEffort = "high"
-			}
+		case "max", "xhigh":
+			out.ReasoningEffort = "max"
+		default:
+			out.ReasoningEffort = "high"
 		}
 	}
 

@@ -10,7 +10,9 @@ backend/dist/
 coverage.txt
 /keirouter
 /keirouter.exe
+/keirouter-test
 /backend/keirouter
+/backend/keirouter-test
 
 # Go build cache / vendor
 vendor/

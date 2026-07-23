@@ -3,8 +3,11 @@ package gateway
 import (
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/httputil"
@@ -329,6 +332,163 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-KeiRouter-Provider", provider)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"url": resp.URL, "title": resp.Title, "content": resp.Content, "format": resp.Format,
+	})
+}
+
+// ---- Video generation -------------------------------------------------------
+
+// handleVideoGeneration submits an asynchronous video-generation job. Unknown
+// JSON fields are retained so provider-specific generation controls pass through.
+func (s *Server) handleVideoGeneration(w http.ResponseWriter, r *http.Request) {
+	key, _ := authedKey(r.Context())
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
+			writeError(w, http.StatusUnsupportedMediaType, "video generation requires a JSON request body")
+			return
+		}
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	var head struct {
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(raw, &head); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	if head.Model == "" {
+		writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	opts, err := s.mediaOptions(r, head.Model)
+	if err != nil {
+		s.writeMediaError(w, err)
+		return
+	}
+	req := &core.VideoRequest{
+		Model:       modelTail(opts.Targets),
+		Prompt:      head.Prompt,
+		Body:        raw,
+		ContentType: r.Header.Get("Content-Type"),
+	}
+	resp, provider, perr := s.pipeline.GenerateVideo(r.Context(), req, opts)
+	if perr != nil {
+		s.logRequest(key.Name, provider, req.Model, 0, 0, 0, false, perr)
+		s.writeMediaError(w, perr)
+		return
+	}
+	s.logRequest(key.Name, provider, req.Model, 0, 0, 0, false, nil)
+	w.Header().Set("X-KeiRouter-Provider", provider)
+	w.Header().Set("X-KeiRouter-Account", resp.AccountID)
+	writeVideoResponse(w, resp)
+}
+
+// handleVideoPoll checks the status of an in-flight video job. The job id is in
+// the path; the model (provider/model) is supplied as a query parameter so the
+// poll routes to the same provider that created the job.
+func (s *Server) handleVideoPoll(w http.ResponseWriter, r *http.Request) {
+	key, _ := authedKey(r.Context())
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "video id is required")
+		return
+	}
+	model := r.URL.Query().Get("model")
+	if model == "" {
+		writeError(w, http.StatusBadRequest, "model query parameter is required (provider/model)")
+		return
+	}
+	accountID := r.URL.Query().Get("account_id")
+	if accountID == "" {
+		accountID = r.Header.Get("X-KeiRouter-Account")
+	}
+	if accountID == "" {
+		writeError(w, http.StatusBadRequest, "account_id is required to poll the credential that submitted the video job")
+		return
+	}
+	opts, err := s.mediaOptions(r, model)
+	if err != nil {
+		s.writeMediaError(w, err)
+		return
+	}
+	opts.AccountID = accountID
+	req := &core.VideoStatusRequest{Model: modelTail(opts.Targets), RequestID: id}
+	resp, provider, perr := s.pipeline.PollVideo(r.Context(), req, opts)
+	if perr != nil {
+		s.logRequest(key.Name, provider, req.Model, 0, 0, 0, false, perr)
+		s.writeMediaError(w, perr)
+		return
+	}
+	s.logRequest(key.Name, provider, req.Model, 0, 0, 0, false, nil)
+	w.Header().Set("X-KeiRouter-Provider", provider)
+	w.Header().Set("X-KeiRouter-Account", resp.AccountID)
+	writeVideoResponse(w, resp)
+}
+
+// writeVideoResponse renders a VideoResponse. When the upstream body was
+// captured verbatim it is passed through untouched; otherwise a canonical
+// summary is emitted.
+func writeVideoResponse(w http.ResponseWriter, resp *core.VideoResponse) {
+	if len(resp.Raw) > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(resp.Raw)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"request_id": resp.RequestID, "status": resp.Status,
+		"url": resp.URL, "urls": resp.URLs,
+	})
+}
+
+// ---- Image understanding (image-to-text) ------------------------------------
+
+func (s *Server) handleImageUnderstanding(w http.ResponseWriter, r *http.Request) {
+	key, _ := authedKey(r.Context())
+	var req core.ImageUnderstandingRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	hasImage := false
+	for _, image := range req.Images {
+		if strings.TrimSpace(image) != "" {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		writeError(w, http.StatusBadRequest, "at least one image is required")
+		return
+	}
+	opts, err := s.mediaOptions(r, req.Model)
+	if err != nil {
+		s.writeMediaError(w, err)
+		return
+	}
+	req.Model = modelTail(opts.Targets)
+	resp, provider, perr := s.pipeline.UnderstandImage(r.Context(), &req, opts)
+	if perr != nil {
+		s.logRequest(key.Name, provider, req.Model, 0, 0, 0, false, perr)
+		s.writeMediaError(w, perr)
+		return
+	}
+	s.logRequest(key.Name, provider, req.Model, resp.Usage.TotalTokens, 0, 0, false, nil)
+	w.Header().Set("X-KeiRouter-Provider", provider)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"model": resp.Model, "text": resp.Text,
+		"usage": map[string]any{
+			"prompt_tokens": resp.Usage.PromptTokens, "completion_tokens": resp.Usage.CompletionTokens,
+			"total_tokens": resp.Usage.TotalTokens,
+		},
 	})
 }
 

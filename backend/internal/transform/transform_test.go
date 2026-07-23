@@ -635,6 +635,31 @@ func TestCrossDialect_AnthropicImageToGemini(t *testing.T) {
 	require.Equal(t, "abc123", inlineData["data"])
 }
 
+func TestCrossDialect_AnthropicImageURLToGemini(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-sonnet-4.5",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "describe"},
+				{"type": "image", "source": {"type": "url", "url": "https://example.com/photo.jpg"}}
+			]}
+		]
+	}`)
+
+	canonical, err := AnthropicCodec{}.ParseRequest(body)
+	require.NoError(t, err)
+
+	gemBody, err := GeminiCodec{}.RenderRequest(canonical)
+	require.NoError(t, err)
+	var gemReq map[string]any
+	require.NoError(t, json.Unmarshal(gemBody, &gemReq))
+	contents := gemReq["contents"].([]any)
+	parts := contents[0].(map[string]any)["parts"].([]any)
+	fileData := parts[1].(map[string]any)["fileData"].(map[string]any)
+	require.Equal(t, "https://example.com/photo.jpg", fileData["fileUri"])
+}
+
 // Anthropic URL image → parse → render to OpenAI → image_url with URL.
 func TestCrossDialect_AnthropicImageURLToOpenAI(t *testing.T) {
 	body := []byte(`{

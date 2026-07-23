@@ -202,6 +202,41 @@ var configs = map[string]ProviderConfig{
 		DeviceCodeURL: "https://auth.kimi.com/api/oauth/device_authorization",
 		TokenURL:      "https://auth.kimi.com/api/oauth/token",
 	},
+	// ClinePass shares Cline's subscription auth surface (same api.cline.bot
+	// endpoints and non-standard authorize params), so its flow mirrors cline.
+	"clinepass": {
+		Provider:               "clinepass",
+		Flow:                   FlowAuthCode,
+		AuthorizeURL:           "https://api.cline.bot/api/v1/auth/authorize",
+		TokenURL:               "https://api.cline.bot/api/v1/auth/token",
+		RefreshURL:             "https://api.cline.bot/api/v1/auth/refresh",
+		UserInfoURL:            "https://api.cline.bot/api/v1/auth/userinfo",
+		TokenContentType:       "json",
+		SkipStandardAuthParams: true,
+		ExtraAuthParams: map[string]string{
+			"client_type": "extension",
+		},
+		ExtraTokenParams: map[string]string{
+			"client_type": "extension",
+		},
+	},
+	// Grok CLI signs in with an xAI account via device code and spends Grok
+	// Build subscription credits through cli-chat-proxy.grok.com. It reuses
+	// the public xAI OAuth client id and the auth.x.ai token endpoints.
+	"grok-cli": {
+		Provider:      "grok-cli",
+		Flow:          FlowDeviceCode,
+		ClientID:      "b1a00492-073a-47ea-816f-4c329264a828",
+		DeviceCodeURL: "https://auth.x.ai/oauth2/device/code",
+		TokenURL:      "https://auth.x.ai/oauth2/token",
+		RefreshURL:    "https://auth.x.ai/oauth2/token",
+		Scopes: []string{
+			"openid", "profile", "email", "offline_access",
+			"grok-cli:access", "api:access",
+			"conversations:read", "conversations:write",
+		},
+		UserInfoURL: "https://auth.x.ai/oauth2/userinfo",
+	},
 }
 
 // ConfigFor returns the OAuth config for a provider id.

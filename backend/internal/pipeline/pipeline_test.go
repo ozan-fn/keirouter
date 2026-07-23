@@ -9,22 +9,55 @@ import (
 
 func TestShouldRetryStreamRateLimit(t *testing.T) {
 	tests := []struct {
-		name    string
-		error   *core.ProviderError
-		retries int
-		want    bool
+		name       string
+		error      *core.ProviderError
+		retries    int
+		waitBudget time.Duration
+		want       bool
+		wantWait   time.Duration
 	}{
-		{name: "transient other provider", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai"}, want: true},
-		{name: "kiro account limit", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "kiro"}, want: false},
-		{name: "explicit reset", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: time.Minute}, want: false},
-		{name: "retry budget exhausted", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai"}, retries: maxRateLimitRetries, want: false},
-		{name: "not a rate limit", error: &core.ProviderError{Kind: core.ErrUpstream, Provider: "openai"}, want: false},
+		{
+			name:       "transient other provider",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: 2 * time.Second},
+			waitBudget: 10 * time.Second,
+			want:       true,
+			wantWait:   2050 * time.Millisecond,
+		},
+		{
+			name:       "kiro account limit",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "kiro", RetryAfter: 2 * time.Second},
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
+		{
+			name:       "explicit reset exceeds budget",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: time.Minute},
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
+		{
+			name:       "retry budget exhausted",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: time.Second},
+			retries:    maxRateLimitRetries,
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
+		{
+			name:       "not a rate limit",
+			error:      &core.ProviderError{Kind: core.ErrUpstream, Provider: "openai"},
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldRetryStreamRateLimit(tt.error, tt.retries); got != tt.want {
-				t.Fatalf("shouldRetryStreamRateLimit() = %v, want %v", got, tt.want)
+			gotWait, got := streamRateLimitWait(tt.error, tt.retries, tt.waitBudget)
+			if got != tt.want {
+				t.Fatalf("streamRateLimitWait() ok = %v, want %v", got, tt.want)
+			}
+			if gotWait != tt.wantWait {
+				t.Fatalf("streamRateLimitWait() wait = %v, want %v", gotWait, tt.wantWait)
 			}
 		})
 	}

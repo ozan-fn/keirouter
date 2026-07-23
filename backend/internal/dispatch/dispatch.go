@@ -18,8 +18,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/capability"
@@ -47,6 +50,15 @@ const (
 	// DefaultStickyLimit is the number of consecutive requests served by one
 	// target before round-robin advances to the next.
 	DefaultStickyLimit = 1
+	// ProviderCircuitFailureThreshold opens a provider circuit after this many
+	// consecutive network/upstream failures.
+	ProviderCircuitFailureThreshold = 3
+	// ProviderCircuitBaseCooldown is the first open interval.
+	ProviderCircuitBaseCooldown = 5 * time.Second
+	// ProviderCircuitMaxCooldown caps repeated provider outages.
+	ProviderCircuitMaxCooldown = 2 * time.Minute
+	// ProviderCircuitResetWindow forgets isolated failures after a quiet period.
+	ProviderCircuitResetWindow = time.Minute
 )
 
 // Target is one candidate in a fallback chain.
@@ -103,6 +115,7 @@ type RoutingSource interface {
 	ClearModelCooldown(ctx context.Context, accountID, model string) error
 	IsModelCooldownActive(ctx context.Context, accountID, model string) (bool, error)
 	ActiveCooldowns(ctx context.Context, accountIDs []string, model string) (map[string]bool, error)
+	ActiveCooldownExpirations(ctx context.Context, accountIDs []string, model string) (map[string]time.Time, error)
 	GetChainRotationState(ctx context.Context, chainID string) (store.ChainRotation, error)
 	SetChainRotationState(ctx context.Context, state store.ChainRotation) error
 	GetTargetRotationState(ctx context.Context, scopeKey string) (store.TargetRotation, error)
@@ -129,9 +142,20 @@ type Dispatcher struct {
 	routing     RoutingSource
 	health      HealthSource
 	proxyReader GlobalProxyReader
+	// selectionLocks serializes rotation/affinity selection per provider so
+	// concurrent requests do not all observe and choose the same cursor.
+	selectionLocks sync.Map
+	circuitMu      sync.Mutex
+	circuits       map[string]providerCircuit
 	// defaultCooldown is applied to an account when an error carries no
 	// upstream-specified Retry-After.
 	defaultCooldown time.Duration
+}
+
+type providerCircuit struct {
+	Failures    int
+	LastFailure time.Time
+	OpenUntil   time.Time
 }
 
 // New builds a Dispatcher.
@@ -141,6 +165,7 @@ func New(conns ConnectorSource, accounts *store.AccountRepo, v *vault.Vault) *Di
 		accounts:        accounts,
 		vault:           v,
 		defaultCooldown: 60 * time.Second,
+		circuits:        make(map[string]providerCircuit),
 	}
 }
 
@@ -187,6 +212,31 @@ type PlanOptions struct {
 	AccountAffinityTTL time.Duration
 	// ProviderAccountStrategies overrides account routing per provider.
 	ProviderAccountStrategies map[string]AccountRoutingOptions
+	// ExcludedAccountIDs prevents failed credentials from being selected again
+	// while a request dynamically re-plans its next attempt.
+	ExcludedAccountIDs map[string]struct{}
+	// ExcludedAttempts prevents one provider/model/account combination from
+	// being selected twice during dynamic re-planning.
+	ExcludedAttempts map[AttemptKey]struct{}
+	// AllowedAccountIDs pins account-bound operations to a known credential.
+	// Empty means every otherwise eligible account is allowed.
+	AllowedAccountIDs map[string]struct{}
+}
+
+// AttemptKey uniquely identifies one routed provider/model/account candidate.
+type AttemptKey struct {
+	Provider  string
+	Model     string
+	AccountID string
+}
+
+// Key returns the stable identity used to exclude an already-tried attempt.
+func (a Attempt) Key() AttemptKey {
+	return AttemptKey{
+		Provider:  a.Target.Provider,
+		Model:     a.Target.Model,
+		AccountID: a.Account.ID,
+	}
 }
 
 // AccountRoutingOptions is the provider-scoped subset of PlanOptions used for
@@ -212,6 +262,9 @@ func (d *Dispatcher) Plan(ctx context.Context, tenantID string, targets []Target
 
 // PlanWith is like Plan but accepts strategy options.
 func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Target, required core.CapabilitySet, opts PlanOptions) ([]Attempt, error) {
+	unlock := d.lockSelection(targets)
+	defer unlock()
+
 	// Apply round-robin rotation if requested.
 	ordered := d.applyRotation(ctx, targets, opts)
 	hardRequired := capability.NonStrippable(required)
@@ -270,6 +323,8 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 	attempts := make([]Attempt, 0, len(ordered))
 	unhealthyAttempts := make([]Attempt, 0, len(ordered))
 	var lastReason string
+	var earliestRetryAt time.Time
+	blockedScope := core.FailureScopeAccount
 
 	for i, target := range ordered {
 		// Capability guard: never fall back to a model that cannot honor the
@@ -277,6 +332,15 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 		// the guard because their upstream capabilities are unknown.
 		if !eligible[i] {
 			lastReason = fmt.Sprintf("model %q lacks required capabilities", target.Model)
+			continue
+		}
+		if remaining := d.providerCircuitRemaining(target.Provider, now); remaining > 0 {
+			retryAt := now.Add(remaining)
+			if earliestRetryAt.IsZero() || retryAt.Before(earliestRetryAt) {
+				earliestRetryAt = retryAt
+				blockedScope = core.FailureScopeProvider
+			}
+			lastReason = fmt.Sprintf("provider %s temporarily unavailable", target.Provider)
 			continue
 		}
 
@@ -298,9 +362,9 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 		accs = d.applyAccountRouting(ctx, tenantID, target, accs, opts.accountRoutingForTarget(target.Provider))
 		accountIDs := accountIDsByProvider[target.Provider]
 
-		var cooldownSet map[string]bool
+		var cooldownExpirations map[string]time.Time
 		if d.routing != nil && len(accountIDs) > 0 {
-			cooldownSet, _ = d.routing.ActiveCooldowns(ctx, accountIDs, target.Model)
+			cooldownExpirations, _ = d.routing.ActiveCooldownExpirations(ctx, accountIDs, target.Model)
 		}
 		var unhealthySet map[string]bool
 		if d.health != nil && len(accountIDs) > 0 {
@@ -308,8 +372,27 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 		}
 
 		for _, acc := range accs {
+			key := AttemptKey{Provider: target.Provider, Model: target.Model, AccountID: acc.ID}
+			if _, excluded := opts.ExcludedAttempts[key]; excluded {
+				lastReason = fmt.Sprintf("account %s already attempted for model %s", acc.ID, target.Model)
+				continue
+			}
+			if _, excluded := opts.ExcludedAccountIDs[acc.ID]; excluded {
+				lastReason = fmt.Sprintf("account %s already attempted", acc.ID)
+				continue
+			}
+			if len(opts.AllowedAccountIDs) > 0 {
+				if _, allowed := opts.AllowedAccountIDs[acc.ID]; !allowed {
+					lastReason = fmt.Sprintf("account %s is not selected for this operation", acc.ID)
+					continue
+				}
+			}
 			// Account-level cooldown (global cooldown from NoteFailure).
 			if acc.CooldownUntil != nil && acc.CooldownUntil.After(now) {
+				if earliestRetryAt.IsZero() || acc.CooldownUntil.Before(earliestRetryAt) {
+					earliestRetryAt = *acc.CooldownUntil
+					blockedScope = core.FailureScopeAccount
+				}
 				lastReason = fmt.Sprintf("account %s on cooldown", acc.ID)
 				continue
 			}
@@ -320,7 +403,11 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 				continue
 			}
 			// Model-level cooldown: skip this account only for this model.
-			if cooldownSet != nil && cooldownSet[acc.ID] {
+			if until, cooling := cooldownExpirations[acc.ID]; cooling {
+				if earliestRetryAt.IsZero() || until.Before(earliestRetryAt) {
+					earliestRetryAt = until
+					blockedScope = core.FailureScopeModel
+				}
 				lastReason = fmt.Sprintf("account %s model %s on cooldown", acc.ID, target.Model)
 				continue
 			}
@@ -373,6 +460,25 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 	}
 
 	if len(attempts) == 0 {
+		if !earliestRetryAt.IsZero() {
+			retryAfter := time.Until(earliestRetryAt)
+			if retryAfter < 0 {
+				retryAfter = 0
+			}
+			return nil, &core.ProviderError{
+				Kind:       core.ErrRateLimit,
+				Scope:      blockedScope,
+				Message:    "dispatch: all matching candidates are temporarily unavailable",
+				RetryAfter: retryAfter,
+			}
+		}
+		if len(opts.AllowedAccountIDs) > 0 {
+			return nil, &core.ProviderError{
+				Kind:    core.ErrBadRequest,
+				Scope:   core.FailureScopeRequest,
+				Message: "dispatch: selected account is unavailable for this route",
+			}
+		}
 		if lastReason == "" {
 			lastReason = "no usable targets in chain"
 		}
@@ -384,8 +490,36 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 // NoteFailure applies cooldowns to an account (and optionally a model) based on
 // a provider error. Exponential backoff increases the cooldown on repeated
 // failures for rate-limit / quota errors.
+//
+// Two categories of error are explicitly NOT cooled down:
+//   - Client cancellations (user pressed Esc, client closed connection): the
+//     provider may be perfectly healthy; penalizing it causes false fallbacks.
+//   - Self-inflicted timeouts (our own deadline fired while the upstream was
+//     still processing): again, the provider is healthy — we gave up, not them.
 func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *core.ProviderError) {
 	if err == nil {
+		return
+	}
+
+	scope := err.EffectiveScope()
+	if err.Kind == core.ErrClientCanceled || scope == core.FailureScopeRequest {
+		return
+	}
+
+	if (scope == core.FailureScopeProvider || scope == core.FailureScopeNetwork) &&
+		(err.Kind == core.ErrUpstream || err.Kind == core.ErrTimeout) {
+		d.recordProviderFailure(err.Provider)
+	}
+
+	if scope == core.FailureScopeModel {
+		cooldown := 5 * time.Minute
+		if err.RetryAfter > cooldown {
+			cooldown = err.RetryAfter
+		}
+		err.RetryAfter = cooldown
+		if d.routing != nil && err.Model != "" {
+			_ = d.routing.SetModelCooldown(ctx, accountID, err.Model, time.Now().Add(cooldown))
+		}
 		return
 	}
 
@@ -405,6 +539,13 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 	case core.ErrAuth:
 		cooldown = 5 * time.Minute
 	case core.ErrUpstream, core.ErrTimeout:
+		// Self-inflicted timeout: our own request deadline fired while the
+		// upstream was still processing. The provider is healthy — skip
+		// cooldown to avoid penalizing a working account.
+		if err.Kind == core.ErrTimeout && err.StatusCode == 0 &&
+			errors.Is(err.Cause, context.DeadlineExceeded) {
+			return
+		}
 		// Transient errors: apply a short cooldown so the account gets a
 		// breather without being locked out for too long.
 		cooldown = TransientCooldown
@@ -418,6 +559,7 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 	if err.RetryAfter > cooldown {
 		cooldown = err.RetryAfter
 	}
+	err.RetryAfter = cooldown
 
 	_ = d.accounts.SetCooldown(ctx, accountID, time.Now().Add(cooldown))
 
@@ -431,7 +573,7 @@ func (d *Dispatcher) NoteFailure(ctx context.Context, accountID string, err *cor
 
 // NoteSuccess resets the backoff level for an account and clears any model
 // cooldown. Called by the pipeline after a successful upstream response.
-func (d *Dispatcher) NoteSuccess(ctx context.Context, accountID, model string) {
+func (d *Dispatcher) NoteSuccess(ctx context.Context, provider, accountID, model string) {
 	_ = d.accounts.ResetBackoffLevel(ctx, accountID)
 	if d.routing != nil && model != "" {
 		_ = d.routing.ClearModelCooldown(ctx, accountID, model)
@@ -439,6 +581,7 @@ func (d *Dispatcher) NoteSuccess(ctx context.Context, accountID, model string) {
 	if d.health != nil && model != "" {
 		_ = d.health.MarkHealthy(ctx, accountID, model)
 	}
+	d.recordProviderSuccess(provider)
 }
 
 // exponentialCooldown computes the cooldown duration using exponential backoff.
@@ -615,6 +758,106 @@ func moveAccountToFront(accounts []store.Account, accountID string) ([]store.Acc
 	out = append(out, accounts[:idx]...)
 	out = append(out, accounts[idx+1:]...)
 	return out, true
+}
+
+// EvictAccountAffinity expires a smart-routing pin after its account fails so
+// the next request is not sent straight back to a cooling credential.
+func (d *Dispatcher) EvictAccountAffinity(ctx context.Context, tenantID string, target Target, opts PlanOptions, accountID string) {
+	if d.routing == nil || accountID == "" {
+		return
+	}
+	accountOpts := opts.accountRoutingForTarget(target.Provider)
+	if accountOpts.Strategy != StrategySmartRoundRobin || accountOpts.AffinityKey == "" {
+		return
+	}
+	scopeKey := accountAffinityKey(tenantID, target, accountOpts.AffinityKey)
+	affinity, err := d.routing.GetAccountAffinity(ctx, scopeKey)
+	if err != nil || affinity.AccountID != accountID {
+		return
+	}
+	_ = d.routing.SetAccountAffinity(ctx, store.AccountAffinity{
+		ScopeKey:  scopeKey,
+		AccountID: "",
+		ExpiresAt: time.Unix(0, 0),
+	})
+}
+
+func (d *Dispatcher) lockSelection(targets []Target) func() {
+	providers := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if target.Provider == "" {
+			continue
+		}
+		if _, ok := seen[target.Provider]; ok {
+			continue
+		}
+		seen[target.Provider] = struct{}{}
+		providers = append(providers, target.Provider)
+	}
+	sort.Strings(providers)
+	locks := make([]*sync.Mutex, 0, len(providers))
+	for _, provider := range providers {
+		value, _ := d.selectionLocks.LoadOrStore(provider, &sync.Mutex{})
+		lock := value.(*sync.Mutex)
+		lock.Lock()
+		locks = append(locks, lock)
+	}
+	return func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].Unlock()
+		}
+	}
+}
+
+func (d *Dispatcher) recordProviderFailure(provider string) {
+	if provider == "" {
+		return
+	}
+	now := time.Now()
+	d.circuitMu.Lock()
+	defer d.circuitMu.Unlock()
+	state := d.circuits[provider]
+	if !state.LastFailure.IsZero() && now.Sub(state.LastFailure) > ProviderCircuitResetWindow {
+		state.Failures = 0
+		state.OpenUntil = time.Time{}
+	}
+	state.Failures++
+	state.LastFailure = now
+	if state.Failures >= ProviderCircuitFailureThreshold {
+		exponent := state.Failures - ProviderCircuitFailureThreshold
+		if exponent > 10 {
+			exponent = 10
+		}
+		cooldown := ProviderCircuitBaseCooldown * time.Duration(1<<exponent)
+		if cooldown > ProviderCircuitMaxCooldown {
+			cooldown = ProviderCircuitMaxCooldown
+		}
+		state.OpenUntil = now.Add(cooldown)
+	}
+	d.circuits[provider] = state
+}
+
+func (d *Dispatcher) recordProviderSuccess(provider string) {
+	if provider == "" {
+		return
+	}
+	d.circuitMu.Lock()
+	delete(d.circuits, provider)
+	d.circuitMu.Unlock()
+}
+
+func (d *Dispatcher) providerCircuitRemaining(provider string, now time.Time) time.Duration {
+	if provider == "" {
+		return 0
+	}
+	d.circuitMu.Lock()
+	defer d.circuitMu.Unlock()
+	state, ok := d.circuits[provider]
+	if !ok || !state.OpenUntil.After(now) {
+		return 0
+	}
+	return state.OpenUntil.Sub(now)
 }
 
 // advanceRotationState returns the cursor to use for this request, plus the

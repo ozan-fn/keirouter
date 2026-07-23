@@ -660,3 +660,125 @@ func TestOpenAI_RenderRequest_StreamRawPathReasoning(t *testing.T) {
 		}
 	}
 }
+
+// ---- GLM/Zhipu scope tests ----
+
+// TestReasoningEchoScope_GLM verifies GLM/Zhipu models are detected (all scope).
+func TestReasoningEchoScope_GLM(t *testing.T) {
+	require.Equal(t, reasoningAll, reasoningEchoScope("glm", "glm-5.2"))
+	require.Equal(t, reasoningAll, reasoningEchoScope("glm-cn", "glm-4.7"))
+	require.Equal(t, reasoningAll, reasoningEchoScope("zai", "zai-org/glm-5.2"))
+	require.Equal(t, reasoningAll, reasoningEchoScope("cloudflare-ai", "@cf/zai-org/glm-5.2"))
+	require.Equal(t, reasoningNone, reasoningEchoScope("openai", "gpt-4o"))
+}
+
+// TestReasoningEchoScope_MiniMax verifies MiniMax models are detected (all scope).
+func TestReasoningEchoScope_MiniMax(t *testing.T) {
+	require.Equal(t, reasoningAll, reasoningEchoScope("minimax", "minimax-m1"))
+	require.Equal(t, reasoningAll, reasoningEchoScope("custom", "abab6.5-chat"))
+	require.Equal(t, reasoningNone, reasoningEchoScope("openai", "gpt-4o"))
+}
+
+// TestOpenAI_RenderRequest_GLMThinkingConfig verifies GLM targets get
+// thinking type + reasoning_effort forwarded (not just DeepSeek).
+func TestOpenAI_RenderRequest_GLMThinkingConfig(t *testing.T) {
+	maxTok := 4096
+	req := &core.ChatRequest{
+		Model:     "glm-5.2",
+		MaxTokens: &maxTok,
+		Reasoning: &core.ReasoningConfig{Effort: "high"},
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+		},
+	}
+	body, err := OpenAICodec{}.RenderRequestForProvider(req, "glm")
+	require.NoError(t, err)
+
+	var got oaiRequest
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.NotNil(t, got.Thinking, "GLM should get thinking config")
+	require.Equal(t, "enabled", got.Thinking.Type)
+	require.Equal(t, "high", got.ReasoningEffort)
+}
+
+// TestOpenAI_RenderRequest_GLMThinkingConfig_MaxEffort verifies max effort
+// maps to reasoning_effort "max" for GLM.
+func TestOpenAI_RenderRequest_GLMThinkingConfig_MaxEffort(t *testing.T) {
+	req := &core.ChatRequest{
+		Model:     "glm-5.2",
+		Reasoning: &core.ReasoningConfig{Effort: "max"},
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+		},
+	}
+	body, err := OpenAICodec{}.RenderRequestForProvider(req, "glm")
+	require.NoError(t, err)
+
+	var got oaiRequest
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Equal(t, "max", got.ReasoningEffort)
+}
+
+// TestOpenAI_RenderRequest_GLMThinkingDisabled verifies "none" effort maps
+// to thinking disabled for GLM.
+func TestOpenAI_RenderRequest_GLMThinkingDisabled(t *testing.T) {
+	req := &core.ChatRequest{
+		Model:     "glm-5.2",
+		Reasoning: &core.ReasoningConfig{Effort: "none"},
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+		},
+	}
+	body, err := OpenAICodec{}.RenderRequestForProvider(req, "glm")
+	require.NoError(t, err)
+
+	var got oaiRequest
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.NotNil(t, got.Thinking)
+	require.Equal(t, "disabled", got.Thinking.Type)
+	require.Empty(t, got.ReasoningEffort)
+}
+
+// TestOpenAI_RenderRequest_GLMReasoningInjection verifies GLM targets get
+// reasoning_content injected on assistant turns (like DeepSeek).
+func TestOpenAI_RenderRequest_GLMReasoningInjection(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "glm-5.2",
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}},
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "continue"}}},
+		},
+	}
+	body, err := OpenAICodec{}.RenderRequestForProvider(req, "glm")
+	require.NoError(t, err)
+
+	var got oaiRequest
+	require.NoError(t, json.Unmarshal(body, &got))
+
+	for _, m := range got.Messages {
+		if m.Role == "assistant" {
+			require.Equal(t, reasoningPlaceholder, m.ReasoningContent,
+				"GLM must inject reasoning_content on assistant turns")
+		}
+	}
+}
+
+// TestOpenAI_RenderRequest_NonReasoningProviderNoThinking verifies providers
+// without reasoning scope (OpenAI, Groq, etc.) do NOT get thinking config.
+func TestOpenAI_RenderRequest_NonReasoningProviderNoThinking(t *testing.T) {
+	req := &core.ChatRequest{
+		Model:     "gpt-4o",
+		Reasoning: &core.ReasoningConfig{Effort: "high"},
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}},
+		},
+	}
+	body, err := OpenAICodec{}.RenderRequestForProvider(req, "openai")
+	require.NoError(t, err)
+
+	var got oaiRequest
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Nil(t, got.Thinking, "OpenAI should not get thinking config")
+	require.Empty(t, got.ReasoningEffort)
+}
