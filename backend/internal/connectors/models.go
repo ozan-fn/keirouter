@@ -76,6 +76,7 @@ var providerModels = map[string][]ModelSpec{
 		m("claude-sonnet-4-20250514", "Claude Sonnet 4"),
 		m("claude-opus-4-20250514", "Claude Opus 4"),
 		m("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
+		k("claude-opus-4-5-20251101", "Claude Opus 4.5 (Vision)", core.ServiceImageToText),
 	},
 	"deepseek": {
 		m("deepseek-v4-pro", "DeepSeek V4 Pro"), m("deepseek-v4-pro-max", "DeepSeek V4 Pro Max"),
@@ -89,6 +90,7 @@ var providerModels = map[string][]ModelSpec{
 		m("MiniMax-M3", "MiniMax M3"),
 		m("MiniMax-M2.7", "MiniMax M2.7"), m("MiniMax-M2.5", "MiniMax M2.5"), m("MiniMax-M2.1", "MiniMax M2.1"),
 		k("minimax-image-01", "MiniMax Image 01", core.ServiceImage),
+		k("MiniMax-VL-01", "MiniMax VL 01 (Vision)", core.ServiceImageToText),
 	},
 	"minimax-cn": {m("MiniMax-M2.7", "MiniMax M2.7"), m("MiniMax-M2.5", "MiniMax M2.5"), m("MiniMax-M2.1", "MiniMax M2.1")},
 	"groq": {
@@ -97,15 +99,19 @@ var providerModels = map[string][]ModelSpec{
 		k("whisper-large-v3", "Whisper Large v3", core.ServiceSTT),
 		k("whisper-large-v3-turbo", "Whisper Large v3 Turbo", core.ServiceSTT),
 		k("distil-whisper-large-v3-en", "Distil Whisper Large v3 EN", core.ServiceSTT),
+		k("meta-llama/llama-4-maverick-17b-128e-instruct", "Llama 4 Maverick (Vision)", core.ServiceImageToText),
 	},
 	"xai": {
 		m("grok-4", "Grok 4"), m("grok-4-fast-reasoning", "Grok 4 Fast Reasoning"),
 		m("grok-code-fast-1", "Grok Code Fast"), m("grok-3", "Grok 3"),
 		k("grok-2-image-1212", "Grok 2 Image", core.ServiceImage),
+		k("grok-2-vision-1212", "Grok 2 Vision", core.ServiceImageToText),
+		k("grok-imagine-video", "Grok Imagine Video", core.ServiceVideo),
 	},
 	"mistral": {
 		m("mistral-large-latest", "Mistral Large 3"), m("codestral-latest", "Codestral"),
 		m("mistral-medium-latest", "Mistral Medium 3"), emb("mistral-embed", "Mistral Embed", 1024),
+		k("pixtral-large-latest", "Pixtral Large (Vision)", core.ServiceImageToText),
 	},
 	"perplexity": {m("sonar-pro", "Sonar Pro"), m("sonar", "Sonar")},
 	"together": {
@@ -309,6 +315,63 @@ var providerModels = map[string][]ModelSpec{
 		m("kimi-k2.5", "Kimi-K2.5"), m("nemotron-3-ultra-fp4", "Nemotron 3 Ultra FP4"),
 		m("minimax-m2.7", "MiniMax-M2.7"), m("claude-opus-4-6", "Claude Opus 4.6"),
 		m("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+		k("claude-opus-4-6", "Claude Opus 4.6 (Vision)", core.ServiceImageToText),
+	},
+	"clinepass": {
+		m("cline-pass/glm-5.2", "GLM-5.2 (ClinePass)"),
+		m("cline-pass/kimi-k2.7-code", "Kimi K2.7 Code (ClinePass)"),
+		m("cline-pass/kimi-k2.6", "Kimi K2.6 (ClinePass)"),
+		m("cline-pass/deepseek-v4-pro", "DeepSeek V4 Pro (ClinePass)"),
+		m("cline-pass/deepseek-v4-flash", "DeepSeek V4 Flash (ClinePass)"),
+		m("cline-pass/minimax-m3", "MiniMax M3 (ClinePass)"),
+		m("cline-pass/qwen3.7-max", "Qwen3.7 Max (ClinePass)"),
+		m("cline-pass/qwen3.7-plus", "Qwen3.7 Plus (ClinePass)"),
+	},
+	"grok-cli": {
+		m("grok-build", "Grok Build"), m("grok-4.5", "Grok 4.5"),
+		m("grok-4.5-high", "Grok 4.5 (High)"), m("grok-4.5-medium", "Grok 4.5 (Medium)"),
+		m("grok-4.5-low", "Grok 4.5 (Low)"),
+	},
+	"venice": {
+		m("venice-uncensored-1-2", "Venice Uncensored 1.2"), m("zai-org-glm-5", "GLM-5"),
+		m("qwen3-235b-a22b-instruct-2507", "Qwen3 235B A22B Instruct"),
+		m("qwen3-coder-480b-a35b-instruct-turbo", "Qwen3 Coder 480B A35B Turbo"),
+		m("qwen3-vl-235b-a22b", "Qwen3 VL 235B A22B"), m("deepseek-v4-pro", "DeepSeek V4 Pro"),
+		m("llama-3.3-70b", "Llama 3.3 70B"), m("hermes-3-llama-3.1-405b", "Hermes 3 Llama 3.1 405B"),
+		m("mistral-small-3-2-24b-instruct", "Mistral Small 3.2 24B"),
+		emb("text-embedding-3-large", "Text Embedding 3 Large", 3072),
+		emb("text-embedding-bge-m3", "BGE-M3 Embedding", 1024),
+		emb("text-embedding-qwen3-8b", "Qwen3 8B Embedding", 4096),
+		k("venice-sd35", "Venice SD3.5", core.ServiceImage), k("flux-2-pro", "FLUX.2 Pro", core.ServiceImage),
+		k("gpt-image-2", "GPT Image 2 (via Venice)", core.ServiceImage),
+	},
+	"featherless": {
+		m("deepseek-ai/DeepSeek-V4-Pro", "DeepSeek V4 Pro"), m("deepseek-ai/DeepSeek-V4-Flash", "DeepSeek V4 Flash"),
+		m("zai-org/GLM-5.2", "GLM 5.2"), m("zai-org/GLM-5.1", "GLM 5.1"),
+		m("moonshotai/Kimi-K2.7-Code", "Kimi K2.7 Code"), m("moonshotai/Kimi-K2.6", "Kimi K2.6"),
+		m("moonshotai/Kimi-K2.5", "Kimi K2.5"),
+	},
+	"perplexity-agent": {
+		m("perplexity/sonar", "Perplexity Sonar"), m("openai/gpt-5.5", "GPT-5.5"),
+		m("openai/gpt-5.4", "GPT-5.4"), m("openai/gpt-5.4-mini", "GPT-5.4 Mini"),
+		m("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6"), m("anthropic/claude-opus-4-8", "Claude Opus 4.8"),
+		m("google/gemini-3.1-pro-preview", "Gemini 3.1 Pro"), m("xai/grok-4.20-reasoning", "Grok 4.20 Reasoning"),
+		m("perplexity/glm-5.2", "GLM 5.2"), m("perplexity/kimi-k2.7-code", "Kimi K2.7 Code"),
+		m("nvidia/nemotron-3-super-120b-a12b", "Nemotron 3 Super 120B"),
+	},
+	"mmf": {m("mimo-auto", "MiMo Auto")},
+
+	// Passthrough providers: expose representative media-tagged models so the
+	// media catalog can surface their image-understanding / video routes.
+	"openrouter": {
+		k("openai/gpt-4o", "GPT-4o (Vision)", core.ServiceImageToText),
+		k("anthropic/claude-opus-4.5", "Claude Opus 4.5 (Vision)", core.ServiceImageToText),
+	},
+	"vertex": {
+		k("gemini-2.5-pro", "Gemini 2.5 Pro (Vision)", core.ServiceImageToText),
+	},
+	"vercel-ai-gateway": {
+		k("openai/gpt-4o", "GPT-4o (Vision)", core.ServiceImageToText),
 	},
 	"opencode-go":  {m("kimi-k2.6", "Kimi K2.6"), m("glm-5.1", "GLM 5.1"), m("qwen3.6-plus", "Qwen 3.6 Plus")},
 	"ollama":       {m("gpt-oss:120b", "GPT OSS 120B"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3.5", "Qwen3.5")},
@@ -319,6 +382,7 @@ var providerModels = map[string][]ModelSpec{
 		emb("gemini-embedding-001", "Gemini Embedding 001", 768), emb("text-embedding-004", "Text Embedding 004", 768),
 		k("gemini-2.5-flash-image", "Gemini 2.5 Flash Image (Nano Banana)", core.ServiceImage),
 		k("gemini-2.5-pro-preview-tts", "Gemini 2.5 Pro TTS", core.ServiceTTS),
+		k("gemini-2.5-pro", "Gemini 2.5 Pro (Vision)", core.ServiceImageToText),
 	},
 	// Media providers.
 	"deepgram":   {k("nova-3", "Nova 3", core.ServiceSTT), k("nova-2", "Nova 2", core.ServiceSTT), k("whisper-large", "Whisper Large", core.ServiceSTT)},

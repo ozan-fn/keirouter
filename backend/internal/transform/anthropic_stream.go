@@ -143,6 +143,9 @@ func (AnthropicCodec) ParseStreamLine(line []byte, _ string) ([]core.StreamChunk
 // opens the message and a text content block on first text delta.
 func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamState) ([][]byte, error) {
 	var events [][]byte
+	if state.Custom == nil {
+		state.Custom = make(map[string]any)
+	}
 
 	ensureOpen := func() {
 		if state.SentRole {
@@ -162,30 +165,73 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 	switch chunk.Type {
 	case core.ChunkText:
 		ensureOpen()
+		// Close any open thinking block before starting/continuing text.
+		// Thinking and text are separate content blocks with distinct indices;
+		// leaving a thinking block open while emitting text_delta corrupts the
+		// block index sequence and makes some clients (Claude Code) render the
+		// thinking as a second message segment.
+		if thinkOpen, _ := state.Custom["thinking_open"].(bool); thinkOpen {
+			thinkIdx, _ := state.Custom["thinking_index"].(int)
+			events = append(events, antEvent("content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": thinkIdx,
+			}))
+			state.Custom["thinking_open"] = false
+		}
 		// Close any open tool block before starting/continuing text.
 		if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
 			events = append(events, antEvent("content_block_stop", map[string]any{
 				"type": "content_block_stop", "index": state.ToolIndex,
 			}))
 			state.Custom["tool_open"] = false
-			state.ToolIndex++
 		}
 		if !state.OpenedBlock {
 			state.OpenedBlock = true
+			// The text block opens at the next index after any thinking block
+			// that already opened (e.g. MiMo streams reasoning_content first).
+			state.Custom["text_index"] = nextContentIndex(state)
+			textIdx, _ := state.Custom["text_index"].(int)
 			events = append(events, antEvent("content_block_start", map[string]any{
-				"type": "content_block_start", "index": 0,
+				"type": "content_block_start", "index": textIdx,
 				"content_block": map[string]any{"type": "text", "text": ""},
 			}))
 		}
+		textIdx, _ := state.Custom["text_index"].(int)
 		events = append(events, antEvent("content_block_delta", map[string]any{
-			"type": "content_block_delta", "index": 0,
+			"type": "content_block_delta", "index": textIdx,
 			"delta": map[string]any{"type": "text_delta", "text": chunk.Delta},
 		}))
 
 	case core.ChunkThinking:
 		ensureOpen()
+		// Anthropic streams reasoning as its own typed content block:
+		// content_block_start(type=thinking) → thinking_delta* →
+		// content_block_stop. Emitting thinking_delta without opening a
+		// thinking block (and reusing the text block's index) produces a
+		// non-compliant stream that some clients (Claude Code) mis-parse as a
+		// second message segment/turn.
+		if thinkOpen, _ := state.Custom["thinking_open"].(bool); !thinkOpen {
+			// A text block may already be open (text arrived before thinking);
+			// close it first so the thinking block gets its own index.
+			if state.OpenedBlock {
+				textIdx, _ := state.Custom["text_index"].(int)
+				events = append(events, antEvent("content_block_stop", map[string]any{
+					"type": "content_block_stop", "index": textIdx,
+				}))
+				state.OpenedBlock = false
+			}
+			state.Custom["thinking_open"] = true
+			state.Custom["thinking_index"] = nextContentIndex(state)
+			thinkIdx, _ := state.Custom["thinking_index"].(int)
+			events = append(events, antEvent("content_block_start", map[string]any{
+				"type":          "content_block_start",
+				"index":         thinkIdx,
+				"content_block": map[string]any{"type": "thinking", "thinking": ""},
+			}))
+		}
+		thinkIdx, _ := state.Custom["thinking_index"].(int)
 		events = append(events, antEvent("content_block_delta", map[string]any{
-			"type": "content_block_delta", "index": 0,
+			"type":  "content_block_delta",
+			"index": thinkIdx,
 			"delta": map[string]any{"type": "thinking_delta", "thinking": chunk.Delta},
 		}))
 
@@ -193,6 +239,20 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 		ensureOpen()
 		if chunk.ToolCall == nil {
 			break
+		}
+		if thinkOpen, _ := state.Custom["thinking_open"].(bool); thinkOpen {
+			thinkIdx, _ := state.Custom["thinking_index"].(int)
+			events = append(events, antEvent("content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": thinkIdx,
+			}))
+			state.Custom["thinking_open"] = false
+		}
+		if state.OpenedBlock {
+			textIdx, _ := state.Custom["text_index"].(int)
+			events = append(events, antEvent("content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": textIdx,
+			}))
+			state.OpenedBlock = false
 		}
 
 		// First chunk for a tool call (carries ID and Name) — open a new
@@ -208,11 +268,9 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 					events = append(events, antEvent("content_block_stop", map[string]any{
 						"type": "content_block_stop", "index": state.ToolIndex,
 					}))
-					state.ToolIndex++
 				}
-				if state.Custom == nil {
-					state.Custom = map[string]any{}
-				}
+				state.ToolIndex = nextContentIndex(state)
+				state.Custom["tool_seen"] = true
 				state.Custom["tool_open"] = true
 				state.Custom["tool_id"] = chunk.ToolCall.ID
 				events = append(events, antEvent("content_block_start", map[string]any{
@@ -246,7 +304,21 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 		}
 
 	case core.ChunkFinish:
-		// Close any open tool block, then any open text block.
+		if sent, _ := state.Custom["finish_sent"].(bool); sent {
+			return nil, nil
+		}
+		state.Custom["finish_sent"] = true
+		ensureOpen()
+		// Close any open thinking block, then any open tool block, then any
+		// open text block — each with its own index — so every content_block_stop
+		// matches a content_block_start.
+		if thinkOpen, _ := state.Custom["thinking_open"].(bool); thinkOpen {
+			thinkIdx, _ := state.Custom["thinking_index"].(int)
+			events = append(events, antEvent("content_block_stop", map[string]any{
+				"type": "content_block_stop", "index": thinkIdx,
+			}))
+			state.Custom["thinking_open"] = false
+		}
 		if toolOpen, _ := state.Custom["tool_open"].(bool); toolOpen {
 			events = append(events, antEvent("content_block_stop", map[string]any{
 				"type": "content_block_stop", "index": state.ToolIndex,
@@ -254,9 +326,11 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 			state.Custom["tool_open"] = false
 		}
 		if state.OpenedBlock {
+			textIdx, _ := state.Custom["text_index"].(int)
 			events = append(events, antEvent("content_block_stop", map[string]any{
-				"type": "content_block_stop", "index": 0,
+				"type": "content_block_stop", "index": textIdx,
 			}))
+			state.OpenedBlock = false
 		}
 		events = append(events, antEvent("message_delta", map[string]any{
 			"type":  "message_delta",
@@ -268,6 +342,24 @@ func (AnthropicCodec) RenderStreamChunk(chunk core.StreamChunk, state *StreamSta
 		return nil, nil
 	}
 	return events, nil
+}
+
+// nextContentIndex returns the next free content-block index, accounting for
+// any thinking, text, or tool block already opened. Anthropic requires each
+// content block to have a unique monotonically increasing index; thinking and
+// text must not share an index or clients mis-parse the stream as two messages.
+func nextContentIndex(state *StreamState) int {
+	max := -1
+	if idx, ok := state.Custom["thinking_index"].(int); ok && idx > max {
+		max = idx
+	}
+	if idx, ok := state.Custom["text_index"].(int); ok && idx > max {
+		max = idx
+	}
+	if seen, _ := state.Custom["tool_seen"].(bool); seen && state.ToolIndex > max {
+		max = state.ToolIndex
+	}
+	return max + 1
 }
 
 // RenderStreamDone emits the terminal message_stop event.

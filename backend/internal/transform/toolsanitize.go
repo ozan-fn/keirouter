@@ -15,15 +15,24 @@ import (
 // int, clamping values).
 //
 // Usage: call Process() for each chunk. Call Flush() when the stream ends.
+// Flush is idempotent — calling it multiple times is safe and will not
+// re-emit already-flushed tool calls.
 type ToolArgSanitizer struct {
 	// buffers tracks in-flight tool calls by their stream index.
 	buffers map[int]*toolBuffer
+	// flushed prevents double-emission when Flush is called multiple times
+	// (e.g. on duplicate ChunkFinish from upstream providers).
+	flushed bool
 }
 
 type toolBuffer struct {
 	id   string
 	name string
 	args strings.Builder
+	// argsLen tracks the length of args accumulated so far, used to detect
+	// snapshot-style argument retransmissions (some providers re-send the full
+	// accumulated arguments on every chunk instead of just the new delta).
+	argsLen int
 }
 
 // NewToolArgSanitizer creates a new sanitizer.
@@ -77,14 +86,67 @@ func (s *ToolArgSanitizer) Process(chunk core.StreamChunk, emit func(core.Stream
 
 	args := string(chunk.ToolCall.Arguments)
 	if args != "" && args != "{}" {
-		buf.args.WriteString(args)
+		appendToolArgs(buf, args)
 	}
 
 }
 
+// appendToolArgs accumulates tool-call argument fragments into the buffer.
+// Providers send arguments in two shapes:
+//
+//  1. Incremental deltas — each chunk carries only the NEW fragment. Concatenate
+//     verbatim, even when a fragment's leading bytes repeat the tail (e.g. "l" + "l").
+//  2. Full snapshots — each chunk re-sends the ENTIRE accumulated arguments.
+//     Concatenating would duplicate (e.g. `{"a":1}{"a":1}` → invalid JSON).
+//
+// Detection strategy: replace when a fragment extends the existing prefix, or
+// when both the existing value and fragment are complete objects. A complete
+// object can also be a legitimate nested delta, so it is not sufficient on its
+// own to classify a fragment as a snapshot.
+func appendToolArgs(buf *toolBuffer, fragment string) {
+	if fragment == "" {
+		return
+	}
+	existing := buf.args.String()
+	if existing == "" {
+		buf.args.WriteString(fragment)
+		buf.argsLen = len(fragment)
+		return
+	}
+	if strings.HasPrefix(fragment, existing) ||
+		(isCompleteJSONObject(existing) && isCompleteJSONObject(fragment)) {
+		buf.args.Reset()
+		buf.args.WriteString(fragment)
+		buf.argsLen = len(fragment)
+		return
+	}
+	// True incremental delta: append verbatim.
+	buf.args.WriteString(fragment)
+	buf.argsLen += len(fragment)
+}
+
+// isCompleteJSONObject reports whether the fragment is a standalone, complete
+// JSON object (starts with '{', ends with '}', and parses as valid JSON).
+// This is used to distinguish snapshot-style argument retransmissions from
+// true incremental deltas.
+func isCompleteJSONObject(fragment string) bool {
+	trimmed := strings.TrimSpace(fragment)
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+		return false
+	}
+	// Parse it to confirm it's valid JSON (not just braces around garbage).
+	var v map[string]any
+	return json.Unmarshal([]byte(trimmed), &v) == nil
+}
+
 // Flush emits all remaining buffered tool calls. Call this when the stream ends
-// (before ChunkFinish or after the channel closes).
+// (before ChunkFinish or after the channel closes). Safe to call multiple times;
+// subsequent calls are no-ops.
 func (s *ToolArgSanitizer) Flush(emit func(core.StreamChunk)) {
+	if s.flushed {
+		return
+	}
+	s.flushed = true
 	for idx := range s.buffers {
 		s.flushIndex(idx, emit)
 	}

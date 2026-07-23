@@ -152,9 +152,9 @@ func (s *Server) oauthExchange(w http.ResponseWriter, r *http.Request) {
 
 	var tokens *oauth.Tokens
 	var err error
-	if provider == "cline" {
-		// Cline uses a non-standard exchange (base64-embedded tokens or
-		// JSON body with client_type=extension).
+	if provider == "cline" || provider == "clinepass" {
+		// Cline and ClinePass use a non-standard exchange (base64-embedded
+		// tokens or JSON body with client_type=extension).
 		tokens, err = cfg.ExchangeClineCode(r.Context(), body.Code, sess.RedirectURI)
 	} else {
 		tokens, err = cfg.ExchangeCode(r.Context(), body.Code, sess.RedirectURI, sess.Verifier)

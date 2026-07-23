@@ -3,6 +3,7 @@ package transform
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
@@ -27,6 +28,11 @@ type antRequest struct {
 	Temp       *float64        `json:"temperature,omitempty"`
 	TopP       *float64        `json:"top_p,omitempty"`
 	Stop       []string        `json:"stop_sequences,omitempty"`
+	// Thinking carries the extended-thinking configuration that clients like
+	// Claude Code send. It must be forwarded to Anthropic-compatible upstreams
+	// (e.g. GLM, Zhipu) or the model will not emit reasoning blocks, confusing
+	// clients that expect them.
+	Thinking json.RawMessage `json:"thinking,omitempty"`
 }
 
 type antMessage struct {
@@ -35,8 +41,11 @@ type antMessage struct {
 }
 
 type antBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+	// Thinking holds the reasoning content for thinking blocks. Anthropic uses
+	// "thinking" as the JSON key (not "text") for this block type.
+	Thinking  string          `json:"thinking,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
@@ -115,11 +124,14 @@ func parseAntThinkingFromBytes(body []byte) *core.ReasoningConfig {
 	}
 	if err := json.Unmarshal(body, &thinkingWrapper); err == nil && thinkingWrapper.Thinking != nil {
 		cfg := &core.ReasoningConfig{}
-		if thinkingWrapper.Thinking.Type == "enabled" {
+		switch thinkingWrapper.Thinking.Type {
+		case "enabled":
 			cfg.Effort = "high"
 			if thinkingWrapper.Thinking.BudgetTokens > 0 {
 				cfg.MaxTokens = thinkingWrapper.Thinking.BudgetTokens
 			}
+		case "adaptive":
+			cfg.Effort = "adaptive"
 		}
 		return cfg
 	}
@@ -166,7 +178,14 @@ func parseAntMessage(m antMessage) core.Message {
 		case "text":
 			msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: b.Text})
 		case "thinking":
-			msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: b.Text})
+			// Anthropic thinking blocks carry content in the "thinking" field
+			// (not "text"). Signature must be preserved for echoing back on
+			// follow-up turns — the upstream validates it.
+			msg.Content = append(msg.Content, core.ContentPart{
+				Type:      core.PartThinking,
+				Text:      b.Thinking,
+				Signature: b.Signature,
+			})
 		case "tool_use":
 			msg.Content = append(msg.Content, core.ContentPart{
 				Type:     core.PartToolCall,
@@ -240,6 +259,7 @@ func (AnthropicCodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		maxTokens = *req.MaxTokens
 	}
+	thinkingBudget := 0
 
 	// Reconcile max_tokens against thinking budget. Anthropic requires
 	// max_tokens strictly greater than budget_tokens (else 400). Prefer raising
@@ -248,14 +268,14 @@ func (AnthropicCodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 	// remain for the answer.
 	ceiling := antDefaultMaxOutput
 	if req.Reasoning != nil && req.Reasoning.MaxTokens > 0 {
-		budgetTokens := req.Reasoning.MaxTokens
-		if budgetTokens >= maxTokens {
+		thinkingBudget = req.Reasoning.MaxTokens
+		if thinkingBudget >= maxTokens {
 			// Raise max_tokens to preserve thinking depth (up to ceiling)
-			maxTokens = min(budgetTokens+1024, ceiling)
-			if budgetTokens >= maxTokens {
+			maxTokens = min(thinkingBudget+1024, ceiling)
+			if thinkingBudget >= maxTokens {
 				// Budget exceeds ceiling; shrink budget so 1024 tokens remain for answer
 				// Note: We don't mutate req.Reasoning, the reconciliation happens at render time
-				budgetTokens = max(1024, maxTokens-1024)
+				thinkingBudget = max(1024, maxTokens-1024)
 			}
 		}
 	}
@@ -272,6 +292,35 @@ func (AnthropicCodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 	if modelRejectsTemperature(req.Model) {
 		out.Temp = nil
 	}
+
+	// Forward extended-thinking configuration to Anthropic-compatible upstreams.
+	// Claude Code sends thinking: {type: "enabled", budget_tokens: N} and expects
+	// reasoning blocks in the response. Dropping this field causes the upstream
+	// (GLM, Zhipu, etc.) to skip reasoning, which confuses clients and may
+	// trigger retries.
+	if req.Reasoning != nil {
+		effort := strings.ToLower(strings.TrimSpace(req.Reasoning.Effort))
+		var thinking map[string]any
+		switch effort {
+		case "adaptive", "auto":
+			thinking = map[string]any{"type": "adaptive"}
+		case "", "none", "off", "disabled":
+			if thinkingBudget > 0 {
+				thinking = map[string]any{"type": "enabled"}
+			}
+		default:
+			thinking = map[string]any{"type": "enabled"}
+		}
+		if thinking != nil && thinking["type"] == "enabled" && thinkingBudget > 0 {
+			thinking["budget_tokens"] = thinkingBudget
+		}
+		if thinking != nil {
+			if raw, err := json.Marshal(thinking); err == nil {
+				out.Thinking = raw
+			}
+		}
+	}
+
 	if req.System != "" {
 		sys, _ := json.Marshal(req.System)
 		out.System = sys
@@ -321,7 +370,15 @@ func renderAntBlocks(m core.Message) []antBlock {
 			}
 			blocks = append(blocks, antBlock{Type: "text", Text: p.Text})
 		case core.PartThinking:
-			blocks = append(blocks, antBlock{Type: "thinking", Text: p.Text})
+			// Render thinking with the correct "thinking" JSON key and echo back
+			// the signature when present (required by upstream for validation).
+			// When no signature exists (e.g. thinking synthesized by a non-Anthropic
+			// upstream), omit it — some providers reject a null/empty signature.
+			block := antBlock{Type: "thinking", Thinking: p.Text}
+			if p.Signature != "" {
+				block.Signature = p.Signature
+			}
+			blocks = append(blocks, block)
 		case core.PartToolCall:
 			blocks = append(blocks, antBlock{
 				Type:  "tool_use",

@@ -224,7 +224,8 @@ func (s *Server) routes() chi.Router {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: s.cfg.Server.CORSOrigins,
 		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Authorization", "Content-Type", "x-api-key", "X-KeiRouter-Affinity", "X-Conversation-ID", "X-Thread-ID", "X-Session-ID", "OpenAI-Conversation-ID"},
+		AllowedHeaders: []string{"Authorization", "Content-Type", "x-api-key", "X-KeiRouter-Affinity", "X-KeiRouter-Account", "X-Conversation-ID", "X-Thread-ID", "X-Session-ID", "OpenAI-Conversation-ID"},
+		ExposedHeaders: []string{"X-KeiRouter-Provider", "X-KeiRouter-Model", "X-KeiRouter-Account"},
 	}))
 
 	// Health check (unauthenticated).
@@ -245,6 +246,8 @@ func (s *Server) routes() chi.Router {
 				"/v1/models",
 				"/v1/embeddings",
 				"/v1/images/generations",
+				"/v1/images/understanding",
+				"/v1/videos/generations",
 				"/v1/audio/speech",
 				"/v1/audio/transcriptions",
 				"/v1/search",
@@ -289,6 +292,9 @@ func (s *Server) routes() chi.Router {
 		// Multi-capability endpoints (Phase 2).
 		r.Post("/v1/embeddings", s.handleEmbeddings)
 		r.Post("/v1/images/generations", s.handleImageGeneration)
+		r.Post("/v1/images/understanding", s.handleImageUnderstanding)
+		r.Post("/v1/videos/generations", s.handleVideoGeneration)
+		r.Get("/v1/videos/{id}", s.handleVideoPoll)
 		r.Post("/v1/audio/speech", s.handleAudioSpeech)
 		r.Post("/v1/audio/transcriptions", s.handleAudioTranscription)
 		r.Post("/v1/search", s.handleWebSearch)

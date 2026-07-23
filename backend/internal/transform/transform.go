@@ -78,6 +78,17 @@ type StreamState struct {
 	Custom map[string]any
 }
 
+// ResetStreamState resets a StreamState to its initial zero values.
+// Called when a stream is being restarted or retried to prevent state
+// corruption from a previous partial stream.
+func ResetStreamState(state *StreamState) {
+	state.MessageID = ""
+	state.OpenedBlock = false
+	state.SentRole = false
+	state.ToolIndex = 0
+	state.Custom = make(map[string]any)
+}
+
 // Registry resolves codecs by dialect.
 type Registry struct {
 	codecs map[core.Dialect]Codec

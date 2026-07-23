@@ -60,7 +60,6 @@ type ProviderSpec struct {
 	Custom bool `json:"custom,omitempty"`
 }
 
-
 // llm is shorthand for the default LLM-only service kind slice.
 func llm(extra ...core.ServiceKind) []core.ServiceKind {
 	return append([]core.ServiceKind{core.ServiceLLM}, extra...)
@@ -87,7 +86,6 @@ func Catalog() []ProviderSpec {
 	// discovery, account management, and provider/alias resolution.
 	return append(built, dynamicSpecs()...)
 }
-
 
 // pinnedProviders are always-visible entries shown at the top of the listing.
 func pinnedProviders() []ProviderSpec {
@@ -125,7 +123,7 @@ func freeTierProviders() []ProviderSpec {
 	return []ProviderSpec{
 		{ID: "openrouter", DisplayName: "OpenRouter", Alias: "openrouter", Dialect: core.DialectOpenAI,
 			BaseURL: "https://openrouter.ai/api/v1", AuthKind: "api_key",
-			ServiceKinds: llm(core.ServiceEmbedding), Color: "#F97316",
+			ServiceKinds: llm(core.ServiceEmbedding, core.ServiceImageToText), Color: "#F97316",
 			Website: "https://openrouter.ai", APIKeyURL: "https://openrouter.ai/settings/keys",
 			Notice: "Free tier: 27+ free models, no credit card, 200 req/day."},
 		{ID: "nvidia", DisplayName: "NVIDIA NIM", Alias: "nvidia", Dialect: core.DialectOpenAI,
@@ -145,10 +143,10 @@ func freeTierProviders() []ProviderSpec {
 			Notice:  "Self-hosted vLLM OpenAI-compatible server. Set base URL to your vLLM endpoint; provide an API key only if you started vLLM with --api-key. Requires KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL=true when pointing at loopback or LAN hosts."},
 		{ID: "gemini", DisplayName: "Gemini", Alias: "gemini", Dialect: core.DialectGemini,
 			BaseURL: "https://generativelanguage.googleapis.com/v1beta", AuthKind: "api_key",
-			ServiceKinds: llm(core.ServiceEmbedding, core.ServiceImage, core.ServiceSearch, core.ServiceTTS, core.ServiceSTT),
+			ServiceKinds: llm(core.ServiceEmbedding, core.ServiceImage, core.ServiceSearch, core.ServiceTTS, core.ServiceSTT, core.ServiceImageToText),
 			Color:        "#4285F4", Website: "https://ai.google.dev", APIKeyURL: "https://aistudio.google.com/app/apikey"},
 		{ID: "vertex", DisplayName: "Vertex AI", Alias: "vx", Dialect: core.DialectVertex,
-			BaseURL: "https://aiplatform.googleapis.com", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(),
+			BaseURL: "https://aiplatform.googleapis.com", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(core.ServiceImageToText),
 			Color: "#4285F4", Website: "https://cloud.google.com/vertex-ai", Hidden: true},
 		{ID: "vertex-partner", DisplayName: "Vertex Partner", Alias: "vxp", Dialect: core.DialectVertex,
 			BaseURL: "https://aiplatform.googleapis.com", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(),
@@ -203,11 +201,17 @@ func oauthProviders() []ProviderSpec {
 			BaseURL: "https://api.kimi.com/coding/v1", AuthKind: "oauth", AuthModes: []string{"oauth", "api_key"}, ServiceKinds: llm(),
 			Color: "#1E3A8A", Website: "https://kimi.moonshot.cn", Deprecated: true, Notice: risk},
 		{ID: "kimchi", DisplayName: "Kimchi", Alias: "kimchi", Dialect: core.DialectOpenAI,
-			BaseURL: "https://llm.kimchi.dev/openai/v1", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(),
+			BaseURL: "https://llm.kimchi.dev/openai/v1", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(core.ServiceImageToText),
 			Color: "#FF521D", Website: "https://kimchi.dev", Deprecated: true, Notice: risk},
 		{ID: "codebuddy", DisplayName: "CodeBuddy", Alias: "cb", Dialect: core.DialectOpenAI,
 			BaseURL: "https://copilot.tencent.com/v2/chat/completions", AuthKind: "oauth", AuthModes: []string{"oauth", "api_key"}, ServiceKinds: llm(),
 			Color: "#006EFF", Website: "https://copilot.tencent.com", Deprecated: true, Notice: risk},
+		{ID: "clinepass", DisplayName: "ClinePass", Alias: "clinepass", Dialect: core.DialectOpenAI,
+			BaseURL: "https://api.cline.bot/api/v1", AuthKind: "oauth", AuthModes: []string{"oauth", "api_key"}, ServiceKinds: llm(),
+			Color: "#5B9BD5", Website: "https://cline.bot"},
+		{ID: "grok-cli", DisplayName: "Grok CLI (Grok Build)", Alias: "gcli", Dialect: core.DialectOpenAIResponses,
+			BaseURL: "https://cli-chat-proxy.grok.com/v1/responses", AuthKind: "oauth", AuthModes: []string{"oauth"}, ServiceKinds: llm(),
+			Color: "#1DA1F2", Website: "https://x.ai", Deprecated: true, Notice: risk, SkipValidation: true},
 	}
 }
 
@@ -220,7 +224,7 @@ func apiKeyProviders() []ProviderSpec {
 			Color:        "#10A37F", Website: "https://platform.openai.com", APIKeyURL: "https://platform.openai.com/api-keys",
 			InputPerM: 2.5, OutputPerM: 10},
 		{ID: "anthropic", DisplayName: "Anthropic", Alias: "anthropic", Dialect: core.DialectAnthropic,
-			BaseURL: "https://api.anthropic.com/v1", AuthKind: "api_key", ServiceKinds: llm(),
+			BaseURL: "https://api.anthropic.com/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceImageToText),
 			Color: "#D97757", Website: "https://console.anthropic.com", APIKeyURL: "https://console.anthropic.com/settings/keys",
 			InputPerM: 3, OutputPerM: 15},
 		{ID: "deepseek", DisplayName: "DeepSeek", Alias: "ds", Dialect: core.DialectOpenAI,
@@ -240,7 +244,7 @@ func apiKeyProviders() []ProviderSpec {
 			Color: "#1E3A8A", Website: "https://kimi.moonshot.cn", APIKeyURL: "https://platform.moonshot.ai/console/api-keys"},
 		{ID: "minimax", DisplayName: "MiniMax Coding", Alias: "minimax", Dialect: core.DialectAnthropic,
 			BaseURL: "https://api.minimax.io/anthropic/v1", AuthKind: "api_key",
-			ServiceKinds: llm(core.ServiceImage, core.ServiceSearch, core.ServiceTTS), Color: "#7C3AED",
+			ServiceKinds: llm(core.ServiceImage, core.ServiceSearch, core.ServiceTTS, core.ServiceImageToText), Color: "#7C3AED",
 			Website: "https://www.minimaxi.com", APIKeyURL: "https://platform.minimaxi.com/user-center/basic-information/interface-key",
 			InputPerM: 0.2, OutputPerM: 1.1},
 		{ID: "minimax-cn", DisplayName: "MiniMax (China)", Alias: "minimax-cn", Dialect: core.DialectAnthropic,
@@ -270,7 +274,7 @@ func apiKeyProviders() []ProviderSpec {
 			BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#1677FF", Website: "https://ark.cn-beijing.volces.com"},
 		{ID: "vercel-ai-gateway", DisplayName: "Vercel AI Gateway", Alias: "vercel", Dialect: core.DialectOpenAI,
-			BaseURL: "https://ai-gateway.vercel.sh/v1", AuthKind: "api_key", ServiceKinds: llm(),
+			BaseURL: "https://ai-gateway.vercel.sh/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceImageToText),
 			Color: "#111827", Website: "https://vercel.com/ai-gateway"},
 		{ID: "azure", DisplayName: "Azure OpenAI", Alias: "azure", Dialect: core.DialectOpenAI,
 			BaseURL: "", AuthKind: "api_key", ServiceKinds: llm(), Color: "#0078D4",
@@ -281,15 +285,15 @@ func apiKeyProviders() []ProviderSpec {
 			Color: "#000000", Website: "https://commandcode.ai", APIKeyURL: "https://commandcode.ai/studio",
 			Notice: "Use your Command Code API key from commandcode.ai/studio or run `cmd login` to get a CLI token. CLI subscriptions (Go, Pro, Max, Ultra) are supported."},
 		{ID: "groq", DisplayName: "Groq", Alias: "groq", Dialect: core.DialectOpenAI,
-			BaseURL: "https://api.groq.com/openai/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceSTT),
+			BaseURL: "https://api.groq.com/openai/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceSTT, core.ServiceImageToText),
 			Color: "#F55036", Website: "https://groq.com", APIKeyURL: "https://console.groq.com/keys",
 			InputPerM: 0.59, OutputPerM: 0.79},
 		{ID: "xai", DisplayName: "xAI (Grok)", Alias: "xai", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.x.ai/v1", AuthKind: "api_key", AuthModes: []string{"oauth", "api_key"},
-			ServiceKinds: llm(core.ServiceSearch, core.ServiceImage), Color: "#1DA1F2", Website: "https://x.ai",
+			ServiceKinds: llm(core.ServiceSearch, core.ServiceImage, core.ServiceVideo, core.ServiceImageToText), Color: "#1DA1F2", Website: "https://x.ai",
 			APIKeyURL: "https://console.x.ai"},
 		{ID: "mistral", DisplayName: "Mistral", Alias: "mistral", Dialect: core.DialectOpenAI,
-			BaseURL: "https://api.mistral.ai/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceEmbedding),
+			BaseURL: "https://api.mistral.ai/v1", AuthKind: "api_key", ServiceKinds: llm(core.ServiceEmbedding, core.ServiceImageToText),
 			Color: "#FF7000", Website: "https://mistral.ai", APIKeyURL: "https://console.mistral.ai/api-keys"},
 		{ID: "perplexity", DisplayName: "Perplexity", Alias: "pplx", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.perplexity.ai", AuthKind: "api_key", ServiceKinds: llm(core.ServiceSearch),
@@ -330,7 +334,8 @@ func apiKeyProviders() []ProviderSpec {
 		// --- Additional providers ---
 		{ID: "gitlab", DisplayName: "GitLab Duo", Alias: "gitlab", Dialect: core.DialectOpenAI,
 			BaseURL: "https://gitlab.com/api/v4", AuthKind: "api_key", ServiceKinds: llm(),
-			Color: "#FC6D26", Website: "https://gitlab.com"},
+			Color: "#FC6D26", Website: "https://gitlab.com", Hidden: true,
+			Notice: "Connect with a GitLab personal access token (Bearer) scoped for Duo."},
 		// Browser-session cookie providers. Connected by pasting a session cookie
 		// from the provider's web app. The web_cookie dialect has no connector
 		// yet, so these are discovery/account-management only until one lands.
@@ -345,7 +350,7 @@ func apiKeyProviders() []ProviderSpec {
 		{ID: "agentrouter", DisplayName: "AgentRouter", Alias: "ar", Dialect: core.DialectOpenAI,
 			BaseURL: "https://agentrouter.org/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#10B981", Website: "https://agentrouter.org",
-			APIKeyURL: "https://agentrouter.org", SkipValidation:true},
+			APIKeyURL: "https://agentrouter.org", SkipValidation: true},
 		{ID: "aimlapi", DisplayName: "AIML API", Alias: "aimlapi", Dialect: core.DialectOpenAI,
 			BaseURL: "https://api.aimlapi.com/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#6366F1", Website: "https://aimlapi.com", APIKeyURL: "https://aimlapi.com/api-keys", Hidden: true},
@@ -433,6 +438,23 @@ func apiKeyProviders() []ProviderSpec {
 		{ID: "sumopod", DisplayName: "SumoPod", Alias: "sumopod", Dialect: core.DialectOpenAI,
 			BaseURL: "https://ai.sumopod.com/v1", AuthKind: "api_key", ServiceKinds: llm(),
 			Color: "#3B82F6", Website: "https://sumopod.com", APIKeyURL: "https://sumopod.com", Hidden: true},
+		{ID: "venice", DisplayName: "Venice AI", Alias: "vn", Dialect: core.DialectOpenAI,
+			BaseURL: "https://api.venice.ai/api/v1", AuthKind: "api_key",
+			ServiceKinds: llm(core.ServiceEmbedding, core.ServiceImage), Color: "#DC2626",
+			Website: "https://venice.ai", APIKeyURL: "https://venice.ai/settings/api",
+			Notice: "OpenAI-compatible. Private inference and uncensored models."},
+		{ID: "featherless", DisplayName: "Featherless", Alias: "fl", Dialect: core.DialectOpenAI,
+			BaseURL: "https://api.featherless.ai/v1", AuthKind: "api_key", ServiceKinds: llm(),
+			Color: "#111827", Website: "https://featherless.ai", APIKeyURL: "https://featherless.ai/account/api-keys"},
+		{ID: "perplexity-agent", DisplayName: "Perplexity Agent", Alias: "pa", Dialect: core.DialectOpenAIResponses,
+			BaseURL: "https://api.perplexity.ai/v1/responses", AuthKind: "api_key",
+			ServiceKinds: llm(core.ServiceSearch), Color: "#20808D",
+			Website: "https://www.perplexity.ai", APIKeyURL: "https://www.perplexity.ai/settings/api",
+			Notice: "Agent API exposes many upstream models through one OpenAI-compatible Responses API."},
+		{ID: "mmf", DisplayName: "MMF", Alias: "mmf", Dialect: core.DialectOpenAI,
+			BaseURL: "https://api.xiaomimimo.com/api/free-ai/openai", AuthKind: "none", AuthModes: []string{"none"},
+			ServiceKinds: llm(), Color: "#6366F1", Website: "https://xiaomimimo.com",
+			Hidden: true, SkipValidation: true, Notice: "Free MiMo endpoint. No API key required."},
 		// Generic compatible endpoints are now in pinnedProviders().
 	}
 }

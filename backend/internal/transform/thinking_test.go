@@ -233,3 +233,55 @@ func assertNoChunks(t *testing.T, chunks []core.StreamChunk, context string) {
 		t.Errorf("%s: unexpected chunk type=%q delta=%q", context, ch.Type, ch.Delta)
 	}
 }
+
+// TestThinkTagState_DoubleFlushIsIdempotent verifies that calling Flush
+// multiple times does not re-emit already-flushed buffered content. This
+// prevents duplicate text when stream cleanup logic calls Flush twice.
+func TestThinkTagState_DoubleFlushIsIdempotent(t *testing.T) {
+	ts := &ThinkTagState{}
+
+	// Feed content that gets buffered (a '<' that might start a tag).
+	// The '<' is held as potential partial tag, so "hello " is emitted
+	// immediately and "<" stays in the buffer.
+	chunks := ts.ProcessFeed("hello <")
+	if len(chunks) != 1 || chunks[0].Delta != "hello " {
+		t.Fatalf("expected 'hello ' emitted immediately, got %+v", chunks)
+	}
+
+	// First flush — emits the buffered "<".
+	flush1 := ts.Flush()
+	if len(flush1) != 1 {
+		t.Fatalf("first flush: expected 1 chunk, got %d", len(flush1))
+	}
+	if flush1[0].Delta != "<" {
+		t.Errorf("first flush delta = %q, want %q", flush1[0].Delta, "<")
+	}
+
+	// Second flush — must return nil.
+	flush2 := ts.Flush()
+	if len(flush2) != 0 {
+		t.Fatalf("second flush: expected 0 chunks (idempotent), got %d", len(flush2))
+	}
+
+	// Third flush — still nil.
+	flush3 := ts.Flush()
+	if len(flush3) != 0 {
+		t.Fatalf("third flush: expected 0 chunks (idempotent), got %d", len(flush3))
+	}
+}
+
+// TestThinkTagState_DoubleFlushEmptyBuffer verifies that double Flush on an
+// empty buffer is also safe (returns nil both times).
+func TestThinkTagState_DoubleFlushEmptyBuffer(t *testing.T) {
+	ts := &ThinkTagState{}
+
+	flush1 := ts.Flush()
+	if len(flush1) != 0 {
+		t.Fatalf("first flush on empty: expected 0 chunks, got %d", len(flush1))
+	}
+
+	flush2 := ts.Flush()
+	if len(flush2) != 0 {
+		t.Fatalf("second flush on empty: expected 0 chunks, got %d", len(flush2))
+	}
+}

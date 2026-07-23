@@ -21,6 +21,7 @@ func TestClassifyError(t *testing.T) {
 		{"upstream_network", &core.ProviderError{Kind: core.ErrUpstream, StatusCode: 0}, ProviderErrorNetwork},
 		{"bad_request", &core.ProviderError{Kind: core.ErrBadRequest}, ProviderErrorBadRequest},
 		{"bad_request_unsupported_msg", &core.ProviderError{Kind: core.ErrBadRequest, Message: "model not found"}, ProviderErrorUnsupported},
+		{"model_unavailable", &core.ProviderError{Kind: core.ErrModelUnavailable}, ProviderErrorUnsupported},
 		{"capability", &core.ProviderError{Kind: core.ErrCapability}, ProviderErrorUnsupported},
 		{"internal", &core.ProviderError{Kind: core.ErrInternal}, ProviderErrorUnknown},
 	}
@@ -47,10 +48,10 @@ func TestErrorSeverityScore(t *testing.T) {
 
 func TestComputeScore_Healthy(t *testing.T) {
 	score := ComputeScore(ScoreInput{
-		SuccessRate:        1.0,
-		P95LatencyMs:       2_000,
-		LatencyThresholdMs: 10_000,
-		DominantErrorType:  ProviderErrorNone,
+		SuccessRate:         1.0,
+		P95LatencyMs:        2_000,
+		LatencyThresholdMs:  10_000,
+		DominantErrorType:   ProviderErrorNone,
 		ConsecutiveFailures: 0,
 	})
 	if score < 90 {
@@ -60,10 +61,10 @@ func TestComputeScore_Healthy(t *testing.T) {
 
 func TestComputeScore_AuthErrors(t *testing.T) {
 	score := ComputeScore(ScoreInput{
-		SuccessRate:        0.5,
-		P95LatencyMs:       1_000,
-		LatencyThresholdMs: 10_000,
-		DominantErrorType:  ProviderErrorAuth,
+		SuccessRate:         0.5,
+		P95LatencyMs:        1_000,
+		LatencyThresholdMs:  10_000,
+		DominantErrorType:   ProviderErrorAuth,
 		ConsecutiveFailures: 3,
 	})
 	if score >= 65 {

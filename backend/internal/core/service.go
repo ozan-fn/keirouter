@@ -23,6 +23,11 @@ const (
 	ServiceSearch ServiceKind = "search"
 	// ServiceFetch retrieves and extracts the content of a URL.
 	ServiceFetch ServiceKind = "fetch"
+	// ServiceVideo generates video from a prompt (async job: submit + poll).
+	ServiceVideo ServiceKind = "video"
+	// ServiceImageToText answers questions about / describes an input image
+	// (image understanding / vision).
+	ServiceImageToText ServiceKind = "image_to_text"
 )
 
 // AllServiceKinds lists every supported service kind in a stable order.
@@ -30,13 +35,15 @@ func AllServiceKinds() []ServiceKind {
 	return []ServiceKind{
 		ServiceLLM, ServiceEmbedding, ServiceImage,
 		ServiceSTT, ServiceTTS, ServiceSearch, ServiceFetch,
+		ServiceVideo, ServiceImageToText,
 	}
 }
 
 // ValidServiceKind reports whether s is a recognized service kind.
 func ValidServiceKind(s ServiceKind) bool {
 	switch s {
-	case ServiceLLM, ServiceEmbedding, ServiceImage, ServiceSTT, ServiceTTS, ServiceSearch, ServiceFetch:
+	case ServiceLLM, ServiceEmbedding, ServiceImage, ServiceSTT, ServiceTTS,
+		ServiceSearch, ServiceFetch, ServiceVideo, ServiceImageToText:
 		return true
 	default:
 		return false

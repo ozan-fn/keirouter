@@ -861,10 +861,10 @@ func TestCatalog_HasProviderSpecs(t *testing.T) {
 
 func TestCatalog_AliasResolution(t *testing.T) {
 	cases := map[string]string{
-		"kr":    "kiro",
-		"ag":    "antigravity",
-		"mimo":  "xiaomi-mimo",
-		"mmtp":  "xiaomi-tokenplan",
+		"kr":   "kiro",
+		"ag":   "antigravity",
+		"mimo": "xiaomi-mimo",
+		"mmtp": "xiaomi-tokenplan",
 	}
 	for alias, wantID := range cases {
 		spec, ok := SpecByAlias(alias)
