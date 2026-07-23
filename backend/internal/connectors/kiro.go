@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,24 @@ type Kiro struct {
 const (
 	kiroModelCacheTTL = 5 * time.Minute
 	kiroQuotaCacheTTL = 30 * time.Second
+
+	kiroShortFinalMaxChars = 800
+)
+
+var (
+	kiroRepairInstructions = map[string]string{
+		"tool":        "Retry the previous response because its tool_call wrapper was malformed. The tool name and arguments fields must both be present and non-empty.",
+		"ellipsis":    "Retry the previous response because it ended with only an ellipsis. Return the complete final answer.",
+		"short_final": "Retry the previous response because it only announced a future action without completing it. Complete the work now and return the result.",
+	}
+
+	reShortFutureActionEN = regexp.MustCompile(`(?i)^(?:(?:next|now|then)\b[\s,:-]*)?(?:i(?:'ll| will| am going to| need to)|let me)\s+(?:verify|check|confirm|validate|investigate|trace|continue|follow up|test)\b`)
+	reShortFutureActionZH = regexp.MustCompile(`^(?:(?:現在|接著|接下來|下一步)[，,:：\s]*(?:我(?:只)?(?:會|要|將|再)?\s*)?|我只再|我(?:會|要|將)(?:再|重新)?)(?:補|抓取|查|確認|驗證|追|繼續|檢查|測試)`)
+	reResultClauseEN      = regexp.MustCompile(`(?i)[:;\n]|[.!?]\s+\S|\b(?:status|checksum|response|deployment)\s+(?:is|are|was|were|matches?|equals?|returned)\b`)
+	reResultClauseZH      = regexp.MustCompile(`[。！？]\s*\S|(?:版本|狀態|回應|結果|部署|校驗碼)(?:是|為|等於|顯示)`)
+	reCompletedFinal      = regexp.MustCompile(`(?i)已(?:經)?完成|完成(?:了|驗證|確認)|修復完成|確認無誤|驗證(?:完成|通過)|測試(?:均)?通過|結論|總結|\b(?:done|completed|fixed|verified|confirmed|passed|in conclusion|summary)\b|\b(?:is|are) complete\b`)
+	reResultEvidence      = regexp.MustCompile(`(?i)顯示|發現|因此|成功|失敗|正常|無錯誤|沒有錯誤|\b(?:found|shows?|showed|because|therefore|succeeded|failed|healthy|green|no errors?)\b`)
+	reUserWait            = regexp.MustCompile(`(?i)請(?:你|先)|你(?:先|需要|可以|提供|確認|批准|允許)|等待(?:你|使用者)|等你|核准|同意|授權|\b(?:after|when|once)\s+you\b|\byour\s+(?:approval|confirmation|permission|input)\b|\bwait(?:ing)?\s+for\s+you\b|\bplease\s+(?:approve|confirm|provide|send)\b`)
 )
 
 type kiroModelCacheEntry struct {
@@ -852,69 +871,31 @@ func (c *Kiro) Chat(ctx context.Context, req *core.ChatRequest, creds core.Crede
 	return &core.ChatResponse{Model: req.Model, Message: msg, FinishReason: finish, Usage: usage}, nil
 }
 
-// Stream performs a streaming call, parsing the AWS EventStream into canonical
-// chunks.
-func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
-	releaseAccount, err := c.acquireAccountSlot(ctx, creds, req.Model)
-	if err != nil {
-		return nil, err
-	}
-
-	// Account-bound auth uses only its resolved profile ARN; OAuth/social auth
-	// can fall back to the shared profile for its auth method.
-	profileArn := kiroResolveProfileArn(creds)
-	body, err := c.codec.RenderRequestWithProfile(req, profileArn)
-
-	if err != nil {
-		releaseAccount()
-		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
-	}
-
-	// Kiro returns a binary eventstream, not SSE; use a plain streaming POST.
-	// Try an alternate endpoint only for transport or edge failures. Account-level
-	// rejections such as 429 are surfaced immediately so cooldown can take effect.
-	resp, err := c.openStreamWithFailover(ctx, req.Model, body, c.headers(creds), c.endpoints(creds))
-	if err != nil {
-		releaseAccount()
-		// On an upstream rejection (e.g. CodeWhisperer's 400 "Improperly formed
-		// request"), the offending field is opaque. When KIRO_DEBUG is set, dump
-		// the rendered request body so the exact payload can be inspected. The
-		// body may contain prompt content, so this is opt-in only.
-		return nil, err
-	}
-
-	out := make(chan core.StreamChunk, 16)
+// pipeKiroResponse reads an HTTP eventstream response into a buffered channel,
+// converting frames to canonical chunks. The caller is responsible for closing
+// resp.Body after draining the returned channel.
+func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *core.ChatRequest, ttft *ttftTracker) <-chan core.StreamChunk {
+	ch := make(chan core.StreamChunk, 64)
 	go func() {
-		defer close(out)
+		defer close(ch)
 		defer resp.Body.Close()
-		defer releaseAccount()
-
-		ttft := newTTFTTracker(cfg)
-
 		parser := newEventStreamParser(resp.Body)
 		seenTools := map[string]bool{}
 		hasTool := false
-
-		// Kiro does not always emit a metricsEvent/usageEvent frame (varies by
-		// model and backend). Track whether real usage arrived and how much
-		// text we streamed so we can synthesize an estimate at EOF — otherwise
-		// the request bills upstream credit but records zero tokens locally.
 		usageSeen := false
 		outputChars := 0
-
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
-
-			frame, err := parser.next()
-			if err != nil {
-				if err != errEventStreamEOF {
-					out <- core.StreamChunk{
+			frame, ferr := parser.next()
+			if ferr != nil {
+				if ferr != errEventStreamEOF {
+					ch <- core.StreamChunk{
 						Type: core.ChunkError,
-						Err:  &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+						Err:  &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: ferr.Error(), Cause: ferr},
 					}
 				}
 				break
@@ -922,34 +903,164 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 			if frame == nil {
 				continue
 			}
-
-			for _, ch := range kiroFrameToChunks(frame, seenTools, &hasTool) {
-				if ch.Type == core.ChunkUsage {
+			for _, chunk := range kiroFrameToChunks(frame, seenTools, &hasTool) {
+				if chunk.Type == core.ChunkUsage {
 					usageSeen = true
 				}
-				if ch.Type == core.ChunkText || ch.Type == core.ChunkThinking {
-					outputChars += len(ch.Delta)
+				if chunk.Type == core.ChunkText || chunk.Type == core.ChunkThinking {
+					outputChars += len(chunk.Delta)
 				}
-				ttft.maybeReport(ch)
+				if ttft != nil {
+					ttft.maybeReport(chunk)
+				}
 				select {
-				case out <- ch:
+				case ch <- chunk:
 				case <-ctx.Done():
 					return
 				}
 			}
 		}
-
 		if !usageSeen {
 			if u := estimateKiroUsage(req, outputChars); u != nil {
 				select {
-				case out <- core.StreamChunk{Type: core.ChunkUsage, Usage: u}:
+				case ch <- core.StreamChunk{Type: core.ChunkUsage, Usage: u}:
 				case <-ctx.Done():
-					return
 				}
 			}
 		}
 	}()
+	return ch
+}
+
+// Stream performs a streaming call, parsing the AWS EventStream into canonical
+// chunks. After the first response is fully buffered it is passed through the
+// integrity gate: if the model returned only an ellipsis, a short future-action
+// announcement, or a malformed tool call, a single retry is issued with a
+// repair instruction appended to the system prompt. The buffered chunks of the
+// winning attempt are then forwarded to the caller.
+func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
+	releaseAccount, err := c.acquireAccountSlot(ctx, creds, req.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	profileArn := kiroResolveProfileArn(creds)
+	body, err := c.codec.RenderRequestWithProfile(req, profileArn)
+	if err != nil {
+		releaseAccount()
+		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+	}
+
+	resp, err := c.openStreamWithFailover(ctx, req.Model, body, c.headers(creds), c.endpoints(creds))
+	if err != nil {
+		releaseAccount()
+		return nil, err
+	}
+
+	out := make(chan core.StreamChunk, 16)
+	go func() {
+		defer close(out)
+		defer releaseAccount()
+
+		ttft := newTTFTTracker(cfg)
+		chunks, content, hasTool, toolErr := drainKiroStream(c.pipeKiroResponse(ctx, resp, req, ttft))
+
+		kind := kiroIntegrityKind(content, hasTool, toolErr)
+		if kind != "" {
+			repairedReq := kiroAppendRepair(req, kind)
+			repairedBody, rerr := c.codec.RenderRequestWithProfile(repairedReq, profileArn)
+			if rerr == nil {
+				resp2, rerr2 := c.openStreamWithFailover(ctx, req.Model, repairedBody, c.headers(creds), c.endpoints(creds))
+				if rerr2 == nil {
+					retryChunks, _, _, _ := drainKiroStream(c.pipeKiroResponse(ctx, resp2, repairedReq, nil))
+					if len(retryChunks) > 0 {
+						chunks = retryChunks
+					}
+				}
+			}
+		}
+
+		for _, ch := range chunks {
+			select {
+			case out <- ch:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	return out, nil
+}
+
+// kiroIntegrityKind inspects accumulated stream output and returns the repair
+// kind needed ("ellipsis", "short_final", "tool"), or "" when the response is
+// acceptable. hasTool indicates a tool call was present; toolErr is set when a
+// tool payload was malformed.
+func kiroIntegrityKind(content string, hasTool bool, toolErr string) string {
+	if toolErr != "" {
+		return "tool"
+	}
+	text := strings.TrimSpace(strings.ReplaceAll(content, "\u2019", "'"))
+	if text == "..." || text == "\u2026" {
+		return "ellipsis"
+	}
+	if hasTool || len([]rune(text)) > kiroShortFinalMaxChars {
+		return ""
+	}
+	if reCompletedFinal.MatchString(text) || reResultEvidence.MatchString(text) || reUserWait.MatchString(text) {
+		return ""
+	}
+	isEN := reShortFutureActionEN.MatchString(text)
+	isZH := reShortFutureActionZH.MatchString(text)
+	if isEN && reResultClauseEN.MatchString(text) {
+		return ""
+	}
+	if isZH && reResultClauseZH.MatchString(text) {
+		return ""
+	}
+	if isEN || isZH {
+		return "short_final"
+	}
+	return ""
+}
+
+// kiroAppendRepair returns a copy of req with the repair instruction appended
+// to the system prompt.
+func kiroAppendRepair(req *core.ChatRequest, kind string) *core.ChatRequest {
+	instruction, ok := kiroRepairInstructions[kind]
+	if !ok {
+		instruction = "Retry the previous incomplete response."
+	}
+	copy := *req
+	if copy.System != "" {
+		copy.System = copy.System + "\n\n" + instruction
+	} else {
+		copy.System = instruction
+	}
+	return &copy
+}
+
+// drainKiroStream drains a stream channel into a buffer slice and tracks
+// content/tool state needed by the integrity gate. Returns collected chunks,
+// accumulated text content, whether a tool call was seen, and any tool error.
+func drainKiroStream(ch <-chan core.StreamChunk) ([]core.StreamChunk, string, bool, string) {
+	var chunks []core.StreamChunk
+	var content strings.Builder
+	hasTool := false
+	toolErr := ""
+	for c := range ch {
+		chunks = append(chunks, c)
+		switch c.Type {
+		case core.ChunkText:
+			content.WriteString(c.Delta)
+		case core.ChunkToolCall:
+			hasTool = true
+		case core.ChunkError:
+			if c.Err != nil {
+				toolErr = c.Err.Error()
+			}
+		}
+	}
+	return chunks, content.String(), hasTool, toolErr
 }
 
 // estimateKiroUsage produces a best-effort token estimate for a Kiro response

@@ -1233,3 +1233,79 @@ func TestNormalizeKiroVersionDashes(t *testing.T) {
 		}
 	}
 }
+
+func TestKiroResolveConversationID_StickyPerKey(t *testing.T) {
+	key := "test-affinity-key-" + t.Name()
+	kiroSessionIDs.Delete(key)
+	t.Cleanup(func() { kiroSessionIDs.Delete(key) })
+
+	id1 := kiroResolveConversationID(key)
+	id2 := kiroResolveConversationID(key)
+	if id1 != id2 {
+		t.Errorf("same affinity key should return same conversationId: %q != %q", id1, id2)
+	}
+	if id1 == "" {
+		t.Error("conversationId should not be empty")
+	}
+}
+
+func TestKiroResolveConversationID_EmptyKeyNewEachTime(t *testing.T) {
+	id1 := kiroResolveConversationID("")
+	id2 := kiroResolveConversationID("")
+	if id1 == id2 {
+		t.Error("empty affinity key should produce distinct conversationIds each call")
+	}
+}
+
+func TestKiroResolveConversationID_DifferentKeysDistinct(t *testing.T) {
+	k1 := "session-a-" + t.Name()
+	k2 := "session-b-" + t.Name()
+	kiroSessionIDs.Delete(k1)
+	kiroSessionIDs.Delete(k2)
+	t.Cleanup(func() {
+		kiroSessionIDs.Delete(k1)
+		kiroSessionIDs.Delete(k2)
+	})
+
+	id1 := kiroResolveConversationID(k1)
+	id2 := kiroResolveConversationID(k2)
+	if id1 == id2 {
+		t.Errorf("different affinity keys should produce different conversationIds: both %q", id1)
+	}
+}
+
+func TestKiro_RenderRequest_UsesAffinityKeyForConversationID(t *testing.T) {
+	key := "render-affinity-" + t.Name()
+	kiroSessionIDs.Delete(key)
+	t.Cleanup(func() { kiroSessionIDs.Delete(key) })
+
+	req := &core.ChatRequest{
+		Model:    "claude-sonnet-4.5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}}},
+		Metadata: core.RequestMetadata{ContextAffinityKey: key},
+	}
+
+	body1, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2, err := KiroCodec{}.RenderRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env1, env2 map[string]any
+	if err := json.Unmarshal(body1, &env1); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body2, &env2); err != nil {
+		t.Fatal(err)
+	}
+
+	cs1 := env1["conversationState"].(map[string]any)
+	cs2 := env2["conversationState"].(map[string]any)
+	if cs1["conversationId"] != cs2["conversationId"] {
+		t.Errorf("same affinity key should produce same conversationId across renders: %q != %q",
+			cs1["conversationId"], cs2["conversationId"])
+	}
+}

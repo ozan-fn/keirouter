@@ -465,6 +465,69 @@ func TestKiroQuotaEndpointRetryableStopsOnRateLimit(t *testing.T) {
 	require.True(t, kiroQuotaEndpointRetryable(&core.ProviderError{Kind: core.ErrUpstream}))
 }
 
+func TestKiroIntegrityKind(t *testing.T) {
+	cases := []struct {
+		content string
+		hasTool bool
+		toolErr string
+		want    string
+	}{
+		{"hello world", false, "", ""},
+		{"...", false, "", "ellipsis"},
+		{"\u2026", false, "", "ellipsis"},
+		{"", false, "malformed tool", "tool"},
+		{"Let me check the status", false, "", "short_final"},
+		{"I will verify the deployment", false, "", "short_final"},
+		{"Done. The deployment is complete.", false, "", ""},
+		{"Let me check the status", true, "", ""},
+		{"現在我確認一下", false, "", "short_final"},
+		{"Let me verify: status is 200 OK", false, "", ""},
+	}
+	for _, tc := range cases {
+		got := kiroIntegrityKind(tc.content, tc.hasTool, tc.toolErr)
+		if got != tc.want {
+			t.Errorf("kiroIntegrityKind(%q, hasTool=%v, toolErr=%q) = %q, want %q",
+				tc.content, tc.hasTool, tc.toolErr, got, tc.want)
+		}
+	}
+}
+
+func TestKiroAppendRepair(t *testing.T) {
+	req := &core.ChatRequest{Model: "claude-sonnet-4.5", System: "be helpful"}
+	out := kiroAppendRepair(req, "ellipsis")
+	if !strings.Contains(out.System, "be helpful") {
+		t.Error("original system should be preserved")
+	}
+	if !strings.Contains(out.System, "ellipsis") {
+		t.Error("repair instruction should mention ellipsis")
+	}
+	if req.System == out.System {
+		t.Error("original req must not be mutated")
+	}
+
+	noSystem := &core.ChatRequest{Model: "claude-sonnet-4.5"}
+	out2 := kiroAppendRepair(noSystem, "short_final")
+	if out2.System == "" {
+		t.Error("repair should set system even when originally empty")
+	}
+}
+
+func TestDrainKiroStream(t *testing.T) {
+	ch := make(chan core.StreamChunk, 4)
+	ch <- core.StreamChunk{Type: core.ChunkText, Delta: "hello "}
+	ch <- core.StreamChunk{Type: core.ChunkText, Delta: "world"}
+	ch <- core.StreamChunk{Type: core.ChunkToolCall, ToolCall: &core.ToolCall{ID: "t1", Name: "fn"}}
+	ch <- core.StreamChunk{Type: core.ChunkFinish, FinishReason: core.FinishStop}
+	close(ch)
+
+	chunks, content, hasTool, toolErr := drainKiroStream(ch)
+	require.Equal(t, 4, len(chunks))
+	require.Equal(t, "hello world", content)
+	require.True(t, hasTool)
+	require.Equal(t, "", toolErr)
+}
+
+
 func TestKiroMetadataCachesReturnCopies(t *testing.T) {
 	accountID := "cache-account"
 	kiroModelCache.Delete(accountID)
