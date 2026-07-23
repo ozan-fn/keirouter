@@ -1,6 +1,8 @@
 package transform
 
 import (
+	"container/list"
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,15 +16,109 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
-var kiroSessionIDs sync.Map
+const (
+	kiroSessionTTL        = 24 * time.Hour
+	kiroSessionMaxEntries = 10_000
+)
 
-func kiroResolveConversationID(affinityKey string) string {
-	if affinityKey == "" {
+type kiroSessionEntry struct {
+	scope     string
+	id        string
+	expiresAt time.Time
+}
+
+type kiroSessionCache struct {
+	mu         sync.Mutex
+	entries    map[string]*list.Element
+	recency    *list.List
+	ttl        time.Duration
+	maxEntries int
+	now        func() time.Time
+}
+
+func newKiroSessionCache(ttl time.Duration, maxEntries int) *kiroSessionCache {
+	return &kiroSessionCache{
+		entries:    make(map[string]*list.Element),
+		recency:    list.New(),
+		ttl:        ttl,
+		maxEntries: maxEntries,
+		now:        time.Now,
+	}
+}
+
+var kiroSessions = newKiroSessionCache(kiroSessionTTL, kiroSessionMaxEntries)
+
+func (c *kiroSessionCache) resolve(scope string) string {
+	if scope == "" || c == nil || c.maxEntries <= 0 || c.ttl <= 0 {
 		return uuid.NewString()
 	}
-	id := uuid.NewString()
-	actual, _ := kiroSessionIDs.LoadOrStore(affinityKey, id)
-	return actual.(string)
+
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, ok := c.entries[scope]; ok {
+		entry := elem.Value.(*kiroSessionEntry)
+		if entry.expiresAt.After(now) {
+			entry.expiresAt = now.Add(c.ttl)
+			c.recency.MoveToFront(elem)
+			return entry.id
+		}
+		c.remove(elem)
+	}
+
+	for {
+		elem := c.recency.Back()
+		if elem == nil {
+			break
+		}
+		entry := elem.Value.(*kiroSessionEntry)
+		if entry.expiresAt.After(now) {
+			break
+		}
+		c.remove(elem)
+	}
+	for len(c.entries) >= c.maxEntries {
+		c.remove(c.recency.Back())
+	}
+
+	entry := &kiroSessionEntry{
+		scope:     scope,
+		id:        uuid.NewString(),
+		expiresAt: now.Add(c.ttl),
+	}
+	c.entries[scope] = c.recency.PushFront(entry)
+	return entry.id
+}
+
+func (c *kiroSessionCache) remove(elem *list.Element) {
+	if elem == nil {
+		return
+	}
+	entry := elem.Value.(*kiroSessionEntry)
+	delete(c.entries, entry.scope)
+	c.recency.Remove(elem)
+}
+
+func kiroConversationScope(req *core.ChatRequest, profileArn, accountID string) string {
+	if req == nil || req.Metadata.ContextAffinityKey == "" {
+		return ""
+	}
+	raw := strings.Join([]string{
+		req.Metadata.TenantID,
+		req.Metadata.ProjectID,
+		req.Metadata.APIKeyID,
+		accountID,
+		profileArn,
+		req.Model,
+		req.Metadata.ContextAffinityKey,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(raw))
+	return string(sum[:])
+}
+
+func kiroResolveConversationID(req *core.ChatRequest, profileArn, accountID string) string {
+	return kiroSessions.resolve(kiroConversationScope(req, profileArn, accountID))
 }
 
 // KiroCodec renders canonical requests to AWS CodeWhisperer's
@@ -227,6 +323,14 @@ func (c KiroCodec) RenderRequest(req *core.ChatRequest) ([]byte, error) {
 // the profileArn resolved for that key. OAuth/social connections pass "" here
 // since their tokens are accepted without an explicit profile.
 func (KiroCodec) RenderRequestWithProfile(req *core.ChatRequest, profileArn string) ([]byte, error) {
+	return KiroCodec{}.renderRequest(req, profileArn, "")
+}
+
+func (KiroCodec) RenderRequestForAccount(req *core.ChatRequest, profileArn, accountID string) ([]byte, error) {
+	return KiroCodec{}.renderRequest(req, profileArn, accountID)
+}
+
+func (KiroCodec) renderRequest(req *core.ChatRequest, profileArn, accountID string) ([]byte, error) {
 	upstream, agentic, modelThinking := resolveKiroModel(req.Model)
 
 	thinking := modelThinking || kiroThinkingEnabled(req, req.Model)
@@ -254,7 +358,7 @@ func (KiroCodec) RenderRequestWithProfile(req *core.ChatRequest, profileArn stri
 	payload := map[string]any{
 		"conversationState": map[string]any{
 			"chatTriggerType": "MANUAL",
-			"conversationId":  kiroResolveConversationID(req.Metadata.ContextAffinityKey),
+			"conversationId":  kiroResolveConversationID(req, profileArn, accountID),
 			"currentMessage":  map[string]any{"userInputMessage": current},
 			"history":         history,
 		},

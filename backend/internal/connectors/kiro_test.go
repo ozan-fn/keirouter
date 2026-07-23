@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,6 +77,41 @@ func TestEventStreamParser_DecodesFrames(t *testing.T) {
 	if events[0] != "assistantResponseEvent" || events[2] != "messageStopEvent" {
 		t.Errorf("unexpected event order: %v", events)
 	}
+}
+
+type eofWithDataReader struct {
+	data []byte
+	read bool
+}
+
+func (r *eofWithDataReader) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, io.EOF
+	}
+	r.read = true
+	n := copy(p, r.data)
+	return n, io.EOF
+}
+
+func TestEventStreamParserProcessesDataReturnedWithEOF(t *testing.T) {
+	parser := newEventStreamParser(&eofWithDataReader{
+		data: encodeEventStreamFrame("assistantResponseEvent", []byte(`{"content":"hello"}`)),
+	})
+
+	frame, err := parser.next()
+	require.NoError(t, err)
+	require.Equal(t, "assistantResponseEvent", frame.headers[":event-type"])
+
+	_, err = parser.next()
+	require.Equal(t, errEventStreamEOF, err)
+}
+
+func TestEventStreamParserRejectsTruncatedFrame(t *testing.T) {
+	frame := encodeEventStreamFrame("assistantResponseEvent", []byte(`{"content":"hello"}`))
+	parser := newEventStreamParser(bytes.NewReader(frame[:len(frame)-1]))
+
+	_, err := parser.next()
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 }
 
 func TestKiroFrameToChunks_TextAndStop(t *testing.T) {
@@ -469,64 +505,139 @@ func TestKiroIntegrityKind(t *testing.T) {
 	cases := []struct {
 		content string
 		hasTool bool
-		toolErr string
 		want    string
 	}{
-		{"hello world", false, "", ""},
-		{"...", false, "", "ellipsis"},
-		{"\u2026", false, "", "ellipsis"},
-		{"", false, "malformed tool", "tool"},
-		{"Let me check the status", false, "", "short_final"},
-		{"I will verify the deployment", false, "", "short_final"},
-		{"Done. The deployment is complete.", false, "", ""},
-		{"Let me check the status", true, "", ""},
-		{"現在我確認一下", false, "", "short_final"},
-		{"Let me verify: status is 200 OK", false, "", ""},
+		{"hello world", false, ""},
+		{"...", false, "ellipsis"},
+		{"\u2026", false, "ellipsis"},
+		{"Let me check the status", false, "short_final"},
+		{"I will verify the deployment", false, "short_final"},
+		{"Done. The deployment is complete.", false, ""},
+		{"Let me check the status", true, ""},
+		{"現在我確認一下", false, "short_final"},
+		{"Let me verify: status is 200 OK", false, ""},
 	}
 	for _, tc := range cases {
-		got := kiroIntegrityKind(tc.content, tc.hasTool, tc.toolErr)
+		got := kiroIntegrityKind(tc.content, tc.hasTool)
 		if got != tc.want {
-			t.Errorf("kiroIntegrityKind(%q, hasTool=%v, toolErr=%q) = %q, want %q",
-				tc.content, tc.hasTool, tc.toolErr, got, tc.want)
+			t.Errorf("kiroIntegrityKind(%q, hasTool=%v) = %q, want %q",
+				tc.content, tc.hasTool, got, tc.want)
 		}
 	}
 }
 
-func TestKiroAppendRepair(t *testing.T) {
-	req := &core.ChatRequest{Model: "claude-sonnet-4.5", System: "be helpful"}
-	out := kiroAppendRepair(req, "ellipsis")
-	if !strings.Contains(out.System, "be helpful") {
-		t.Error("original system should be preserved")
-	}
-	if !strings.Contains(out.System, "ellipsis") {
-		t.Error("repair instruction should mention ellipsis")
-	}
-	if req.System == out.System {
-		t.Error("original req must not be mutated")
-	}
+func TestKiroFrameToChunksMalformedToolRequestsRepair(t *testing.T) {
+	frame := mustDecode(t, encodeEventStreamFrame("toolUseEvent",
+		[]byte(`{"toolUseId":"t1","input":{"city":"SF"}}`)))
+	hasTool := false
+	chunks := kiroFrameToChunks(frame, map[string]bool{}, &hasTool)
 
-	noSystem := &core.ChatRequest{Model: "claude-sonnet-4.5"}
-	out2 := kiroAppendRepair(noSystem, "short_final")
-	if out2.System == "" {
-		t.Error("repair should set system even when originally empty")
+	require.Len(t, chunks, 1)
+	require.Equal(t, core.ChunkError, chunks[0].Type)
+	pe := core.AsProviderError(chunks[0].Err)
+	require.Equal(t, core.FailureScopeRequest, pe.Scope)
+	require.NotEmpty(t, pe.RetrySystemInstruction)
+	require.False(t, hasTool)
+}
+
+func TestKiroToolUseChunksValidatesArgumentsAtomically(t *testing.T) {
+	t.Run("empty object is valid", func(t *testing.T) {
+		seen := map[string]bool{}
+		chunks, err := kiroToolUseChunks(
+			[]byte(`{"toolUseId":"t1","name":"lookup","input":{}}`),
+			seen,
+		)
+		require.NoError(t, err)
+		require.Len(t, chunks, 2)
+		require.JSONEq(t, `{}`, string(chunks[1].ToolCall.Arguments))
+		require.True(t, seen["t1"])
+	})
+
+	t.Run("invalid JSON string is rejected", func(t *testing.T) {
+		seen := map[string]bool{}
+		_, err := kiroToolUseChunks(
+			[]byte(`{"toolUseId":"t1","name":"lookup","input":"not-json"}`),
+			seen,
+		)
+		require.Error(t, err)
+		require.Empty(t, seen)
+	})
+
+	t.Run("invalid array item does not commit earlier tools", func(t *testing.T) {
+		seen := map[string]bool{}
+		_, err := kiroToolUseChunks([]byte(`[
+			{"toolUseId":"t1","name":"lookup","input":{}},
+			{"toolUseId":"t2","input":{}}
+		]`), seen)
+		require.Error(t, err)
+		require.Empty(t, seen)
+	})
+}
+
+func TestKiroStreamForwardsBeforeUpstreamEOF(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(encodeEventStreamFrame("assistantResponseEvent", []byte(`{"content":"hello"}`)))
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = w.Write(encodeEventStreamFrame("messageStopEvent", []byte(`{}`)))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	conn := NewKiro("kiro", srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	stream, err := conn.Stream(ctx, &core.ChatRequest{
+		Model: "model",
+		Messages: []core.Message{{
+			Role:    core.RoleUser,
+			Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}},
+		}},
+	}, core.Credentials{BaseURL: srv.URL}, core.StreamConfig{})
+	require.NoError(t, err)
+
+	select {
+	case chunk := <-stream:
+		require.Equal(t, core.ChunkText, chunk.Type)
+		require.Equal(t, "hello", chunk.Delta)
+	case <-time.After(time.Second):
+		t.Fatal("first chunk was not forwarded while the upstream stream remained open")
 	}
 }
 
-func TestDrainKiroStream(t *testing.T) {
-	ch := make(chan core.StreamChunk, 4)
-	ch <- core.StreamChunk{Type: core.ChunkText, Delta: "hello "}
-	ch <- core.StreamChunk{Type: core.ChunkText, Delta: "world"}
-	ch <- core.StreamChunk{Type: core.ChunkToolCall, ToolCall: &core.ToolCall{ID: "t1", Name: "fn"}}
-	ch <- core.StreamChunk{Type: core.ChunkFinish, FinishReason: core.FinishStop}
-	close(ch)
+func TestKiroChatIncompleteResponseReturnsRoutedRepair(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(encodeEventStreamFrame("assistantResponseEvent", []byte(`{"content":"..."}`)))
+		_, _ = w.Write(encodeEventStreamFrame("usageEvent", []byte(`{"inputTokens":3,"outputTokens":1}`)))
+		_, _ = w.Write(encodeEventStreamFrame("messageStopEvent", []byte(`{}`)))
+	}))
+	defer srv.Close()
 
-	chunks, content, hasTool, toolErr := drainKiroStream(ch)
-	require.Equal(t, 4, len(chunks))
-	require.Equal(t, "hello world", content)
-	require.True(t, hasTool)
-	require.Equal(t, "", toolErr)
+	conn := NewKiro("kiro", srv.URL)
+	resp, err := conn.Chat(context.Background(), &core.ChatRequest{
+		Model: "model",
+		Messages: []core.Message{{
+			Role:    core.RoleUser,
+			Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}},
+		}},
+	}, core.Credentials{BaseURL: srv.URL})
+	if err == nil {
+		t.Fatalf("expected repair error, got response %+v", resp)
+	}
+
+	pe := core.AsProviderError(err)
+	require.Equal(t, core.ErrUpstream, pe.Kind)
+	require.Equal(t, core.FailureScopeRequest, pe.Scope)
+	require.NotEmpty(t, pe.RetrySystemInstruction)
+	require.NotNil(t, pe.AttemptUsage)
+	require.Equal(t, 4, pe.AttemptUsage.TotalTokens)
+	require.Equal(t, int32(1), calls.Load())
 }
-
 
 func TestKiroMetadataCachesReturnCopies(t *testing.T) {
 	accountID := "cache-account"

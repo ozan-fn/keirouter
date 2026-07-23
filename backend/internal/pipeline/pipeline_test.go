@@ -188,6 +188,40 @@ func TestMergeUsage(t *testing.T) {
 	}
 }
 
+func TestAddAttemptUsageSumsCompletedAttempts(t *testing.T) {
+	first := core.Usage{
+		PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14,
+		CachedTokens: 3, Source: core.UsageSourceProvider,
+	}
+	second := core.Usage{
+		PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20,
+		ReasoningTokens: 2, Source: core.UsageSourceProvider,
+	}
+	total := addAttemptUsage(first, second)
+
+	if total.PromptTokens != 22 || total.CompletionTokens != 12 || total.TotalTokens != 34 {
+		t.Fatalf("unexpected summed usage: %+v", total)
+	}
+	if total.CachedTokens != 3 || total.ReasoningTokens != 2 {
+		t.Fatalf("usage details were not summed: %+v", total)
+	}
+	if total.Source != core.UsageSourceProvider {
+		t.Fatalf("usage source = %q, want provider", total.Source)
+	}
+}
+
+func TestCloneWithSystemInstructionDoesNotMutateOriginal(t *testing.T) {
+	req := &core.ChatRequest{System: "original"}
+	clone := cloneWithSystemInstruction(req, "repair")
+
+	if req.System != "original" {
+		t.Fatalf("original request was mutated: %q", req.System)
+	}
+	if clone.System != "original\n\nrepair" {
+		t.Fatalf("clone system = %q", clone.System)
+	}
+}
+
 func TestSafeBuffer_SmallStream(t *testing.T) {
 	var buf safeBuffer
 	data := []byte("hello world")

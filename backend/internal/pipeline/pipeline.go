@@ -255,6 +255,9 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	var lastAttempt dispatch.Attempt
 	var lastLatency time.Duration
 	fellBack := false // tracks whether the current request triggered ≥1 fallback
+	attemptBaseReq := req
+	repairInstructionApplied := false
+	var priorAttemptUsage core.Usage
 	planner := newAttemptPlanner(p.dispatcher, req.Metadata.TenantID, opts.Targets, required, opts.PlanOpts, attempts)
 	attempt, hasAttempt := planner.Current()
 	for i := 0; hasAttempt; i++ {
@@ -262,7 +265,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		started := time.Now()
 		p.log.Debug("attempt start", "i", i, "provider", attempt.Target.Provider,
 			"model", attempt.Target.Model, "account", attempt.Account.ID)
-		attemptReq := cloneForAttempt(req, attempt.Target.Model)
+		attemptReq := cloneForAttempt(attemptBaseReq, attempt.Target.Model)
 
 		// Soft-degrade unsupported modalities. Stripping replaces input
 		// modalities the resolved profile cannot handle with text placeholders,
@@ -304,7 +307,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			if reqTimeout := p.resolvedRequestTimeout(); reqTimeout > 0 {
 				streamCtx, streamCancel = context.WithTimeout(streamCtx, reqTimeout)
 			}
-			streamReq := cloneForAttempt(req, attempt.Target.Model)
+			streamReq := cloneForAttempt(attemptBaseReq, attempt.Target.Model)
 			stream, sErr := attempt.Conn.Stream(streamCtx, streamReq, attempt.Creds, core.StreamConfig{})
 			if sErr == nil {
 				sResp, drainErr := drainStream(stream, req.Model)
@@ -333,6 +336,14 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		if callErr != nil {
 			pe := providerErrorForAttempt(callErr, attempt)
 			lastErr = pe
+			if pe.AttemptUsage != nil {
+				priorAttemptUsage = addAttemptUsage(priorAttemptUsage, *pe.AttemptUsage)
+			}
+			repairRetry := pe.RetrySystemInstruction != "" && !repairInstructionApplied
+			if repairRetry {
+				attemptBaseReq = cloneWithSystemInstruction(req, pe.RetrySystemInstruction)
+				repairInstructionApplied = true
+			}
 			p.dispatcher.NoteFailure(ctx, attempt.Account.ID, pe)
 			if p.metrics != nil {
 				p.metrics.RecordUpstreamError(attempt.Target.Provider, string(pe.Kind))
@@ -340,12 +351,18 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 			if !pe.Fallbackable() {
 				p.recordFailureTelemetry(req.Metadata, attempt, pe, latency, false)
 				p.log.Debug("attempt not fallbackable, aborting", "kind", pe.Kind)
-				pe, cost := p.recordAttemptTerminal(ctx, req.Metadata, attempt, pe, core.Usage{},
+				pe, cost := p.recordAttemptTerminal(ctx, req.Metadata, attempt, pe, priorAttemptUsage,
 					latency, time.Since(requestStarted), 0, nil, fellBack)
 				p.budgetConfirm(scope, cost)
 				return nil, pe
 			}
-			nextAttempt, canFallback := planner.AfterFailure(ctx, attempt, pe)
+			var nextAttempt dispatch.Attempt
+			var canFallback bool
+			if repairRetry {
+				nextAttempt, canFallback = planner.AfterRepair(ctx, attempt, pe)
+			} else {
+				nextAttempt, canFallback = planner.AfterFailure(ctx, attempt, pe)
+			}
 			p.recordFailureTelemetry(req.Metadata, attempt, pe, latency, canFallback)
 			if !canFallback {
 				break
@@ -358,6 +375,11 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
 			attempt = nextAttempt
 			continue
+		}
+
+		if priorAttemptUsage.PromptTokens != 0 || priorAttemptUsage.CompletionTokens != 0 ||
+			priorAttemptUsage.TotalTokens != 0 {
+			resp.Usage = addAttemptUsage(priorAttemptUsage, resp.Usage)
 		}
 
 		// Reset backoff and clear model cooldown on success.
@@ -406,7 +428,7 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 	if lastAttempt.Target.Provider == "" && lastAttempt.Target.Model == "" {
 		lastAttempt = attemptForTargets(opts.Targets)
 	}
-	pe, cost := p.recordAttemptTerminal(ctx, req.Metadata, lastAttempt, lastErr, core.Usage{},
+	pe, cost := p.recordAttemptTerminal(ctx, req.Metadata, lastAttempt, lastErr, priorAttemptUsage,
 		lastLatency, time.Since(requestStarted), 0, nil, fellBack)
 	p.budgetConfirm(scope, cost)
 	return nil, pe
@@ -1060,6 +1082,33 @@ func mergeUsage(old, new core.Usage) core.Usage {
 	return old
 }
 
+func addAttemptUsage(total, attempt core.Usage) core.Usage {
+	totalTokens := total.TotalTokens
+	if totalTokens == 0 {
+		totalTokens = total.PromptTokens + total.CompletionTokens
+	}
+	attemptTokens := attempt.TotalTokens
+	if attemptTokens == 0 {
+		attemptTokens = attempt.PromptTokens + attempt.CompletionTokens
+	}
+
+	total.PromptTokens += attempt.PromptTokens
+	total.CompletionTokens += attempt.CompletionTokens
+	total.TotalTokens = totalTokens + attemptTokens
+	total.CachedTokens += attempt.CachedTokens
+	total.CacheWriteTokens += attempt.CacheWriteTokens
+	total.ReasoningTokens += attempt.ReasoningTokens
+
+	switch {
+	case total.Source == "":
+		total.Source = attempt.Source
+	case attempt.Source == "":
+	case total.Source != attempt.Source:
+		total.Source = core.UsageSourceEstimated
+	}
+	return total
+}
+
 // preflight runs validation and the budget guard before any upstream call.
 // It uses Reserve() instead of Check() to prevent the TOCTOU race where
 // concurrent requests all pass the budget check before any usage is recorded.
@@ -1657,6 +1706,20 @@ func (p *Pipeline) cacheStore(ctx context.Context, vec []float32, resp *core.Cha
 func cloneForAttempt(req *core.ChatRequest, model string) *core.ChatRequest {
 	clone := *req
 	clone.Model = model
+	return &clone
+}
+
+func cloneWithSystemInstruction(req *core.ChatRequest, instruction string) *core.ChatRequest {
+	clone := *req
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return &clone
+	}
+	if strings.TrimSpace(clone.System) == "" {
+		clone.System = instruction
+	} else {
+		clone.System += "\n\n" + instruction
+	}
 	return &clone
 }
 

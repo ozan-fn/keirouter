@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,14 @@ func (plannerConnector) Stream(context.Context, *core.ChatRequest, core.Credenti
 }
 
 func newPlannerDispatcher(t *testing.T) *dispatch.Dispatcher {
+	return newPlannerDispatcherWithAccounts(t, "acc-1", "acc-2")
+}
+
+func newPlannerDispatcherWithAccounts(t *testing.T, accountIDs ...string) *dispatch.Dispatcher {
+	return newPlannerDispatcherWithConnector(t, plannerConnector{}, accountIDs...)
+}
+
+func newPlannerDispatcherWithConnector(t *testing.T, conn core.Connector, accountIDs ...string) *dispatch.Dispatcher {
 	t.Helper()
 	ctx := context.Background()
 	db, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: ":memory:"}, t.TempDir())
@@ -46,7 +55,7 @@ func newPlannerDispatcher(t *testing.T) *dispatch.Dispatcher {
 	require.NoError(t, err)
 	secrets := vault.New(sealer)
 
-	for i, id := range []string{"acc-1", "acc-2"} {
+	for i, id := range accountIDs {
 		now := time.Now()
 		account := store.Account{
 			ID: id, TenantID: store.DefaultTenantID, Provider: "openai",
@@ -57,7 +66,7 @@ func newPlannerDispatcher(t *testing.T) *dispatch.Dispatcher {
 		require.NoError(t, db.Accounts().Create(ctx, account))
 	}
 
-	d := dispatch.New(plannerConnectorSource{conn: plannerConnector{}}, db.Accounts(), secrets)
+	d := dispatch.New(plannerConnectorSource{conn: conn}, db.Accounts(), secrets)
 	d.SetRoutingSource(db.Routing())
 	return d
 }
@@ -108,4 +117,119 @@ func TestAttemptPlannerAccountFailureSkipsCredentialAcrossModels(t *testing.T) {
 
 	_, ok = planner.AfterFailure(ctx, second, &core.ProviderError{Kind: core.ErrAuth})
 	require.False(t, ok)
+}
+
+func TestAttemptPlannerRepairPrefersAnotherAccount(t *testing.T) {
+	ctx := context.Background()
+	d := newPlannerDispatcher(t)
+	targets := []dispatch.Target{{Provider: "openai", Model: "gpt-4o"}}
+	initial, err := d.Plan(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet())
+	require.NoError(t, err)
+	planner := newAttemptPlanner(d, store.DefaultTenantID, targets, core.NewCapabilitySet(), dispatch.PlanOptions{}, initial)
+
+	first, ok := planner.Current()
+	require.True(t, ok)
+	second, ok := planner.AfterRepair(ctx, first, &core.ProviderError{
+		Kind: core.ErrUpstream, Scope: core.FailureScopeRequest,
+	})
+	require.True(t, ok)
+	require.Equal(t, "acc-2", second.Account.ID)
+}
+
+func TestAttemptPlannerRepairRetriesOnlyAccountOnce(t *testing.T) {
+	ctx := context.Background()
+	d := newPlannerDispatcherWithAccounts(t, "acc-1")
+	targets := []dispatch.Target{{Provider: "openai", Model: "gpt-4o"}}
+	initial, err := d.Plan(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet())
+	require.NoError(t, err)
+	planner := newAttemptPlanner(d, store.DefaultTenantID, targets, core.NewCapabilitySet(), dispatch.PlanOptions{}, initial)
+
+	first, ok := planner.Current()
+	require.True(t, ok)
+	retry, ok := planner.AfterRepair(ctx, first, &core.ProviderError{
+		Kind: core.ErrUpstream, Scope: core.FailureScopeRequest,
+	})
+	require.True(t, ok)
+	require.Equal(t, first.Key(), retry.Key())
+
+	_, ok = planner.AfterFailure(ctx, retry, &core.ProviderError{
+		Kind: core.ErrUpstream, Scope: core.FailureScopeRequest,
+	})
+	require.False(t, ok)
+}
+
+type repairPipelineConnector struct {
+	mu       sync.Mutex
+	systems  []string
+	accounts []string
+}
+
+func (*repairPipelineConnector) ID() string            { return "openai" }
+func (*repairPipelineConnector) Dialect() core.Dialect { return core.DialectOpenAI }
+func (c *repairPipelineConnector) Chat(_ context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.systems = append(c.systems, req.System)
+	c.accounts = append(c.accounts, creds.AccountID)
+	if len(c.systems) == 1 {
+		return nil, &core.ProviderError{
+			Kind:                   core.ErrUpstream,
+			Scope:                  core.FailureScopeRequest,
+			Message:                "incomplete response",
+			RetrySystemInstruction: "complete the previous response",
+			AttemptUsage: &core.Usage{
+				PromptTokens: 5, CompletionTokens: 1, TotalTokens: 6,
+				Source: core.UsageSourceProvider,
+			},
+		}
+	}
+	return &core.ChatResponse{
+		Model: req.Model,
+		Message: core.Message{
+			Role:    core.RoleAssistant,
+			Content: []core.ContentPart{{Type: core.PartText, Text: "done"}},
+		},
+		FinishReason: core.FinishStop,
+		Usage: core.Usage{
+			PromptTokens: 6, CompletionTokens: 2, TotalTokens: 8,
+			Source: core.UsageSourceProvider,
+		},
+	}, nil
+}
+func (*repairPipelineConnector) Stream(context.Context, *core.ChatRequest, core.Credentials, core.StreamConfig) (<-chan core.StreamChunk, error) {
+	ch := make(chan core.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func TestPipelineRepairReroutesAndAccountsForBothAttempts(t *testing.T) {
+	conn := &repairPipelineConnector{}
+	d := newPlannerDispatcherWithConnector(t, conn, "acc-1", "acc-2")
+	p := New(Deps{Dispatcher: d})
+	req := &core.ChatRequest{
+		Model:  "gpt-4o",
+		System: "original",
+		Messages: []core.Message{{
+			Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}},
+		}},
+		Metadata: core.RequestMetadata{TenantID: store.DefaultTenantID},
+	}
+
+	result, err := p.Chat(context.Background(), req, Options{
+		Targets: []dispatch.Target{{Provider: "openai", Model: "gpt-4o"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "acc-2", result.AccountID)
+	require.Equal(t, 11, result.Response.Usage.PromptTokens)
+	require.Equal(t, 3, result.Response.Usage.CompletionTokens)
+	require.Equal(t, 14, result.Response.Usage.TotalTokens)
+	require.Equal(t, "original", req.System)
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	require.Equal(t, []string{"acc-1", "acc-2"}, conn.accounts)
+	require.Equal(t, []string{
+		"original",
+		"original\n\ncomplete the previous response",
+	}, conn.systems)
 }

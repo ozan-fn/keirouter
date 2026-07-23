@@ -820,6 +820,7 @@ func (c *Kiro) Chat(ctx context.Context, req *core.ChatRequest, creds core.Crede
 	var toolOrder []string
 	finish := core.FinishStop
 	var usage core.Usage
+	var streamErr *core.ProviderError
 
 	for ch := range stream {
 		switch ch.Type {
@@ -848,8 +849,8 @@ func (c *Kiro) Chat(ctx context.Context, req *core.ChatRequest, creds core.Crede
 				usage = *ch.Usage
 			}
 		case core.ChunkError:
-			if ch.Err != nil {
-				return nil, ch.Err
+			if ch.Err != nil && streamErr == nil {
+				streamErr = core.AsProviderError(ch.Err)
 			}
 		}
 	}
@@ -868,12 +869,32 @@ func (c *Kiro) Chat(ctx context.Context, req *core.ChatRequest, creds core.Crede
 		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartToolCall, ToolCall: tc})
 	}
 
+	if streamErr != nil {
+		if usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 {
+			attemptUsage := usage
+			streamErr.AttemptUsage = &attemptUsage
+		}
+		return nil, streamErr
+	}
+
+	if kind := kiroIntegrityKind(text, len(toolOrder) > 0); kind != "" {
+		attemptUsage := usage
+		return nil, &core.ProviderError{
+			Kind:                   core.ErrUpstream,
+			Scope:                  core.FailureScopeRequest,
+			Provider:               c.id,
+			Model:                  req.Model,
+			Message:                "kiro response integrity check failed: " + kind,
+			RetrySystemInstruction: kiroRepairInstructions[kind],
+			AttemptUsage:           &attemptUsage,
+		}
+	}
+
 	return &core.ChatResponse{Model: req.Model, Message: msg, FinishReason: finish, Usage: usage}, nil
 }
 
 // pipeKiroResponse reads an HTTP eventstream response into a buffered channel,
-// converting frames to canonical chunks. The caller is responsible for closing
-// resp.Body after draining the returned channel.
+// converting frames to canonical chunks and closing the body at EOF.
 func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *core.ChatRequest, ttft *ttftTracker) <-chan core.StreamChunk {
 	ch := make(chan core.StreamChunk, 64)
 	go func() {
@@ -893,9 +914,14 @@ func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *c
 			frame, ferr := parser.next()
 			if ferr != nil {
 				if ferr != errEventStreamEOF {
-					ch <- core.StreamChunk{
+					errChunk := core.StreamChunk{
 						Type: core.ChunkError,
 						Err:  &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: ferr.Error(), Cause: ferr},
+					}
+					select {
+					case ch <- errChunk:
+					case <-ctx.Done():
+						return
 					}
 				}
 				break
@@ -904,6 +930,13 @@ func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *c
 				continue
 			}
 			for _, chunk := range kiroFrameToChunks(frame, seenTools, &hasTool) {
+				if chunk.Type == core.ChunkError && chunk.Err != nil {
+					pe := core.AsProviderError(chunk.Err)
+					copy := *pe
+					copy.Provider = c.id
+					copy.Model = req.Model
+					chunk.Err = &copy
+				}
 				if chunk.Type == core.ChunkUsage {
 					usageSeen = true
 				}
@@ -933,11 +966,7 @@ func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *c
 }
 
 // Stream performs a streaming call, parsing the AWS EventStream into canonical
-// chunks. After the first response is fully buffered it is passed through the
-// integrity gate: if the model returned only an ellipsis, a short future-action
-// announcement, or a malformed tool call, a single retry is issued with a
-// repair instruction appended to the system prompt. The buffered chunks of the
-// winning attempt are then forwarded to the caller.
+// chunks and forwarding each one as soon as it arrives.
 func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
 	releaseAccount, err := c.acquireAccountSlot(ctx, creds, req.Model)
 	if err != nil {
@@ -945,7 +974,7 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 	}
 
 	profileArn := kiroResolveProfileArn(creds)
-	body, err := c.codec.RenderRequestWithProfile(req, profileArn)
+	body, err := c.codec.RenderRequestForAccount(req, profileArn, creds.AccountID)
 	if err != nil {
 		releaseAccount()
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
@@ -963,24 +992,7 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 		defer releaseAccount()
 
 		ttft := newTTFTTracker(cfg)
-		chunks, content, hasTool, toolErr := drainKiroStream(c.pipeKiroResponse(ctx, resp, req, ttft))
-
-		kind := kiroIntegrityKind(content, hasTool, toolErr)
-		if kind != "" {
-			repairedReq := kiroAppendRepair(req, kind)
-			repairedBody, rerr := c.codec.RenderRequestWithProfile(repairedReq, profileArn)
-			if rerr == nil {
-				resp2, rerr2 := c.openStreamWithFailover(ctx, req.Model, repairedBody, c.headers(creds), c.endpoints(creds))
-				if rerr2 == nil {
-					retryChunks, _, _, _ := drainKiroStream(c.pipeKiroResponse(ctx, resp2, repairedReq, nil))
-					if len(retryChunks) > 0 {
-						chunks = retryChunks
-					}
-				}
-			}
-		}
-
-		for _, ch := range chunks {
+		for ch := range c.pipeKiroResponse(ctx, resp, req, ttft) {
 			select {
 			case out <- ch:
 			case <-ctx.Done():
@@ -992,13 +1004,9 @@ func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cre
 }
 
 // kiroIntegrityKind inspects accumulated stream output and returns the repair
-// kind needed ("ellipsis", "short_final", "tool"), or "" when the response is
-// acceptable. hasTool indicates a tool call was present; toolErr is set when a
-// tool payload was malformed.
-func kiroIntegrityKind(content string, hasTool bool, toolErr string) string {
-	if toolErr != "" {
-		return "tool"
-	}
+// kind needed ("ellipsis" or "short_final"), or "" when the response is
+// acceptable. Tool payload integrity is validated while parsing its event.
+func kiroIntegrityKind(content string, hasTool bool) string {
 	text := strings.TrimSpace(strings.ReplaceAll(content, "\u2019", "'"))
 	if text == "..." || text == "\u2026" {
 		return "ellipsis"
@@ -1021,46 +1029,6 @@ func kiroIntegrityKind(content string, hasTool bool, toolErr string) string {
 		return "short_final"
 	}
 	return ""
-}
-
-// kiroAppendRepair returns a copy of req with the repair instruction appended
-// to the system prompt.
-func kiroAppendRepair(req *core.ChatRequest, kind string) *core.ChatRequest {
-	instruction, ok := kiroRepairInstructions[kind]
-	if !ok {
-		instruction = "Retry the previous incomplete response."
-	}
-	copy := *req
-	if copy.System != "" {
-		copy.System = copy.System + "\n\n" + instruction
-	} else {
-		copy.System = instruction
-	}
-	return &copy
-}
-
-// drainKiroStream drains a stream channel into a buffer slice and tracks
-// content/tool state needed by the integrity gate. Returns collected chunks,
-// accumulated text content, whether a tool call was seen, and any tool error.
-func drainKiroStream(ch <-chan core.StreamChunk) ([]core.StreamChunk, string, bool, string) {
-	var chunks []core.StreamChunk
-	var content strings.Builder
-	hasTool := false
-	toolErr := ""
-	for c := range ch {
-		chunks = append(chunks, c)
-		switch c.Type {
-		case core.ChunkText:
-			content.WriteString(c.Delta)
-		case core.ChunkToolCall:
-			hasTool = true
-		case core.ChunkError:
-			if c.Err != nil {
-				toolErr = c.Err.Error()
-			}
-		}
-	}
-	return chunks, content.String(), hasTool, toolErr
 }
 
 // estimateKiroUsage produces a best-effort token estimate for a Kiro response
@@ -1129,8 +1097,21 @@ func kiroFrameToChunks(frame *eventStreamFrame, seenTools map[string]bool, hasTo
 		}
 
 	case "toolUseEvent":
-		chunks = append(chunks, kiroToolUseChunks(frame.payload, seenTools)...)
-		if len(chunks) > 0 {
+		toolChunks, err := kiroToolUseChunks(frame.payload, seenTools)
+		if err != nil {
+			chunks = append(chunks, core.StreamChunk{
+				Type: core.ChunkError,
+				Err: &core.ProviderError{
+					Kind:                   core.ErrUpstream,
+					Scope:                  core.FailureScopeRequest,
+					Message:                "kiro response integrity check failed: malformed tool call: " + err.Error(),
+					RetrySystemInstruction: kiroRepairInstructions["tool"],
+				},
+			})
+			break
+		}
+		chunks = append(chunks, toolChunks...)
+		if len(toolChunks) > 0 {
 			*hasTool = true
 		}
 
@@ -1211,60 +1192,91 @@ func extractKiroReasoning(payload []byte) string {
 	return obj.ReasoningContentEvent.Content
 }
 
-func kiroToolUseChunks(payload []byte, seenTools map[string]bool) []core.StreamChunk {
-	parseOne := func(raw json.RawMessage) []core.StreamChunk {
+func kiroToolUseChunks(payload []byte, seenTools map[string]bool) ([]core.StreamChunk, error) {
+	workingSeen := make(map[string]bool, len(seenTools))
+	for id, seen := range seenTools {
+		workingSeen[id] = seen
+	}
+
+	parseOne := func(raw json.RawMessage) ([]core.StreamChunk, error) {
 		var t struct {
 			ToolUseID string          `json:"toolUseId"`
 			Name      string          `json:"name"`
 			Input     json.RawMessage `json:"input"`
 		}
-		if json.Unmarshal(raw, &t) != nil {
-			return nil
+		if err := json.Unmarshal(raw, &t); err != nil {
+			return nil, fmt.Errorf("invalid payload: %w", err)
 		}
+		t.Name = strings.TrimSpace(t.Name)
+		if t.Name == "" {
+			return nil, fmt.Errorf("tool name is empty")
+		}
+		if len(t.Input) == 0 || strings.TrimSpace(string(t.Input)) == "null" {
+			return nil, fmt.Errorf("tool arguments are missing")
+		}
+
+		args := t.Input
+		var asStr string
+		if json.Unmarshal(t.Input, &asStr) == nil {
+			asStr = strings.TrimSpace(asStr)
+			if asStr == "" || !json.Valid([]byte(asStr)) {
+				return nil, fmt.Errorf("tool arguments are not valid JSON")
+			}
+			args = json.RawMessage(asStr)
+		} else if !json.Valid(t.Input) {
+			return nil, fmt.Errorf("tool arguments are not valid JSON")
+		}
+
 		id := t.ToolUseID
 		if id == "" {
 			id = "call_" + uuid.NewString()
 		}
 		var chunks []core.StreamChunk
-		if !seenTools[id] {
-			seenTools[id] = true
+		if !workingSeen[id] {
+			workingSeen[id] = true
 			chunks = append(chunks, core.StreamChunk{
 				Type:     core.ChunkToolCall,
 				ToolCall: &core.ToolCall{ID: id, Name: t.Name, Arguments: json.RawMessage("")},
 			})
 		}
-		if len(t.Input) > 0 {
-			args := t.Input
-			// Input may be a JSON string or object; normalize to a string of JSON.
-			var asStr string
-			if json.Unmarshal(t.Input, &asStr) == nil {
-				args = json.RawMessage(asStr)
-			}
-			chunks = append(chunks, core.StreamChunk{
-				Type:     core.ChunkToolCall,
-				ToolCall: &core.ToolCall{ID: id, Arguments: args},
-			})
-		}
-		return chunks
+		chunks = append(chunks, core.StreamChunk{
+			Type:     core.ChunkToolCall,
+			ToolCall: &core.ToolCall{ID: id, Arguments: args},
+		})
+		return chunks, nil
 	}
 
-	// Payload may be a single tool-use object or an array.
-	trimmed := payload
-	for len(trimmed) > 0 && (trimmed[0] == ' ' || trimmed[0] == '\n' || trimmed[0] == '\t') {
-		trimmed = trimmed[1:]
+	commitSeen := func() {
+		for id, seen := range workingSeen {
+			seenTools[id] = seen
+		}
 	}
+
+	trimmed := []byte(strings.TrimSpace(string(payload)))
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		var arr []json.RawMessage
-		if json.Unmarshal(payload, &arr) != nil {
-			return nil
+		if err := json.Unmarshal(payload, &arr); err != nil {
+			return nil, fmt.Errorf("invalid tool list: %w", err)
+		}
+		if len(arr) == 0 {
+			return nil, fmt.Errorf("tool list is empty")
 		}
 		var chunks []core.StreamChunk
 		for _, item := range arr {
-			chunks = append(chunks, parseOne(item)...)
+			itemChunks, err := parseOne(item)
+			if err != nil {
+				return nil, err
+			}
+			chunks = append(chunks, itemChunks...)
 		}
-		return chunks
+		commitSeen()
+		return chunks, nil
 	}
-	return parseOne(payload)
+	chunks, err := parseOne(payload)
+	if err == nil {
+		commitSeen()
+	}
+	return chunks, err
 }
 
 // ---- AWS EventStream binary parser ------------------------------------------
@@ -1308,7 +1320,7 @@ func (p *eventStreamParser) next() (*eventStreamFrame, error) {
 				return nil, errEventStreamEOF
 			}
 			if err == io.EOF {
-				return nil, errEventStreamEOF
+				return nil, fmt.Errorf("eventstream: truncated prelude: %w", io.ErrUnexpectedEOF)
 			}
 			return nil, err
 		}
@@ -1323,7 +1335,7 @@ func (p *eventStreamParser) next() (*eventStreamFrame, error) {
 	for len(p.buf) < totalLen {
 		if err := p.fill(); err != nil {
 			if err == io.EOF {
-				return nil, errEventStreamEOF
+				return nil, fmt.Errorf("eventstream: truncated frame: %w", io.ErrUnexpectedEOF)
 			}
 			return nil, err
 		}
@@ -1341,6 +1353,7 @@ func (p *eventStreamParser) fill() error {
 	n, err := p.r.Read(tmp)
 	if n > 0 {
 		p.buf = append(p.buf, tmp[:n]...)
+		return nil
 	}
 	return err
 }

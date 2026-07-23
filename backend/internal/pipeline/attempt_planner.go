@@ -98,6 +98,15 @@ func (p *attemptPlanner) AfterFailure(ctx context.Context, failed dispatch.Attem
 	return p.current, true
 }
 
+func (p *attemptPlanner) AfterRepair(ctx context.Context, failed dispatch.Attempt, pe *core.ProviderError) (dispatch.Attempt, bool) {
+	if next, ok := p.AfterFailure(ctx, failed, pe); ok {
+		return next, true
+	}
+	p.current = failed
+	p.remaining = true
+	return failed, true
+}
+
 func stableTargetOrder(initial []dispatch.Attempt, original []dispatch.Target) []dispatch.Target {
 	out := make([]dispatch.Target, 0, len(original))
 	seen := make(map[dispatch.Target]struct{}, len(original))

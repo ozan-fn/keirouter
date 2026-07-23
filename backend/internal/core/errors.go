@@ -71,6 +71,13 @@ type ProviderError struct {
 	Message string
 	// RetryAfter, when non-zero, is the upstream-suggested cooldown.
 	RetryAfter time.Duration
+	// RetrySystemInstruction requests one centrally routed retry with an
+	// additional system instruction. Connectors use this for completed
+	// responses that are structurally invalid or clearly incomplete.
+	RetrySystemInstruction string
+	// AttemptUsage captures tokens consumed by a completed attempt that is being
+	// retried for response integrity. The pipeline adds it to terminal usage.
+	AttemptUsage *Usage
 	// Cause is the wrapped underlying error.
 	Cause error
 }
