@@ -1205,7 +1205,7 @@ func (p *Pipeline) planWithCooldownRetry(ctx context.Context, tenantID string, t
 // (terse, caveman, ponytail) token-saving transforms in place, in a fixed
 // deterministic order before format translation:
 //
-//	normalizer -> slimmer -> headroom (input) -> terse -> caveman -> ponytail (output)
+//	normalizer -> slimmer -> headroom -> normalizer (input) -> terse -> caveman -> ponytail (output)
 //
 // Terse and caveman both inject system-prompt directives; if both are enabled,
 // terse runs first and caveman appends after, but in practice only one
@@ -1230,6 +1230,10 @@ func (p *Pipeline) applyTokenSaving(ctx context.Context, req *core.ChatRequest, 
 		// Fail-open: never returns an error; leaves req untouched on failure.
 		hrStats = p.headroom.Compress(ctx, req, opts.Headroom)
 	}
+
+	// Compression may remove one side of a tool call/result pair. Reconcile the
+	// final message history again before it reaches a provider connector.
+	normalizer.Apply(req)
 
 	terse.Apply(req, opts.Terse)
 	caveman.Apply(req, opts.Caveman)

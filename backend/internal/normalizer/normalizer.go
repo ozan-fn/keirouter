@@ -1,7 +1,7 @@
 // Package normalizer validates and repairs tool call structures in chat
 // requests before they are sent upstream. It ensures tool call IDs are
 // Anthropic-compatible, arguments are valid JSON, and every tool_use has a
-// matching tool_result.
+// matching tool_result, and every tool_result belongs to a known tool_use.
 //
 // It runs once, globally, on the canonical request — before any dialect
 // translation — so the same tool-call guarantees hold for every provider
@@ -32,6 +32,7 @@ func Apply(req *core.ChatRequest) {
 	}
 	DedupeBuiltinTools(req)
 	SanitizeToolCallIDs(req)
+	StripOrphanedToolResults(req)
 	FixMissingToolResults(req)
 }
 
@@ -109,6 +110,50 @@ func FixMissingToolResults(req *core.ChatRequest) {
 		if len(parts) > 0 {
 			out = append(out, core.Message{Role: core.RoleTool, Content: parts})
 		}
+	}
+
+	req.Messages = out
+}
+
+// StripOrphanedToolResults removes tool results whose call id does not exist on
+// an assistant message in the conversation. History truncation can remove the
+// assistant turn while leaving its result behind; strict providers reject that
+// request before inference. Non-result content in a mixed message is preserved.
+func StripOrphanedToolResults(req *core.ChatRequest) {
+	if req == nil {
+		return
+	}
+
+	knownCalls := make(map[string]bool)
+	for _, msg := range req.Messages {
+		if msg.Role != core.RoleAssistant {
+			continue
+		}
+		for _, id := range collectToolCallIDs(msg) {
+			knownCalls[id] = true
+		}
+	}
+
+	out := make([]core.Message, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		cleaned := make([]core.ContentPart, 0, len(msg.Content))
+		removed := false
+		for _, part := range msg.Content {
+			if part.Type == core.PartToolResult &&
+				(part.ToolResult == nil || !knownCalls[part.ToolResult.CallID]) {
+				removed = true
+				continue
+			}
+			cleaned = append(cleaned, part)
+		}
+
+		if removed {
+			if len(cleaned) == 0 {
+				continue
+			}
+			msg.Content = cleaned
+		}
+		out = append(out, msg)
 	}
 
 	req.Messages = out
