@@ -273,6 +273,109 @@ func TestFixMissingToolResults_AnsweredAnywhereNoDuplicate(t *testing.T) {
 	}
 }
 
+func TestStripOrphanedToolResults_RemovesToolMessage(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "start"},
+			}},
+			{Role: core.RoleTool, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+					CallID: "tool_call_1", Content: "stale",
+				}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "continue"},
+			}},
+		},
+	}
+
+	StripOrphanedToolResults(req)
+
+	if len(req.Messages) != 2 {
+		t.Fatalf("expected orphan-only message to be removed, got %d messages", len(req.Messages))
+	}
+	for _, msg := range req.Messages {
+		if ids := collectToolResultIDs(msg); len(ids) != 0 {
+			t.Fatalf("orphan tool result survived: %v", ids)
+		}
+	}
+}
+
+func TestStripOrphanedToolResults_PreservesMixedText(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+					CallID: "orphan", Content: "stale",
+				}},
+				{Type: core.PartText, Text: "please continue"},
+			}},
+		},
+	}
+
+	StripOrphanedToolResults(req)
+
+	if len(req.Messages) != 1 || len(req.Messages[0].Content) != 1 {
+		t.Fatalf("expected text-only message, got %+v", req.Messages)
+	}
+	if got := req.Messages[0].Content[0]; got.Type != core.PartText || got.Text != "please continue" {
+		t.Fatalf("unexpected preserved content: %+v", got)
+	}
+}
+
+func TestStripOrphanedToolResults_PreservesMatchedResult(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "tool_call_1", Name: "Read"}},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+					CallID: "tool_call_1", Content: "ok",
+				}},
+			}},
+		},
+	}
+
+	StripOrphanedToolResults(req)
+
+	if len(req.Messages) != 2 {
+		t.Fatalf("expected matched pair to remain, got %d messages", len(req.Messages))
+	}
+	if ids := collectToolResultIDs(req.Messages[1]); len(ids) != 1 || ids[0] != "tool_call_1" {
+		t.Fatalf("matched result was removed: %v", ids)
+	}
+}
+
+func TestApply_RemovesUnexpectedToolUseID(t *testing.T) {
+	req := &core.ChatRequest{
+		Messages: []core.Message{
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "first"},
+			}},
+			{Role: core.RoleAssistant, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "done"},
+			}},
+			{Role: core.RoleUser, Content: []core.ContentPart{
+				{Type: core.PartText, Text: "next"},
+				{Type: core.PartToolResult, ToolResult: &core.ToolResult{
+					CallID: "tool_call_1", Content: "unexpected",
+				}},
+			}},
+		},
+	}
+
+	Apply(req)
+
+	if len(req.Messages) != 3 {
+		t.Fatalf("expected mixed user message to remain, got %d messages", len(req.Messages))
+	}
+	if len(req.Messages[2].Content) != 1 || req.Messages[2].Content[0].Type != core.PartText {
+		t.Fatalf("unexpected normalized content: %+v", req.Messages[2].Content)
+	}
+}
+
 func TestApply_Idempotent(t *testing.T) {
 	req := &core.ChatRequest{
 		Messages: []core.Message{
