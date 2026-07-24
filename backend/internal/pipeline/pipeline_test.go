@@ -9,22 +9,55 @@ import (
 
 func TestShouldRetryStreamRateLimit(t *testing.T) {
 	tests := []struct {
-		name    string
-		error   *core.ProviderError
-		retries int
-		want    bool
+		name       string
+		error      *core.ProviderError
+		retries    int
+		waitBudget time.Duration
+		want       bool
+		wantWait   time.Duration
 	}{
-		{name: "transient other provider", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai"}, want: true},
-		{name: "kiro account limit", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "kiro"}, want: false},
-		{name: "explicit reset", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: time.Minute}, want: false},
-		{name: "retry budget exhausted", error: &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai"}, retries: maxRateLimitRetries, want: false},
-		{name: "not a rate limit", error: &core.ProviderError{Kind: core.ErrUpstream, Provider: "openai"}, want: false},
+		{
+			name:       "transient other provider",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: 2 * time.Second},
+			waitBudget: 10 * time.Second,
+			want:       true,
+			wantWait:   2050 * time.Millisecond,
+		},
+		{
+			name:       "kiro account limit",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "kiro", RetryAfter: 2 * time.Second},
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
+		{
+			name:       "explicit reset exceeds budget",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: time.Minute},
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
+		{
+			name:       "retry budget exhausted",
+			error:      &core.ProviderError{Kind: core.ErrRateLimit, Provider: "openai", RetryAfter: time.Second},
+			retries:    maxRateLimitRetries,
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
+		{
+			name:       "not a rate limit",
+			error:      &core.ProviderError{Kind: core.ErrUpstream, Provider: "openai"},
+			waitBudget: 10 * time.Second,
+			want:       false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldRetryStreamRateLimit(tt.error, tt.retries); got != tt.want {
-				t.Fatalf("shouldRetryStreamRateLimit() = %v, want %v", got, tt.want)
+			gotWait, got := streamRateLimitWait(tt.error, tt.retries, tt.waitBudget)
+			if got != tt.want {
+				t.Fatalf("streamRateLimitWait() ok = %v, want %v", got, tt.want)
+			}
+			if gotWait != tt.wantWait {
+				t.Fatalf("streamRateLimitWait() wait = %v, want %v", gotWait, tt.wantWait)
 			}
 		})
 	}
@@ -152,6 +185,40 @@ func TestMergeUsage(t *testing.T) {
 	}
 	if merged.CompletionTokens != 20 {
 		t.Errorf("CompletionTokens = %d, want 20", merged.CompletionTokens)
+	}
+}
+
+func TestAddAttemptUsageSumsCompletedAttempts(t *testing.T) {
+	first := core.Usage{
+		PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14,
+		CachedTokens: 3, Source: core.UsageSourceProvider,
+	}
+	second := core.Usage{
+		PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20,
+		ReasoningTokens: 2, Source: core.UsageSourceProvider,
+	}
+	total := addAttemptUsage(first, second)
+
+	if total.PromptTokens != 22 || total.CompletionTokens != 12 || total.TotalTokens != 34 {
+		t.Fatalf("unexpected summed usage: %+v", total)
+	}
+	if total.CachedTokens != 3 || total.ReasoningTokens != 2 {
+		t.Fatalf("usage details were not summed: %+v", total)
+	}
+	if total.Source != core.UsageSourceProvider {
+		t.Fatalf("usage source = %q, want provider", total.Source)
+	}
+}
+
+func TestCloneWithSystemInstructionDoesNotMutateOriginal(t *testing.T) {
+	req := &core.ChatRequest{System: "original"}
+	clone := cloneWithSystemInstruction(req, "repair")
+
+	if req.System != "original" {
+		t.Fatalf("original request was mutated: %q", req.System)
+	}
+	if clone.System != "original\n\nrepair" {
+		t.Fatalf("clone system = %q", clone.System)
 	}
 }
 

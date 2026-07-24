@@ -391,6 +391,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	bw.Reset(w)
 
 	state := &transform.StreamState{Model: result.Model}
+	transform.ResetStreamState(state)
 	streamStart := time.Now()
 	var totalTokens int
 	var chunkCount int
@@ -460,6 +461,13 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 			s.consoleLog.Log("ERROR", "Provider stream error", fmt.Sprintf("%v", streamErr))
 			s.log.Warn("stream error", "err", streamErr)
 			_, _ = bw.Write(streamErrorEvent(req.Metadata.SourceDialect, sanitizeUpstreamError(streamErr)))
+			// Emit terminal events so strict clients (Claude Code, Cline) see a
+			// well-formed stream end instead of a truncated connection. Without
+			// message_stop/[DONE], the client may treat the stream as incomplete
+			// and retry the request — causing duplicate responses on the user side.
+			for _, ev := range streamCodec.RenderStreamDone(state) {
+				_, _ = bw.Write(ev)
+			}
 			_ = bw.Flush()
 			flusher.Flush()
 			break
@@ -478,6 +486,9 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, codec transf
 	}
 
 	// Flush any remaining buffered tool calls and think-tag buffer.
+	// Both Flush calls are idempotent — duplicate ChunkFinish events from
+	// upstream providers (e.g. some OpenAI-compatible gateways) will not
+	// cause re-emission of already-flushed content.
 	sanitizer.Flush(renderChunk)
 
 	// Flush think-tag state — emit any remaining buffered text.
@@ -517,6 +528,16 @@ type providerStreamEventError struct{ detail string }
 
 func (e *providerStreamEventError) Error() string { return "provider stream error: " + e.detail }
 
+type streamReadError struct{ err error }
+
+func (e *streamReadError) Error() string { return e.err.Error() }
+func (e *streamReadError) Unwrap() error { return e.err }
+
+type streamWriteError struct{ err error }
+
+func (e *streamWriteError) Error() string { return e.err.Error() }
+func (e *streamWriteError) Unwrap() error { return e.err }
+
 // copySanitizedStream keeps the direct-stream path lightweight by framing SSE
 // events without decoding successful chunks. Only potential error events are
 // decoded; those are replaced with a dialect-compatible generic event.
@@ -545,7 +566,7 @@ func copySanitizedStream(dst io.Writer, src io.Reader, dialect core.Dialect, flu
 			continue
 		}
 		if readErr != io.EOF {
-			return written, readErr
+			return written, &streamReadError{err: readErr}
 		}
 		if event.Len() > 0 {
 			n, err := writeSanitizedFrame(dst, event.Bytes(), dialect, flush)
@@ -594,7 +615,7 @@ func copySanitizedNDJSON(dst io.Writer, reader *bufio.Reader, dialect core.Diale
 		if readErr == io.EOF {
 			return written, nil
 		}
-		return written, readErr
+		return written, &streamReadError{err: readErr}
 	}
 }
 
@@ -612,7 +633,7 @@ func writeSanitizedFrame(dst io.Writer, raw []byte, dialect core.Dialect, flush 
 		flush()
 	}
 	if err != nil {
-		return int64(n), err
+		return int64(n), &streamWriteError{err: err}
 	}
 	if providerErr {
 		detail := truncateStreamEvent(string(raw))
@@ -730,6 +751,8 @@ func (s *Server) writeProviderError(w http.ResponseWriter, err error) {
 	switch pe.Kind {
 	case core.ErrBadRequest, core.ErrCapability:
 		status = http.StatusBadRequest
+	case core.ErrModelUnavailable:
+		status = http.StatusNotFound
 	case core.ErrAuth:
 		status = http.StatusUnauthorized
 	case core.ErrRateLimit:
@@ -758,15 +781,19 @@ func (s *Server) writeProviderError(w http.ResponseWriter, err error) {
 	writeError(w, status, sanitizeUpstreamError(pe))
 }
 
-// isClientDisconnect reports whether an error is a client disconnection
-// (broken pipe, reset by peer) rather than a server-side failure. These are
-// expected during streaming and should not be logged as errors.
+// isClientDisconnect reports whether cancellation or a downstream response
+// write failed because the client disconnected. Read-side socket errors remain
+// provider failures even when their text contains the same reset wording.
 func isClientDisconnect(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) {
+	if core.IsClientDisconnect(err) {
 		return true
+	}
+	var writeErr *streamWriteError
+	if !errors.As(err, &writeErr) {
+		return false
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "broken pipe") ||

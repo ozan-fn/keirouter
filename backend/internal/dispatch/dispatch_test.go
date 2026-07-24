@@ -281,6 +281,94 @@ func TestNoteFailureHonorsRateLimitRetryAfter(t *testing.T) {
 	require.WithinDuration(t, started.Add(4*time.Minute), *account.CooldownUntil, 2*time.Second)
 }
 
+func TestPlanWith_AllowedAccountPinsCredential(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t,
+		testAccount("acc-1", 10),
+		testAccount("acc-2", 20),
+	)
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID,
+		[]Target{{Provider: "openai", Model: "gpt-4o"}},
+		core.NewCapabilitySet(),
+		PlanOptions{AllowedAccountIDs: map[string]struct{}{"acc-2": {}}},
+	)
+	require.NoError(t, err)
+	require.Len(t, attempts, 1)
+	require.Equal(t, "acc-2", attempts[0].Account.ID)
+}
+
+func TestPlanWith_UnknownAllowedAccountIsRequestError(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccount("acc-1", 10))
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID,
+		[]Target{{Provider: "openai", Model: "gpt-4o"}},
+		core.NewCapabilitySet(),
+		PlanOptions{AllowedAccountIDs: map[string]struct{}{"missing": {}}},
+	)
+	require.Empty(t, attempts)
+	pe := core.AsProviderError(err)
+	require.Equal(t, core.ErrBadRequest, pe.Kind)
+	require.Equal(t, core.FailureScopeRequest, pe.EffectiveScope())
+}
+
+func TestPlanWith_ExcludedAttemptStillAllowsOtherModelOnSameAccount(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccount("acc-1", 10))
+	targets := []Target{
+		{Provider: "openai", Model: "gpt-4o"},
+		{Provider: "openai", Model: "gpt-5"},
+	}
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID, targets, core.NewCapabilitySet(),
+		PlanOptions{ExcludedAttempts: map[AttemptKey]struct{}{
+			{Provider: "openai", Model: "gpt-4o", AccountID: "acc-1"}: {},
+		}},
+	)
+	require.NoError(t, err)
+	require.Len(t, attempts, 1)
+	require.Equal(t, "gpt-5", attempts[0].Target.Model)
+	require.Equal(t, "acc-1", attempts[0].Account.ID)
+}
+
+func TestPlanWith_AllCandidatesCoolingReturnsTypedRetry(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccount("acc-1", 10))
+	d.NoteFailure(ctx, "acc-1", &core.ProviderError{
+		Kind:       core.ErrRateLimit,
+		Provider:   "openai",
+		Model:      "gpt-4o",
+		RetryAfter: 2 * time.Second,
+	})
+
+	attempts, err := d.PlanWith(ctx, store.DefaultTenantID,
+		[]Target{{Provider: "openai", Model: "gpt-4o"}},
+		core.NewCapabilitySet(), PlanOptions{})
+	require.Empty(t, attempts)
+	pe := core.AsProviderError(err)
+	require.Equal(t, core.ErrRateLimit, pe.Kind)
+	require.Equal(t, core.FailureScopeAccount, pe.EffectiveScope())
+	require.Greater(t, pe.RetryAfter, time.Duration(0))
+	require.LessOrEqual(t, pe.RetryAfter, 2*time.Second)
+}
+
+func TestProviderCircuitOpensAndSuccessClosesIt(t *testing.T) {
+	ctx := context.Background()
+	d, _ := newDispatchTest(t, testAccount("acc-1", 10))
+	for i := 0; i < ProviderCircuitFailureThreshold; i++ {
+		d.NoteFailure(ctx, "acc-1", &core.ProviderError{
+			Kind:     core.ErrUpstream,
+			Scope:    core.FailureScopeProvider,
+			Provider: "openai",
+		})
+	}
+
+	require.Greater(t, d.providerCircuitRemaining("openai", time.Now()), time.Duration(0))
+	d.NoteSuccess(ctx, "openai", "acc-1", "gpt-4o")
+	require.Zero(t, d.providerCircuitRemaining("openai", time.Now()))
+}
+
 func testAccountWithProvider(id, provider string, priority int) store.Account {
 	now := time.Now()
 	return store.Account{

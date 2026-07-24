@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -28,6 +29,9 @@ type MediaOptions struct {
 	ProjectID string
 	APIKeyID  string
 	Limits    limits.EffectiveLimits
+	// AccountID pins operations tied to upstream state, such as polling an
+	// asynchronous video job, to the credential that created that state.
+	AccountID string
 }
 
 // mediaAttempts resolves the ordered attempts for a media request and runs the
@@ -42,7 +46,11 @@ func (p *Pipeline) mediaAttempts(ctx context.Context, opts MediaOptions) ([]disp
 			return nil, err
 		}
 	}
-	return p.dispatcher.Plan(ctx, opts.TenantID, opts.Targets, core.NewCapabilitySet())
+	planOpts := dispatch.PlanOptions{}
+	if opts.AccountID != "" {
+		planOpts.AllowedAccountIDs = map[string]struct{}{opts.AccountID: {}}
+	}
+	return p.dispatcher.PlanWith(ctx, opts.TenantID, opts.Targets, core.NewCapabilitySet(), planOpts)
 }
 
 func (p *Pipeline) acquireMediaLimit(ctx context.Context, opts MediaOptions, estimatedTokens int64) (limits.ReleaseFunc, error) {
@@ -96,6 +104,7 @@ func (p *Pipeline) Embeddings(ctx context.Context, req *core.EmbeddingRequest, o
 			lastErr = callErr
 			continue
 		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
 		return resp, a.Target.Provider, nil
 	}
 	return nil, "", orInternal(lastErr)
@@ -129,6 +138,7 @@ func (p *Pipeline) GenerateImage(ctx context.Context, req *core.ImageRequest, op
 			lastErr = callErr
 			continue
 		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
 		return resp, a.Target.Provider, nil
 	}
 	return nil, "", orInternal(lastErr)
@@ -162,6 +172,7 @@ func (p *Pipeline) Transcribe(ctx context.Context, req *core.TranscriptionReques
 			lastErr = callErr
 			continue
 		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
 		return resp, a.Target.Provider, nil
 	}
 	return nil, "", orInternal(lastErr)
@@ -195,6 +206,7 @@ func (p *Pipeline) Synthesize(ctx context.Context, req *core.SpeechRequest, opts
 			lastErr = callErr
 			continue
 		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
 		return resp, a.Target.Provider, nil
 	}
 	return nil, "", orInternal(lastErr)
@@ -228,6 +240,7 @@ func (p *Pipeline) Search(ctx context.Context, req *core.SearchRequest, opts Med
 			lastErr = callErr
 			continue
 		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
 		return resp, a.Target.Provider, nil
 	}
 	return nil, "", orInternal(lastErr)
@@ -261,9 +274,170 @@ func (p *Pipeline) Fetch(ctx context.Context, req *core.FetchRequest, opts Media
 			lastErr = callErr
 			continue
 		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
 		return resp, a.Target.Provider, nil
 	}
 	return nil, "", orInternal(lastErr)
+}
+
+// GenerateVideo submits an asynchronous video-generation job. Unlike other
+// media kinds this does NOT fall back across attempts once a request has been
+// sent: a network error after submission may mean the job was created upstream,
+// so retrying could duplicate it. It only advances past attempts whose provider
+// lacks the capability (no request sent yet).
+func (p *Pipeline) GenerateVideo(ctx context.Context, req *core.VideoRequest, opts MediaOptions) (*core.VideoResponse, string, error) {
+	attempts, err := p.mediaAttempts(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	release, err := p.acquireMediaLimit(ctx, opts, 1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release(0)
+	var lastErr error
+	for _, a := range attempts {
+		conn, ok := a.Conn.(core.VideoConnector)
+		if !ok {
+			lastErr = unsupported(a.Target.Provider, "video generation")
+			continue
+		}
+		r := *req
+		r.Model = a.Target.Model
+		resp, callErr := conn.GenerateVideo(ctx, &r, a.Creds)
+		if callErr != nil {
+			// Record the failure for cooldown accounting but never retry the
+			// submission on another attempt — that could create a duplicate job.
+			p.noteMediaFailure(ctx, a, callErr)
+			return nil, "", callErr
+		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
+		resp.AccountID = a.Account.ID
+		return resp, a.Target.Provider, nil
+	}
+	return nil, "", orInternal(lastErr)
+}
+
+// PollVideo checks the status of an in-flight video job. Account-bound polling
+// is pinned to the credential that submitted the job.
+func (p *Pipeline) PollVideo(ctx context.Context, req *core.VideoStatusRequest, opts MediaOptions) (*core.VideoResponse, string, error) {
+	attempts, err := p.mediaAttempts(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	release, err := p.acquireMediaLimit(ctx, opts, 1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release(0)
+	var lastErr error
+	for _, a := range attempts {
+		conn, ok := a.Conn.(core.VideoConnector)
+		if !ok {
+			lastErr = unsupported(a.Target.Provider, "video generation")
+			continue
+		}
+		r := *req
+		r.Model = a.Target.Model
+		resp, callErr := conn.PollVideo(ctx, &r, a.Creds)
+		if callErr != nil {
+			if !p.noteMediaFailure(ctx, a, callErr) {
+				return nil, "", callErr
+			}
+			lastErr = callErr
+			continue
+		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
+		resp.AccountID = a.Account.ID
+		return resp, a.Target.Provider, nil
+	}
+	return nil, "", orInternal(lastErr)
+}
+
+// UnderstandImage runs an image-understanding (image-to-text) request with
+// fallback.
+func (p *Pipeline) UnderstandImage(ctx context.Context, req *core.ImageUnderstandingRequest, opts MediaOptions) (*core.ImageUnderstandingResponse, string, error) {
+	attempts, err := p.mediaAttempts(ctx, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	release, err := p.acquireMediaLimit(ctx, opts, 1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release(0)
+	var lastErr error
+	for _, a := range attempts {
+		r := *req
+		r.Model = a.Target.Model
+		resp, callErr := understandImage(ctx, a, &r)
+		if callErr != nil {
+			if !p.noteMediaFailure(ctx, a, callErr) {
+				return nil, "", callErr
+			}
+			lastErr = callErr
+			continue
+		}
+		p.dispatcher.NoteSuccess(ctx, a.Target.Provider, a.Account.ID, a.Target.Model)
+		return resp, a.Target.Provider, nil
+	}
+	return nil, "", orInternal(lastErr)
+}
+
+func understandImage(ctx context.Context, attempt dispatch.Attempt, req *core.ImageUnderstandingRequest) (*core.ImageUnderstandingResponse, error) {
+	if conn, ok := attempt.Conn.(core.ImageUnderstandingConnector); ok {
+		return conn.UnderstandImage(ctx, req, attempt.Creds)
+	}
+
+	content := make([]core.ContentPart, 0, len(req.Images)+1)
+	if req.Prompt != "" {
+		content = append(content, core.ContentPart{Type: core.PartText, Text: req.Prompt})
+	}
+	for _, image := range req.Images {
+		image = strings.TrimSpace(image)
+		if image == "" {
+			continue
+		}
+		content = append(content, core.ContentPart{Type: core.PartImage, Media: mediaPayload(image)})
+	}
+
+	var maxTokens *int
+	if req.MaxTokens > 0 {
+		value := req.MaxTokens
+		maxTokens = &value
+	}
+	chatResp, err := attempt.Conn.Chat(ctx, &core.ChatRequest{
+		Model:     req.Model,
+		MaxTokens: maxTokens,
+		Messages: []core.Message{{
+			Role:    core.RoleUser,
+			Content: content,
+		}},
+	}, attempt.Creds)
+	if err != nil {
+		return nil, err
+	}
+	if chatResp == nil {
+		return nil, &core.ProviderError{
+			Kind: core.ErrUpstream, Provider: attempt.Target.Provider,
+			Model: req.Model, Message: "image understanding returned an empty response",
+		}
+	}
+	return &core.ImageUnderstandingResponse{
+		Model: req.Model,
+		Text:  chatResp.Message.TextContent(),
+		Usage: chatResp.Usage,
+	}, nil
+}
+
+func mediaPayload(value string) *core.MediaPayload {
+	if strings.HasPrefix(value, "data:") {
+		if metadata, data, ok := strings.Cut(value, ","); ok && strings.Contains(metadata, ";base64") {
+			mimeType := strings.TrimPrefix(strings.SplitN(metadata, ";", 2)[0], "data:")
+			return &core.MediaPayload{MIMEType: mimeType, Data: data}
+		}
+	}
+	return &core.MediaPayload{URL: value}
 }
 
 func estimateEmbeddingTokens(req *core.EmbeddingRequest) int64 {
@@ -281,6 +455,12 @@ func estimateEmbeddingTokens(req *core.EmbeddingRequest) int64 {
 // keep trying the next attempt (true) or surface the error now (false).
 func (p *Pipeline) noteMediaFailure(ctx context.Context, a dispatch.Attempt, err error) bool {
 	pe := core.AsProviderError(err)
+	if pe.Provider == "" {
+		pe.Provider = a.Target.Provider
+	}
+	if pe.Model == "" {
+		pe.Model = a.Target.Model
+	}
 	p.dispatcher.NoteFailure(ctx, a.Account.ID, pe)
 	if p.metrics != nil {
 		p.metrics.RecordUpstreamError(a.Target.Provider, string(pe.Kind))

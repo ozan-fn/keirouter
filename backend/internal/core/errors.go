@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -24,6 +25,9 @@ const (
 	ErrTimeout ErrorKind = "timeout"
 	// ErrBadRequest: 4xx caused by the request itself. Do NOT fall back; surface.
 	ErrBadRequest ErrorKind = "bad_request"
+	// ErrModelUnavailable: the selected model or endpoint is unavailable. Skip
+	// the model without disabling credentials that may still serve other models.
+	ErrModelUnavailable ErrorKind = "model_unavailable"
 	// ErrCapability: chosen model lacks a required capability. Skip, no surface.
 	ErrCapability ErrorKind = "capability"
 	// ErrBudgetBlocked: KeiRouter budget guard rejected before dispatch.
@@ -34,6 +38,21 @@ const (
 	ErrPolicyBlocked ErrorKind = "policy_blocked"
 	// ErrInternal: router-internal fault.
 	ErrInternal ErrorKind = "internal"
+	// ErrClientCanceled: the client disconnected mid-request. Not a provider
+	// failure — must not trigger cooldowns or health penalties.
+	ErrClientCanceled ErrorKind = "client_canceled"
+)
+
+// FailureScope identifies the narrowest resource affected by a provider error.
+// Cooldowns and circuit breakers use this to avoid disabling healthy siblings.
+type FailureScope string
+
+const (
+	FailureScopeRequest  FailureScope = "request"
+	FailureScopeModel    FailureScope = "model"
+	FailureScopeAccount  FailureScope = "account"
+	FailureScopeProvider FailureScope = "provider"
+	FailureScopeNetwork  FailureScope = "network"
 )
 
 // ProviderError is the structured error connectors and the pipeline return. It
@@ -41,6 +60,8 @@ const (
 // the gateway to render an accurate HTTP status to the client.
 type ProviderError struct {
 	Kind ErrorKind
+	// Scope is the narrowest routing resource affected by the failure.
+	Scope FailureScope
 	// Provider and Model identify where the failure originated.
 	Provider string
 	Model    string
@@ -50,6 +71,13 @@ type ProviderError struct {
 	Message string
 	// RetryAfter, when non-zero, is the upstream-suggested cooldown.
 	RetryAfter time.Duration
+	// RetrySystemInstruction requests one centrally routed retry with an
+	// additional system instruction. Connectors use this for completed
+	// responses that are structurally invalid or clearly incomplete.
+	RetrySystemInstruction string
+	// AttemptUsage captures tokens consumed by a completed attempt that is being
+	// retried for response integrity. The pipeline adds it to terminal usage.
+	AttemptUsage *Usage
 	// Cause is the wrapped underlying error.
 	Cause error
 }
@@ -79,11 +107,67 @@ func (e *ProviderError) Retryable() bool {
 // candidate in the chain rather than surfacing this error to the client.
 func (e *ProviderError) Fallbackable() bool {
 	switch e.Kind {
-	case ErrBadRequest, ErrBudgetBlocked, ErrPolicyBlocked:
+	case ErrBadRequest, ErrBudgetBlocked, ErrPolicyBlocked, ErrClientCanceled:
 		return false
 	default:
 		return true
 	}
+}
+
+// EffectiveScope returns the explicit failure scope or a conservative default
+// derived from the error kind.
+func (e *ProviderError) EffectiveScope() FailureScope {
+	if e == nil {
+		return FailureScopeRequest
+	}
+	if e.Scope != "" {
+		return e.Scope
+	}
+	switch e.Kind {
+	case ErrModelUnavailable, ErrCapability:
+		return FailureScopeModel
+	case ErrAuth, ErrRateLimit, ErrQuotaExhausted:
+		return FailureScopeAccount
+	case ErrUpstream, ErrTimeout:
+		return FailureScopeProvider
+	default:
+		return FailureScopeRequest
+	}
+}
+
+// RetryDecision is the stable routing view of a ProviderError.
+type RetryDecision struct {
+	Retryable    bool
+	Fallbackable bool
+	Scope        FailureScope
+	RetryAfter   time.Duration
+}
+
+// Decision returns the retry and fallback policy carried by this error.
+func (e *ProviderError) Decision() RetryDecision {
+	if e == nil {
+		return RetryDecision{}
+	}
+	return RetryDecision{
+		Retryable:    e.Retryable(),
+		Fallbackable: e.Fallbackable(),
+		Scope:        e.EffectiveScope(),
+		RetryAfter:   e.RetryAfter,
+	}
+}
+
+// IsClientDisconnect reports whether err indicates the client disconnected
+// rather than a provider connection failure. Socket text is intentionally not
+// inspected here because the same reset strings can originate upstream.
+func IsClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var pe *ProviderError
+	return errors.As(err, &pe) && pe.Kind == ErrClientCanceled
 }
 
 // AsProviderError extracts a *ProviderError from err, or wraps it as ErrInternal.
@@ -94,6 +178,22 @@ func AsProviderError(err error) *ProviderError {
 	var pe *ProviderError
 	if errors.As(err, &pe) {
 		return pe
+	}
+	if errors.Is(err, context.Canceled) {
+		return &ProviderError{
+			Kind:    ErrClientCanceled,
+			Scope:   FailureScopeRequest,
+			Message: "client canceled request",
+			Cause:   err,
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &ProviderError{
+			Kind:    ErrTimeout,
+			Scope:   FailureScopeRequest,
+			Message: "request deadline exceeded",
+			Cause:   err,
+		}
 	}
 	return &ProviderError{Kind: ErrInternal, Message: err.Error(), Cause: err}
 }

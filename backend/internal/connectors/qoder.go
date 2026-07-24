@@ -113,8 +113,22 @@ type qoderPayload struct {
 }
 
 type qoderMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string          `json:"role"`
+	Content    string          `json:"content"`
+	Name       string          `json:"name,omitempty"`
+	ToolCalls  []qoderToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+type qoderToolCall struct {
+	ID       string            `json:"id"`
+	Type     string            `json:"type"`
+	Function qoderToolFunction `json:"function"`
+}
+
+type qoderToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type qoderParams struct {
@@ -150,24 +164,132 @@ type qoderBusiness struct {
 	BeginAt int64  `json:"begin_at"`
 }
 
-// normalizeMessages hoists system messages out and flattens content to plain
-// text.
+// normalizeQoderMessages hoists system instructions and renders canonical tool
+// calls/results into the OpenAI-compatible message shape accepted by Qoder.
 func normalizeQoderMessages(msgs []core.Message) (out []qoderMessage, systemText string) {
 	var sysParts []string
 	for _, m := range msgs {
 		text := m.TextContent()
-		if m.Role == core.RoleSystem {
+		if m.Role == core.RoleSystem || m.Role == core.RoleDeveloper {
 			if text != "" {
 				sysParts = append(sysParts, text)
 			}
 			continue
 		}
-		out = append(out, qoderMessage{
-			Role:    string(m.Role),
-			Content: text,
+
+		var calls []qoderToolCall
+		var results []qoderMessage
+		for _, part := range m.Content {
+			switch part.Type {
+			case core.PartToolCall:
+				if m.Role != core.RoleAssistant || part.ToolCall == nil || part.ToolCall.ID == "" {
+					continue
+				}
+				args := string(part.ToolCall.Arguments)
+				if args == "" {
+					args = "{}"
+				}
+				calls = append(calls, qoderToolCall{
+					ID:   part.ToolCall.ID,
+					Type: "function",
+					Function: qoderToolFunction{
+						Name:      part.ToolCall.Name,
+						Arguments: args,
+					},
+				})
+			case core.PartToolResult:
+				if part.ToolResult == nil || part.ToolResult.CallID == "" {
+					continue
+				}
+				results = append(results, qoderMessage{
+					Role:       string(core.RoleTool),
+					Content:    part.ToolResult.Content,
+					ToolCallID: part.ToolResult.CallID,
+				})
+			}
+		}
+
+		// Anthropic clients carry tool results and user text in one message.
+		// Qoder expects the OpenAI layout: tool messages first, then user text.
+		out = append(out, results...)
+
+		switch m.Role {
+		case core.RoleTool:
+			// Tool content was emitted above with its matching tool_call_id.
+			continue
+		case core.RoleAssistant:
+			out = append(out, qoderMessage{
+				Role:      string(m.Role),
+				Content:   text,
+				Name:      m.Name,
+				ToolCalls: calls,
+			})
+		default:
+			if text != "" || len(results) == 0 {
+				out = append(out, qoderMessage{
+					Role:    string(m.Role),
+					Content: text,
+					Name:    m.Name,
+				})
+			}
+		}
+	}
+	return repairQoderToolHistory(out), strings.Join(sysParts, "\n\n")
+}
+
+// repairQoderToolHistory moves matching tool results directly after the
+// assistant call that created them, synthesizes an empty result when missing,
+// and drops results that do not belong to an earlier call.
+func repairQoderToolHistory(msgs []qoderMessage) []qoderMessage {
+	type indexedResult struct {
+		index int
+		msg   qoderMessage
+		used  bool
+	}
+
+	results := make(map[string][]*indexedResult)
+	for i, msg := range msgs {
+		if msg.Role != string(core.RoleTool) || msg.ToolCallID == "" {
+			continue
+		}
+		results[msg.ToolCallID] = append(results[msg.ToolCallID], &indexedResult{
+			index: i,
+			msg:   msg,
 		})
 	}
-	return out, strings.Join(sysParts, "\n\n")
+
+	out := make([]qoderMessage, 0, len(msgs))
+	for i, msg := range msgs {
+		if msg.Role == string(core.RoleTool) {
+			continue
+		}
+		out = append(out, msg)
+		if msg.Role != string(core.RoleAssistant) {
+			continue
+		}
+
+		for _, call := range msg.ToolCalls {
+			var matched *indexedResult
+			for _, candidate := range results[call.ID] {
+				if !candidate.used && candidate.index > i {
+					matched = candidate
+					break
+				}
+			}
+			if matched != nil {
+				matched.used = true
+				out = append(out, matched.msg)
+				continue
+			}
+			out = append(out, qoderMessage{
+				Role:       string(core.RoleTool),
+				Content:    "",
+				ToolCallID: call.ID,
+			})
+		}
+	}
+
+	return out
 }
 
 // lastUserText returns the text of the last user message (for chat_context).
@@ -199,10 +321,8 @@ func stableChatRecordID(model string, msgs []qoderMessage, tools []json.RawMessa
 	h.Write([]byte(model))
 	for _, m := range msgs {
 		h.Write([]byte{0})
-		h.Write([]byte(m.Role))
-		if m.Content != "" {
-			h.Write([]byte{0})
-			h.Write([]byte(m.Content))
+		if encoded, err := json.Marshal(m); err == nil {
+			h.Write(encoded)
 		}
 	}
 	if len(tools) > 0 {
@@ -295,18 +415,28 @@ func normalizeQoderToolSchema(raw json.RawMessage) json.RawMessage {
 
 // buildPayload constructs the Qoder chat request payload from a canonical
 // ChatRequest and the cached model config.
-func (c *Qoder) buildPayload(req *core.ChatRequest, modelKey string, modelConfig json.RawMessage) qoderPayload {
+func (c *Qoder) buildPayload(req *core.ChatRequest, modelKey string, modelConfig json.RawMessage, accountScope string) qoderPayload {
 	msgs, systemText := normalizeQoderMessages(req.Messages)
 	tools := serializeTools(req.Tools)
 	maxTokens := resolveMaxTokens(req, modelConfig)
 	lastUser := lastUserText(msgs)
+	if req.System != "" {
+		if systemText == "" {
+			systemText = req.System
+		} else {
+			systemText = req.System + "\n\n" + systemText
+		}
+	}
 
+	recordID := stableChatRecordID(modelKey, msgs, tools, maxTokens)
 	sessionKey := req.Metadata.ContextAffinityKey
 	if sessionKey == "" {
-		sessionKey = modelKey
+		sessionKey = req.Metadata.RequestID
 	}
-	sessionID := stableHash("qoder-session", sessionKey, modelKey)
-	recordID := stableChatRecordID(modelKey, msgs, tools, maxTokens)
+	if sessionKey == "" {
+		sessionKey = recordID
+	}
+	sessionID := stableHash("qoder-session", accountScope, sessionKey, modelKey)
 
 	// Determine is_reasoning from model_config.
 	var isReasoning bool
@@ -509,7 +639,7 @@ func (c *Qoder) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cr
 		modelConfig = nil
 	}
 
-	payload := c.buildPayload(req, modelKey, modelConfig)
+	payload := c.buildPayload(req, modelKey, modelConfig, c.cosyCreds(creds).UserID)
 	payload.Stream = true
 
 	url, headers, body, err := c.signedRequest(payload, creds)
@@ -580,23 +710,39 @@ func (c *Qoder) Stream(ctx context.Context, req *core.ChatRequest, creds core.Cr
 // Chat performs a non-streaming completion by collecting the streaming
 // response. Qoder's chat endpoint is SSE-only.
 func (c *Qoder) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
-	req.Stream = true // Qoder is SSE-only
+	streamReq := *req
+	streamReq.Stream = true // Qoder is SSE-only
 
-	chunks, err := c.Stream(ctx, req, creds, core.StreamConfig{})
+	chunks, err := c.Stream(ctx, &streamReq, creds, core.StreamConfig{})
 	if err != nil {
 		return nil, err
 	}
 
-	// Collect all chunks into a complete response.
+	msg, finishReason, usage, err := collectQoderChunks(chunks)
+	if err != nil {
+		return nil, err
+	}
+
+	return &core.ChatResponse{
+		ID:           uuid.NewString(),
+		Model:        req.Model,
+		Message:      msg,
+		FinishReason: finishReason,
+		Usage:        usage,
+	}, nil
+}
+
+func collectQoderChunks(chunks <-chan core.StreamChunk) (core.Message, core.FinishReason, core.Usage, error) {
 	var (
 		textBuf      strings.Builder
 		thinkingBuf  strings.Builder
 		toolCalls    []*core.ToolCall
 		finishReason core.FinishReason
 		usage        core.Usage
+		streamErr    error
 	)
 
-	for ch := range chunks {
+	collect := func(ch core.StreamChunk) {
 		switch ch.Type {
 		case core.ChunkText:
 			textBuf.WriteString(ch.Delta)
@@ -614,9 +760,21 @@ func (c *Qoder) Chat(ctx context.Context, req *core.ChatRequest, creds core.Cred
 			}
 		case core.ChunkError:
 			if ch.Err != nil {
-				return nil, ch.Err
+				streamErr = ch.Err
 			}
 		}
+	}
+
+	sanitizer := transform.NewToolArgSanitizer()
+	for ch := range chunks {
+		sanitizer.Process(ch, collect)
+		if streamErr != nil {
+			return core.Message{}, "", core.Usage{}, streamErr
+		}
+	}
+	sanitizer.Flush(collect)
+	if streamErr != nil {
+		return core.Message{}, "", core.Usage{}, streamErr
 	}
 
 	msg := core.Message{
@@ -632,13 +790,7 @@ func (c *Qoder) Chat(ctx context.Context, req *core.ChatRequest, creds core.Cred
 		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartToolCall, ToolCall: tc})
 	}
 
-	return &core.ChatResponse{
-		ID:           uuid.NewString(),
-		Model:        req.Model,
-		Message:      msg,
-		FinishReason: finishReason,
-		Usage:        usage,
-	}, nil
+	return msg, finishReason, usage, nil
 }
 
 // Validate probes the Qoder model list endpoint to confirm the COSY signing

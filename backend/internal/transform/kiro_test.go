@@ -3,7 +3,9 @@ package transform
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
@@ -1231,5 +1233,153 @@ func TestNormalizeKiroVersionDashes(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("normalizeKiroVersionDashes(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestKiroSessionCacheStickyUntilTTL(t *testing.T) {
+	now := time.Unix(1000, 0)
+	cache := newKiroSessionCache(time.Hour, 4)
+	cache.now = func() time.Time { return now }
+
+	id1 := cache.resolve("scope")
+	id2 := cache.resolve("scope")
+	if id1 != id2 {
+		t.Errorf("same scope should return same conversationId: %q != %q", id1, id2)
+	}
+	now = now.Add(time.Hour + time.Second)
+	id3 := cache.resolve("scope")
+	if id3 == id1 {
+		t.Error("expired scope should receive a new conversationId")
+	}
+}
+
+func TestKiroSessionCacheEvictsLeastRecentEntryAtCapacity(t *testing.T) {
+	cache := newKiroSessionCache(time.Hour, 2)
+	firstB := cache.resolve("b")
+	_ = cache.resolve("a")
+	_ = cache.resolve("b")
+	_ = cache.resolve("c")
+
+	if len(cache.entries) != 2 {
+		t.Fatalf("cache entries = %d, want 2", len(cache.entries))
+	}
+	if secondB := cache.resolve("b"); secondB != firstB {
+		t.Error("recently used entry should not be evicted")
+	}
+	if _, ok := cache.entries["a"]; ok {
+		t.Error("least recently used entry should be evicted")
+	}
+}
+
+func TestKiroSessionCacheConcurrentResolveIsSticky(t *testing.T) {
+	cache := newKiroSessionCache(time.Hour, 4)
+	const workers = 64
+	ids := make(chan string, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			ids <- cache.resolve("scope")
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+			continue
+		}
+		if id != first {
+			t.Fatalf("concurrent resolves returned different conversationIds: %q != %q", first, id)
+		}
+	}
+}
+
+func TestKiroResolveConversationIDScopesAccountTenantAndModel(t *testing.T) {
+	req := &core.ChatRequest{
+		Model: "claude-sonnet-4.5",
+		Metadata: core.RequestMetadata{
+			TenantID:           "tenant-a",
+			ProjectID:          "project-a",
+			APIKeyID:           "key-a",
+			ContextAffinityKey: "session-" + t.Name(),
+		},
+	}
+	id := kiroResolveConversationID(req, "profile-a", "account-a")
+	if again := kiroResolveConversationID(req, "profile-a", "account-a"); again != id {
+		t.Errorf("same scope should stay sticky: %q != %q", id, again)
+	}
+	if other := kiroResolveConversationID(req, "profile-a", "account-b"); other == id {
+		t.Error("different accounts must not share a conversationId")
+	}
+
+	otherTenant := *req
+	otherTenant.Metadata.TenantID = "tenant-b"
+	if other := kiroResolveConversationID(&otherTenant, "profile-a", "account-a"); other == id {
+		t.Error("different tenants must not share a conversationId")
+	}
+
+	otherModel := *req
+	otherModel.Model = "claude-opus-4.5"
+	if other := kiroResolveConversationID(&otherModel, "profile-a", "account-a"); other == id {
+		t.Error("different models must not share a conversationId")
+	}
+}
+
+func TestKiroResolveConversationIDWithoutAffinityIsNotSticky(t *testing.T) {
+	req := &core.ChatRequest{Model: "claude-sonnet-4.5"}
+	first := kiroResolveConversationID(req, "profile-a", "account-a")
+	second := kiroResolveConversationID(req, "profile-a", "account-a")
+	if first == second {
+		t.Error("requests without an affinity key must receive independent conversationIds")
+	}
+}
+
+func TestKiroRenderRequestUsesAccountScopedConversationID(t *testing.T) {
+	req := &core.ChatRequest{
+		Model:    "claude-sonnet-4.5",
+		Messages: []core.Message{{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hi"}}}},
+		Metadata: core.RequestMetadata{
+			TenantID: "tenant", APIKeyID: "key",
+			ContextAffinityKey: "render-affinity-" + t.Name(),
+		},
+	}
+
+	body1, err := KiroCodec{}.RenderRequestForAccount(req, "profile", "account-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2, err := KiroCodec{}.RenderRequestForAccount(req, "profile", "account-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body3, err := KiroCodec{}.RenderRequestForAccount(req, "profile", "account-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var env1, env2, env3 map[string]any
+	if err := json.Unmarshal(body1, &env1); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body2, &env2); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body3, &env3); err != nil {
+		t.Fatal(err)
+	}
+
+	cs1 := env1["conversationState"].(map[string]any)
+	cs2 := env2["conversationState"].(map[string]any)
+	cs3 := env3["conversationState"].(map[string]any)
+	if cs1["conversationId"] != cs2["conversationId"] {
+		t.Errorf("same affinity key should produce same conversationId across renders: %q != %q",
+			cs1["conversationId"], cs2["conversationId"])
+	}
+	if cs1["conversationId"] == cs3["conversationId"] {
+		t.Error("different accounts must render different conversationIds")
 	}
 }

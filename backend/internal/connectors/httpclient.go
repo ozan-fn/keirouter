@@ -64,6 +64,25 @@ var sharedClient = &http.Client{
 	},
 }
 
+// retryClient is used when a pooled idle connection is known to be stale.
+// Retrying on the same transport can grab another stale socket from the pool,
+// so the replay uses a no-keep-alive transport to force a fresh connection.
+var retryClient = &http.Client{
+	Timeout: 0,
+	Transport: &http.Transport{
+		DisableKeepAlives:     true,
+		MaxIdleConns:          0,
+		MaxIdleConnsPerHost:   0,
+		IdleConnTimeout:       1 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		WriteBufferSize:       16 * 1024,
+		ReadBufferSize:        16 * 1024,
+		ForceAttemptHTTP2:     false, // fresh TCP connection per request
+	},
+}
+
 // proxyTransportCache pools *http.Transport instances keyed by proxy config
 // string. This prevents creating a new transport (and its goroutine/buffer
 // pool) on every proxied request -- a significant memory leak.
@@ -396,6 +415,21 @@ func doMultipart(ctx context.Context, provider, model, url, fileField, filename 
 // openStream performs a streaming POST and returns the response for the caller
 // to read SSE lines from. The caller must close resp.Body.
 func openStream(ctx context.Context, provider, model, url string, body []byte, headers map[string]string) (*http.Response, error) {
+	resp, err := openStreamWithClient(ctx, provider, model, url, body, headers, proxyClient(ctx))
+	if err == nil || !shouldRetryFreshConnection(ctx, err) {
+		return resp, err
+	}
+	return openStreamForRetry(ctx, provider, model, url, body, headers)
+}
+
+// openStreamForRetry is like openStream but uses the no-keep-alive retry
+// transport. Used when retrying after a transport-level failure to avoid
+// grabbing a stale socket from the shared pool.
+func openStreamForRetry(ctx context.Context, provider, model, url string, body []byte, headers map[string]string) (*http.Response, error) {
+	return openStreamWithClient(ctx, provider, model, url, body, headers, proxyClientForRetry(ctx))
+}
+
+func openStreamWithClient(ctx context.Context, provider, model, url string, body []byte, headers map[string]string, client *http.Client) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: provider, Model: model, Message: err.Error(), Cause: err}
@@ -407,7 +441,7 @@ func openStream(ctx context.Context, provider, model, url string, body []byte, h
 	}
 
 	proxyRewrite(ctx, req)
-	resp, err := proxyClient(ctx).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, transportError(ctx, provider, model, err)
 	}
@@ -564,39 +598,87 @@ func parseSSEData(line string) (string, bool) {
 // transportError classifies a transport-level failure (DNS, connection, ctx).
 func transportError(ctx context.Context, provider, model string, err error) error {
 	kind := core.ErrUpstream
-	if ctx.Err() == context.DeadlineExceeded {
+	scope := core.FailureScopeNetwork
+	switch ctx.Err() {
+	case context.Canceled:
+		kind = core.ErrClientCanceled
+		scope = core.FailureScopeRequest
+	case context.DeadlineExceeded:
 		kind = core.ErrTimeout
+		scope = core.FailureScopeRequest
 	}
-	return &core.ProviderError{Kind: kind, Provider: provider, Model: model, Message: err.Error(), Cause: err}
+	return &core.ProviderError{
+		Kind: kind, Scope: scope, Provider: provider, Model: model,
+		Message: err.Error(), Cause: err,
+	}
+}
+
+// shouldRetryFreshConnection permits one replay before response headers exist.
+// Only network-scoped transport errors qualify; HTTP responses and cancellations
+// are handled by normal fallback so a request is never multiplied blindly.
+func shouldRetryFreshConnection(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	pe := core.AsProviderError(err)
+	if pe.Kind != core.ErrUpstream ||
+		pe.StatusCode != 0 ||
+		pe.EffectiveScope() != core.FailureScopeNetwork ||
+		pe.Cause == nil {
+		return false
+	}
+	message := strings.ToLower(pe.Cause.Error())
+	return strings.Contains(message, "server closed idle connection") ||
+		strings.Contains(message, "use of closed network connection")
 }
 
 // httpStatusError maps an HTTP error status to a structured ProviderError.
 func httpStatusError(provider, model string, resp *http.Response, body []byte) error {
 	kind := core.ErrUpstream
+	var retryAfter time.Duration
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
-		kind = core.ErrRateLimit
+		// Classify 429 into transient rate-limit vs hard quota exhaustion.
+		// Quota exhaustion gets a much longer cooldown than per-minute throttling.
+		kind, retryAfter = classify429(resp, body)
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		kind = core.ErrAuth
 	case resp.StatusCode == http.StatusPaymentRequired:
 		kind = core.ErrQuotaExhausted
+	case resp.StatusCode == http.StatusNotFound:
+		kind = core.ErrModelUnavailable
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		kind = core.ErrBadRequest
 	}
 
+	scope := core.FailureScopeProvider
+	switch kind {
+	case core.ErrBadRequest:
+		scope = core.FailureScopeRequest
+	case core.ErrModelUnavailable:
+		scope = core.FailureScopeModel
+	case core.ErrAuth, core.ErrRateLimit, core.ErrQuotaExhausted:
+		scope = core.FailureScopeAccount
+	}
+
 	pe := &core.ProviderError{
 		Kind:       kind,
+		Scope:      scope,
 		Provider:   provider,
 		Model:      model,
 		StatusCode: resp.StatusCode,
 		Message:    truncateError(body),
+		RetryAfter: retryAfter,
 	}
-	if ra := resp.Header.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.Atoi(ra); err == nil {
-			pe.RetryAfter = time.Duration(secs) * time.Second
-		} else if retryAt, err := http.ParseTime(ra); err == nil {
-			if wait := time.Until(retryAt); wait > 0 {
-				pe.RetryAfter = wait
+	// Preserve the existing Retry-After header parsing for non-429 errors.
+	if pe.RetryAfter <= 0 {
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, err := strconv.Atoi(ra); err == nil {
+				pe.RetryAfter = time.Duration(secs) * time.Second
+			} else if retryAt, err := http.ParseTime(ra); err == nil {
+				if wait := time.Until(retryAt); wait > 0 {
+					pe.RetryAfter = wait
+				}
 			}
 		}
 	}
@@ -673,6 +755,41 @@ func proxyClient(ctx context.Context) *http.Client {
 		return sharedClient
 	}
 	return clientFor(creds)
+}
+
+// proxyClientForRetry returns an http.Client for retry attempts after a
+// transport-level failure. When no proxy is configured, it returns the
+// no-keep-alive retryClient to force a fresh connection (avoiding stale
+// sockets from the shared pool). With a proxy configured, it falls back to
+// the standard clientFor since proxy transports are already isolated.
+func proxyClientForRetry(ctx context.Context) *http.Client {
+	creds, ok := core.ProxyFromContext(ctx)
+	if !ok {
+		return retryClient
+	}
+	// For proxied requests, create a no-keep-alive variant on the fly.
+	// The proxy transport cache is not used here because retries are rare
+	// and the no-keep-alive transport is intentionally lightweight.
+	if creds.ProxyURL == "" && creds.RelayURL == "" {
+		return retryClient
+	}
+	// Build a minimal no-keep-alive transport with proxy settings.
+	t := &http.Transport{
+		DisableKeepAlives:     true,
+		MaxIdleConns:          0,
+		MaxIdleConnsPerHost:   0,
+		IdleConnTimeout:       1 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     false,
+	}
+	if creds.ProxyURL != "" {
+		if u, err := url.Parse(creds.ProxyURL); err == nil {
+			t.Proxy = proxyFunc(u, creds.NoProxy)
+		}
+	}
+	return &http.Client{Transport: t}
 }
 
 // proxyRewrite applies relay header rewriting to req if ctx carries a RelayURL.

@@ -37,7 +37,7 @@ func TestGeneratePKCEUnique(t *testing.T) {
 }
 
 func TestConfigFor(t *testing.T) {
-	for _, id := range []string{"claude", "codex", "github", "qwen", "xai", "gemini-cli"} {
+	for _, id := range []string{"claude", "codex", "github", "qwen", "xai", "gemini-cli", "clinepass", "grok-cli"} {
 		cfg, ok := ConfigFor(id)
 		if !ok {
 			t.Errorf("expected OAuth config for %q", id)
@@ -143,6 +143,39 @@ func TestRefreshURLFallback(t *testing.T) {
 	cline, _ := ConfigFor("cline")
 	if cline.refreshURL() != "https://api.cline.bot/api/v1/auth/refresh" {
 		t.Errorf("cline refresh URL should use explicit RefreshURL, got %q", cline.refreshURL())
+	}
+}
+
+func TestClinepassMirrorsCline(t *testing.T) {
+	cline, _ := ConfigFor("cline")
+	cp, ok := ConfigFor("clinepass")
+	if !ok {
+		t.Fatal("expected OAuth config for clinepass")
+	}
+	if cp.Flow != FlowAuthCode {
+		t.Errorf("clinepass flow = %v, want FlowAuthCode", cp.Flow)
+	}
+	if cp.AuthorizeURL != cline.AuthorizeURL || cp.TokenURL != cline.TokenURL || cp.refreshURL() != cline.refreshURL() {
+		t.Error("clinepass should share cline's auth endpoints")
+	}
+	if !cp.SkipStandardAuthParams || cp.TokenContentType != "json" {
+		t.Error("clinepass should reuse cline's non-standard authorize/token params")
+	}
+}
+
+func TestGrokCliDeviceFlow(t *testing.T) {
+	cfg, ok := ConfigFor("grok-cli")
+	if !ok {
+		t.Fatal("expected OAuth config for grok-cli")
+	}
+	if cfg.Flow != FlowDeviceCode {
+		t.Errorf("grok-cli flow = %v, want FlowDeviceCode", cfg.Flow)
+	}
+	if cfg.DeviceCodeURL == "" || cfg.TokenURL == "" {
+		t.Error("grok-cli must define device-code and token URLs")
+	}
+	if cfg.refreshURL() != cfg.TokenURL {
+		t.Errorf("grok-cli refresh URL = %q, want %q", cfg.refreshURL(), cfg.TokenURL)
 	}
 }
 
