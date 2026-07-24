@@ -42,7 +42,6 @@ jobs:
             lftp -c "
                 set ftp:ssl-allow no;
                 set ftp:sync-mode no;
-                set http:proxy http://kauhwjxz-1:nz8hufnch0pg@p.webshare.io:80;
                 open -u ${FTP_USER},${FTP_PASS} ${FTP_HOST};
                 cd go;
                 rm -f keirouter;
